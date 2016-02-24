@@ -1240,8 +1240,14 @@ public class SimpleLoadBalancerState implements LoadBalancerState, ClientFactory
             {
               _log.error("https specified as a prioritized scheme for service: " + serviceProperties.getServiceName() +
                         " but no SSLContext or SSLParameters have been configured.");
-              throw new IllegalStateException("SSL enabled but required SSLContext and SSLParameters" +
-                                                "were not both present.");
+              if (schemes.size() == 1)
+              {
+                // throw exception when https is the only scheme specified
+                throw new IllegalStateException(
+                    "SSL enabled but required SSLContext and SSLParameters" + "were not both present.");
+              }
+              // Do not create the transport client for https.
+              continue;
             }
           }
           else

@@ -1,6 +1,24 @@
+5.0.12
+------
+(RB=665715)
+Do not create https transport client if SSL context is not available
+
+5.0.11
+------
+(RB=664750)
+Fix a bug when detecting cookies name with $ sign at the beginning. Check $ sign in the trimed name.
+
+5.0.10
+------
+(RB=653970)
+Write missing d2 configurations into zookeeper.
+(RB=665296)
+Relax the SSL Context/Parameter checking for d2.
+
 5.0.9
 -----
-
+(RB=647541)
+Allow array of union be resource method parameter.
 
 5.0.8
 -----
