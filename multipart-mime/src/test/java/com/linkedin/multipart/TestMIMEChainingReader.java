@@ -108,8 +108,7 @@ public class TestMIMEChainingReader extends AbstractMIMEUnitTest
   //Client callbacks:
   private static class ClientMultiPartMIMEReaderReceiverCallback implements MultiPartMIMEReaderCallback
   {
-    final List<MIMETestUtils.SinglePartMIMEFullReaderCallback> _singlePartMIMEReaderCallbacks =
-        new ArrayList<MIMETestUtils.SinglePartMIMEFullReaderCallback>();
+    final List<MIMETestUtils.SinglePartMIMEFullReaderCallback> _singlePartMIMEReaderCallbacks = new ArrayList<>();
     final CountDownLatch _latch;
 
     ClientMultiPartMIMEReaderReceiverCallback(final CountDownLatch latch)
@@ -139,7 +138,7 @@ public class TestMIMEChainingReader extends AbstractMIMEUnitTest
     }
 
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       Assert.fail();
     }
@@ -182,7 +181,7 @@ public class TestMIMEChainingReader extends AbstractMIMEUnitTest
     }
 
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       Assert.fail();
     }

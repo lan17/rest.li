@@ -16,34 +16,11 @@
 
 package com.linkedin.restli.internal.server.model;
 
-
-import com.linkedin.data.transform.filter.request.MaskTree;
-import com.linkedin.parseq.promise.Promise;
-import com.linkedin.restli.common.EmptyRecord;
-import com.linkedin.restli.server.PagingContext;
-import com.linkedin.restli.server.PathKeys;
 import com.linkedin.restli.server.ResourceConfigException;
-import com.linkedin.restli.server.ResourceContext;
-import com.linkedin.restli.server.annotations.AssocKeyParam;
-import com.linkedin.restli.server.annotations.Finder;
-import com.linkedin.restli.server.annotations.Key;
-import com.linkedin.restli.server.annotations.MetadataProjectionParam;
-import com.linkedin.restli.server.annotations.PagingContextParam;
-import com.linkedin.restli.server.annotations.PagingProjectionParam;
-import com.linkedin.restli.server.annotations.ParSeqContextParam;
-import com.linkedin.restli.server.annotations.PathKeysParam;
-import com.linkedin.restli.server.annotations.ProjectionParam;
-import com.linkedin.restli.server.annotations.ResourceContextParam;
-import com.linkedin.restli.server.annotations.RestLiAssociation;
-import com.linkedin.restli.server.annotations.RestLiCollection;
-import com.linkedin.restli.server.resources.AssociationResourceTemplate;
-import com.linkedin.restli.server.resources.CollectionResourceTemplate;
-
-import java.util.Collections;
-import java.util.List;
 import org.testng.Assert;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
+import com.linkedin.restli.internal.server.model.SampleResources.*;
 
 
 /**
@@ -57,7 +34,7 @@ public class TestRestLiParameterAnnotations
     RestLiAnnotationReader.processResource(testClass);
   }
 
-  @Test(dataProvider = "failResourceProvider")
+  @Test(dataProvider = "parameterTypeMismatchDataProvider")
   public void testFailCheckAnnotation(Class<?> testClass)
   {
     try
@@ -71,142 +48,86 @@ public class TestRestLiParameterAnnotations
     }
   }
 
-  @RestLiCollection(name="collectionCollectionSuccessResource")
-  private static class CollectionCollectionSuccessResource extends CollectionResourceTemplate<String, EmptyRecord>
+  @Test (dataProvider = "nonPostOrPutAttachmentsParam")
+  public void nonPostPutAttachmentParamsInvalid(Class<?> testClass)
   {
-
-    @Finder("PagingContextParamFinder")
-    public List<EmptyRecord> PagingContextParamNewTest(@PagingContextParam PagingContext pagingContext)
+    // Non-POST/PUT resource methods cannot declare a desire to receive attachment params.
+    try
     {
-      return Collections.emptyList();
+      RestLiAnnotationReader.processResource(testClass);
+      Assert.fail("Processing " + CollectionFinderAttachmentParams.class.getName() + " should throw " +
+                      ResourceConfigException.class.getName());
     }
-
-    @Finder("PathKeysParamFinder")
-    public List<EmptyRecord> PathKeysParamNewTest(@PathKeysParam PathKeys keys)
+    catch (ResourceConfigException e)
     {
-      return Collections.emptyList();
-    }
-
-    @Finder("ProjectionParamFinder")
-    public List<EmptyRecord> ProjectionParamDeprecatedTest(@ProjectionParam MaskTree projectionParam)
-    {
-      return Collections.emptyList();
-    }
-
-    @Finder("MetadataProjectionParamFinder")
-    public List<EmptyRecord> MetadataProjectionParamNewTest(@MetadataProjectionParam MaskTree metadataProjectionParam)
-    {
-      return Collections.emptyList();
-    }
-
-    @Finder("PagingProjectionParamFinder")
-    public List<EmptyRecord> PagingProjectionParamNewTest(@PagingProjectionParam MaskTree pagingProjectionParam)
-    {
-      return Collections.emptyList();
-    }
-
-    @Finder("ResourceContextParamFinder")
-    public List<EmptyRecord> ResourceContextParamNewTest(@ResourceContextParam ResourceContext resourceContext)
-    {
-      return Collections.emptyList();
-    }
-
-    public Promise<? extends String> ParseqContextParamNewTest(@ParSeqContextParam com.linkedin.parseq.Context parseqContext)
-    {
-      return null;
+      Assert.assertTrue(e.getMessage().contains("is only allowed within the following"));
     }
   }
 
-  @RestLiCollection(name="collectionCollectionPagingContextParamFailureResource")
-  private static class CollectionCollectionPagingContextParamFailureResource extends CollectionResourceTemplate<String, EmptyRecord>
+  @Test
+  public void parametersAreAnnotated()
   {
-    @Finder("PagingContextParamIncorrectDataTypeFinder")
-    public List<EmptyRecord> PagingContextParamIncorrectDataTypeTest(@PagingContextParam String pagingContext)
+    try
     {
-      return Collections.emptyList();
+      RestLiAnnotationReader.processResource(ParamsNotAnnotatedFailureResource.class);
+      Assert.fail("Processing " + ParamsNotAnnotatedFailureResource.class.getName() + " should throw " +
+                      ResourceConfigException.class.getName());
+    }
+    catch (ResourceConfigException e) {
+      Assert.assertTrue(e.getMessage().contains("@ValidateParam"));
     }
   }
 
-  @RestLiCollection(name="collectionCollectionPathKeysFailureResource")
-  private static class CollectionCollectionPathKeysFailureResource extends CollectionResourceTemplate<String, EmptyRecord>
+  @Test
+  public void multipleAttachmentParamsInvalid()
   {
-    @Finder("PathKeysParamIncorrectDataTypeFinder")
-    public List<EmptyRecord> PathKeysParamIncorrectDataTypeTest(@PathKeysParam String keys)
+    try
     {
-      return Collections.emptyList();
+      RestLiAnnotationReader.processResource(CollectionMultipleAttachmentParamsFailureResource.class);
+      Assert.fail("Processing " + CollectionMultipleAttachmentParamsFailureResource.class.getName() + " should throw " +
+                      ResourceConfigException.class.getName());
+    }
+    catch (ResourceConfigException e)
+    {
+      Assert.assertTrue(e.getMessage().contains("is specified more than once"));
     }
   }
 
-  @RestLiCollection(name="collectionCollectionProjectionParamFailureResource")
-  private static class CollectionCollectionProjectionParamFailureResource extends CollectionResourceTemplate<String, EmptyRecord>
+  @DataProvider
+  private static Object[][] nonPostOrPutAttachmentsParam()
   {
-    @Finder("ProjectionParamIncorrectDataTypeFinder")
-    public List<EmptyRecord> ProjectionParamIncorrectDataTypeTest(@ProjectionParam String projectionParam)
-    {
-      return Collections.emptyList();
-    }
-
-    @Finder("MetadataProjectionParamIncorrectDataTypeFinder")
-    public List<EmptyRecord> MetadataProjectionParamIncorrectDataTypeTest(@MetadataProjectionParam String metadataProjectionParam)
-    {
-      return Collections.emptyList();
-    }
-
-    @Finder("PagingProjectionParamIncorrectDataTypeFinder")
-    public List<EmptyRecord> PagingProjectionParamIncorrectDataTypeTest(@PagingProjectionParam String pagingProjectionParam)
-    {
-      return Collections.emptyList();
-    }
-  }
-
-  @RestLiCollection(name="collectionCollectionResourceContextParamFailureResource")
-  private static class CollectionCollectionResourceContextParamFailureResource extends CollectionResourceTemplate<String, EmptyRecord>
-  {
-    @Finder("ResourceContextParamIncorrectDataTypeFinder")
-    public List<EmptyRecord> ResourceContextParamIncorrectDataTypeTest(@ResourceContextParam String resourceContext)
-    {
-      return Collections.emptyList();
-    }
-  }
-
-  @RestLiCollection(name="collectionCollectionParseqContextParamFailureResource")
-  private static class CollectionCollectionParseqContextParamFailureResource extends CollectionResourceTemplate<String, EmptyRecord>
-  {
-    public Promise<? extends String> ParseqContextParamNewTest(@ParSeqContextParam String parseqContext)
-    {
-      return null;
-    }
-  }
-
-  @RestLiAssociation(name="associationCollectionAsyncSuccessResource",
-                     assocKeys={@Key(name="AssocKey_Deprecated", type=String.class),
-                                @Key(name="AssocKeyParam_New", type=String.class)})
-  private static class AssociationCollectionAsyncSuccessResource extends AssociationResourceTemplate<EmptyRecord>
-  {
-    @Finder("assocKeyParamFinder")
-    public List<EmptyRecord> assocKeyParamNewTest(@AssocKeyParam("AssocKeyParam_New") long key)
-    {
-      return Collections.emptyList();
-    }
+    return new Object[][]
+        {
+            { CollectionFinderAttachmentParams.class },
+            { CollectionGetAttachmentParams.class },
+            { CollectionBatchGetAttachmentParams.class },
+            { CollectionDeleteAttachmentParams.class },
+            { CollectionBatchDeleteAttachmentParams.class },
+            { CollectionGetAllAttachmentParams.class }
+        };
   }
 
   @DataProvider
   private static Object[][] successResourceProvider()
   {
-    return new Object[][] {
-      { CollectionCollectionSuccessResource.class },
-      { AssociationCollectionAsyncSuccessResource.class}
+    return new Object[][]
+    {
+      { CollectionSuccessResource.class },
+      { AssociationAsyncSuccessResource.class},
+      { UnstructuredDataParams.class}
     };
   }
 
   @DataProvider
-  private static Object[][] failResourceProvider()
+  private static Object[][] parameterTypeMismatchDataProvider()
   {
-    return new Object[][] {
-      { CollectionCollectionPagingContextParamFailureResource.class },
-      { CollectionCollectionPathKeysFailureResource.class },
-      { CollectionCollectionProjectionParamFailureResource.class },
-      { CollectionCollectionResourceContextParamFailureResource.class }
+    return new Object[][]
+    {
+      { CollectionPagingContextParamFailureResource.class },
+      { CollectionPathKeysFailureResource.class },
+      { CollectionProjectionParamFailureResource.class },
+      { CollectionResourceContextParamFailureResource.class },
+      { CollectionAttachmentParamsFailureResource.class }
     };
   }
 }

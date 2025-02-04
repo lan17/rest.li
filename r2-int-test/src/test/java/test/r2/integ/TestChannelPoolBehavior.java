@@ -8,10 +8,12 @@ import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestRequestBuilder;
 import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.message.rest.RestStatus;
+import com.linkedin.r2.message.stream.StreamException;
 import com.linkedin.r2.message.stream.StreamRequest;
 import com.linkedin.r2.message.stream.StreamRequestBuilder;
 import com.linkedin.r2.message.stream.StreamResponse;
 import com.linkedin.r2.message.stream.StreamResponseBuilder;
+import com.linkedin.r2.message.stream.entitystream.CancelingReader;
 import com.linkedin.r2.message.stream.entitystream.DrainReader;
 import com.linkedin.r2.message.stream.entitystream.EntityStreams;
 import com.linkedin.r2.message.stream.entitystream.ReadHandle;
@@ -28,11 +30,6 @@ import com.linkedin.r2.transport.common.bridge.server.TransportDispatcherBuilder
 import com.linkedin.r2.transport.http.client.HttpClientFactory;
 import com.linkedin.r2.transport.http.server.HttpServer;
 import com.linkedin.r2.transport.http.server.HttpServerFactory;
-import junit.framework.Assert;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
-
 import java.io.IOException;
 import java.net.URI;
 import java.util.HashMap;
@@ -42,6 +39,10 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.junit.Assert;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
 
 /**
  * @author Zhenkai Zhu
@@ -63,7 +64,7 @@ public class TestChannelPoolBehavior
   public void setup() throws IOException
   {
     _scheduler = Executors.newSingleThreadScheduledExecutor();
-    _clientFactory = new HttpClientFactory();
+    _clientFactory = new HttpClientFactory.Builder().build();
     _client1 = new TransportClientAdapter(_clientFactory.getClient(getClientProperties()), true);
     _client2 = new TransportClientAdapter(_clientFactory.getClient(getClientProperties()), true);
     _server = new HttpServerFactory().createServer(PORT, getTransportDispatcher(), true);
@@ -74,14 +75,14 @@ public class TestChannelPoolBehavior
   public void tearDown() throws Exception
   {
 
-    final FutureCallback<None> client1ShutdownCallback = new FutureCallback<None>();
+    final FutureCallback<None> client1ShutdownCallback = new FutureCallback<>();
     _client1.shutdown(client1ShutdownCallback);
     client1ShutdownCallback.get();
-    final FutureCallback<None> client2ShutdownCallback = new FutureCallback<None>();
+    final FutureCallback<None> client2ShutdownCallback = new FutureCallback<>();
     _client2.shutdown(client2ShutdownCallback);
     client2ShutdownCallback.get();
 
-    final FutureCallback<None> factoryShutdownCallback = new FutureCallback<None>();
+    final FutureCallback<None> factoryShutdownCallback = new FutureCallback<>();
     _clientFactory.shutdown(factoryShutdownCallback);
     factoryShutdownCallback.get();
 
@@ -135,12 +136,17 @@ public class TestChannelPoolBehavior
   @Test
   public void testChannelReuse() throws Exception
   {
-    _client2.streamRequest(new StreamRequestBuilder(Bootstrap.createHttpURI(PORT, NOT_FOUND_URI))
-        .build(EntityStreams.newEntityStream(new SlowWriter())), new Callback<StreamResponse>()
+    _client2.streamRequest(new StreamRequestBuilder(Bootstrap.createHttpURI(PORT, NOT_FOUND_URI)).build(
+        EntityStreams.newEntityStream(new SlowWriter())), new Callback<StreamResponse>()
     {
       @Override
       public void onError(Throwable e)
       {
+        if (e instanceof StreamException)
+        {
+          StreamException streamException = (StreamException) e;
+          streamException.getResponse().getEntityStream().setReader(new CancelingReader());
+        }
         throw new RuntimeException(e);
       }
 
@@ -152,14 +158,14 @@ public class TestChannelPoolBehavior
     });
 
     Future<RestResponse> responseFuture = _client2.restRequest(new RestRequestBuilder(Bootstrap.createHttpURI(PORT, NORMAL_URI)).build());
-    RestResponse response = responseFuture.get(WRITER_DELAY * 2 , TimeUnit.MILLISECONDS);
+    RestResponse response = responseFuture.get(WRITER_DELAY * 1000 , TimeUnit.MILLISECONDS);
     Assert.assertEquals(response.getStatus(), RestStatus.OK);
 
   }
 
   private Map<String, String> getClientProperties()
   {
-    Map<String, String> clientProperties = new HashMap<String, String>();
+    Map<String, String> clientProperties = new HashMap<>();
     clientProperties.put(HttpClientFactory.HTTP_POOL_SIZE, "1");
     clientProperties.put(HttpClientFactory.HTTP_POOL_MIN_SIZE, "1");
     return clientProperties;

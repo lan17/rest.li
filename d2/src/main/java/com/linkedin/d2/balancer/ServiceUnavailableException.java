@@ -27,14 +27,15 @@ public class ServiceUnavailableException extends RemoteInvocationException
 
   public ServiceUnavailableException(String serviceName, String reason)
   {
+    super("ServiceUnavailableException [_reason=" + reason + ", _serviceName=" + serviceName + "]");
     _serviceName = serviceName;
     _reason = reason;
   }
 
-  @Override
-  public String toString()
+  public ServiceUnavailableException(String serviceName, String reason, Throwable cause)
   {
-    return "ServiceUnavailableException [_reason=" + _reason + ", _serviceName="
-        + _serviceName + "]";
+    super("ServiceUnavailableException [_reason=" + reason + ", _serviceName=" + serviceName + "]", cause);
+    _serviceName = serviceName;
+    _reason = reason;
   }
 }

@@ -40,7 +40,7 @@ import java.util.List;
  */
 public class BatchCreateHelper
 {
-  public static <K, V extends RecordTemplate> List<CreateIdStatus<K>> batchCreate(RestClient restClient, RootBuilderWrapper<K, V>  builders, List<V> entities)
+  public static <K, V extends RecordTemplate> List<CreateIdStatus<K>> batchCreate(RestClient restClient, RootBuilderWrapper<K, V>  builders, List<V> entities, boolean addParams)
     throws RemoteInvocationException
   {
     RootBuilderWrapper.MethodBuilderWrapper<K, V, CollectionResponse<CreateStatus>> batchCreateWrapper = builders.batchCreate();
@@ -49,12 +49,20 @@ public class BatchCreateHelper
       Object obj = batchCreateWrapper.getBuilder();
       @SuppressWarnings("unchecked")
       BatchCreateIdRequestBuilder<K, V> builder = (BatchCreateIdRequestBuilder<K, V>) obj;
+      if (addParams) {
+        builder.addParam("useless", "param");
+        builder.addParam("foo", 2);
+      }
       return batchCreateNewBuilders(restClient, builder, entities);
     }
     else
     {
       @SuppressWarnings("unchecked")
       BatchCreateRequestBuilder<K, V> builder = (BatchCreateRequestBuilder<K, V>) batchCreateWrapper.getBuilder();
+      if (addParams) {
+        builder.addParam("useless", "param");
+        builder.addParam("foo", 2);
+      }
       return batchCreateOldBuilders(restClient, builder, entities);
     }
   }
@@ -65,7 +73,7 @@ public class BatchCreateHelper
     BatchCreateRequest<V> request = builder.inputs(entities).build();
     Response<CollectionResponse<CreateStatus>> response = restClient.sendRequest(request).getResponse();
     List<CreateStatus> elements = response.getEntity().getElements();
-    List<CreateIdStatus<K>> result = new ArrayList<CreateIdStatus<K>>(elements.size());
+    List<CreateIdStatus<K>> result = new ArrayList<>(elements.size());
     for (CreateStatus status : elements)
     {
       @SuppressWarnings("unchecked")

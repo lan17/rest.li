@@ -63,15 +63,18 @@ public class FileClassNameScanner
       return Collections.emptyMap();
     }
 
-    // suppress the warning because of inconsistent FileUtils interface
-    @SuppressWarnings("unchecked")
-    final Collection<File> files = (Collection<File>) FileUtils.listFiles(dir, null, true);
-    final Map<String, String> classFileNames = new HashMap<String, String>();
+    final Collection<File> files = FileUtils.listFiles(dir, null, true);
+    final Map<String, String> classFileNames = new HashMap<>();
     final int prefixLength = sourceDirWithSeparator.length();
     for (File f : files)
     {
       assert(f.exists() && f.isFile());
 
+      // Ignore hidden dot-files
+      if (f.getName().startsWith("."))
+      {
+        continue;
+      }
       final int extensionIndex = f.getName().lastIndexOf('.');
       final String filePath = f.getPath();
       if (extensionIndex < 0 || !filePath.startsWith(sourceDirWithSeparator))

@@ -21,19 +21,26 @@ import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.common.PatchRequest;
 import com.linkedin.restli.common.validation.CreateOnly;
 import com.linkedin.restli.common.validation.ReadOnly;
+import com.linkedin.restli.examples.greetings.api.Empty;
 import com.linkedin.restli.examples.greetings.api.ValidationDemo;
+import com.linkedin.restli.examples.greetings.api.ValidationDemoCriteria;
 import com.linkedin.restli.examples.greetings.api.myEnum;
 import com.linkedin.restli.examples.greetings.api.myRecord;
 import com.linkedin.restli.server.BatchCreateKVResult;
 import com.linkedin.restli.server.BatchCreateRequest;
+import com.linkedin.restli.server.BatchFinderResult;
 import com.linkedin.restli.server.BatchPatchRequest;
 import com.linkedin.restli.server.BatchResult;
 import com.linkedin.restli.server.BatchUpdateRequest;
 import com.linkedin.restli.server.BatchUpdateResult;
+import com.linkedin.restli.server.CollectionResult;
 import com.linkedin.restli.server.CreateKVResponse;
+import com.linkedin.restli.server.PagingContext;
 import com.linkedin.restli.server.RestLiServiceException;
 import com.linkedin.restli.server.UpdateResponse;
+import com.linkedin.restli.server.annotations.BatchFinder;
 import com.linkedin.restli.server.annotations.Finder;
+import com.linkedin.restli.server.annotations.PagingContextParam;
 import com.linkedin.restli.server.annotations.QueryParam;
 import com.linkedin.restli.server.annotations.RestLiCollection;
 import com.linkedin.restli.server.annotations.RestMethod;
@@ -57,7 +64,7 @@ import java.util.Set;
 @ReadOnly({"stringA", "intA", "UnionFieldWithInlineRecord/com.linkedin.restli.examples.greetings.api.myRecord/foo1",
            "ArrayWithInlineRecord/*/bar1", "validationDemoNext/stringB", "validationDemoNext/UnionFieldWithInlineRecord"})
 @CreateOnly({"stringB", "intB", "UnionFieldWithInlineRecord/com.linkedin.restli.examples.greetings.api.myRecord/foo2",
-             "MapWithTyperefs/*/id"})
+             "MapWithTyperefs/*/id", "ArrayWithInlineRecord/*/bar3"})
 public class AutomaticValidationDemoResource implements KeyValueResource<Integer, ValidationDemo>
 {
   private static ValidationDemo _validReturnEntity;
@@ -85,14 +92,14 @@ public class AutomaticValidationDemoResource implements KeyValueResource<Integer
       // Return valid entity
       returnedEntity = _validReturnEntity;
     }
-    return new CreateKVResponse<Integer, ValidationDemo>(1234, returnedEntity);
+    return new CreateKVResponse<>(1234, returnedEntity);
   }
 
   @RestMethod.BatchCreate
   @ReturnEntity
   public BatchCreateKVResult<Integer, ValidationDemo> batchCreate(final BatchCreateRequest<Integer, ValidationDemo> entities)
   {
-    List<CreateKVResponse<Integer, ValidationDemo>> results = new ArrayList<CreateKVResponse<Integer, ValidationDemo>>();
+    List<CreateKVResponse<Integer, ValidationDemo>> results = new ArrayList<>();
     int id = 0;
     for (ValidationDemo entity : entities.getInput())
     {
@@ -113,10 +120,10 @@ public class AutomaticValidationDemoResource implements KeyValueResource<Integer
       {
         returnEntity = _validReturnEntity;
       }
-      results.add(new CreateKVResponse<Integer, ValidationDemo>(id, returnEntity));
+      results.add(new CreateKVResponse<>(id, returnEntity));
       id++;
     }
-    return new BatchCreateKVResult<Integer, ValidationDemo>(results);
+    return new BatchCreateKVResult<>(results);
   }
 
   @RestMethod.Update
@@ -128,15 +135,15 @@ public class AutomaticValidationDemoResource implements KeyValueResource<Integer
   @RestMethod.BatchUpdate
   public BatchUpdateResult<Integer, ValidationDemo> batchUpdate(final BatchUpdateRequest<Integer, ValidationDemo> entities)
   {
-    Map<Integer, UpdateResponse> results = new HashMap<Integer, UpdateResponse>();
-    Map<Integer, RestLiServiceException> errors = new HashMap<Integer, RestLiServiceException>();
+    Map<Integer, UpdateResponse> results = new HashMap<>();
+    Map<Integer, RestLiServiceException> errors = new HashMap<>();
     for (Map.Entry<Integer, ValidationDemo> entry : entities.getData().entrySet())
     {
       Integer key = entry.getKey();
       ValidationDemo entity = entry.getValue();
       results.put(key, new UpdateResponse(HttpStatus.S_204_NO_CONTENT));
     }
-    return new BatchUpdateResult<Integer, ValidationDemo>(results, errors);
+    return new BatchUpdateResult<>(results, errors);
   }
 
   @RestMethod.PartialUpdate
@@ -148,15 +155,15 @@ public class AutomaticValidationDemoResource implements KeyValueResource<Integer
   @RestMethod.BatchPartialUpdate
   public BatchUpdateResult<Integer, ValidationDemo> batchUpdate(final BatchPatchRequest<Integer, ValidationDemo> entityUpdates)
   {
-    Map<Integer, UpdateResponse> results = new HashMap<Integer, UpdateResponse>();
-    Map<Integer, RestLiServiceException> errors = new HashMap<Integer, RestLiServiceException>();
+    Map<Integer, UpdateResponse> results = new HashMap<>();
+    Map<Integer, RestLiServiceException> errors = new HashMap<>();
     for (Map.Entry<Integer, PatchRequest<ValidationDemo>> entry : entityUpdates.getData().entrySet())
     {
       Integer key = entry.getKey();
       PatchRequest<ValidationDemo> patch = entry.getValue();
       results.put(key, new UpdateResponse(HttpStatus.S_204_NO_CONTENT));
     }
-    return new BatchUpdateResult<Integer, ValidationDemo>(results, errors);
+    return new BatchUpdateResult<>(results, errors);
   }
 
   @RestMethod.Get
@@ -176,8 +183,8 @@ public class AutomaticValidationDemoResource implements KeyValueResource<Integer
   @RestMethod.BatchGet
   public BatchResult<Integer, ValidationDemo> batchGet(Set<Integer> ids)
   {
-    Map<Integer, ValidationDemo> resultMap = new HashMap<Integer, ValidationDemo>();
-    Map<Integer, RestLiServiceException> errorMap = new HashMap<Integer, RestLiServiceException>();
+    Map<Integer, ValidationDemo> resultMap = new HashMap<>();
+    Map<Integer, RestLiServiceException> errorMap = new HashMap<>();
     // Generate entities that are missing a required field
     for (Integer id : ids)
     {
@@ -199,13 +206,13 @@ public class AutomaticValidationDemoResource implements KeyValueResource<Integer
         resultMap.put(id, validationDemo);
       }
     };
-    return new BatchResult<Integer, ValidationDemo>(resultMap, errorMap);
+    return new BatchResult<>(resultMap, errorMap);
   }
 
   @RestMethod.GetAll
   public List<ValidationDemo> getAll()
   {
-    List<ValidationDemo> validationDemos = new ArrayList<ValidationDemo>();
+    List<ValidationDemo> validationDemos = new ArrayList<>();
     // Generate entities with stringA fields that are too long
     for (int i = 0; i < 4; i++)
     {
@@ -224,7 +231,7 @@ public class AutomaticValidationDemoResource implements KeyValueResource<Integer
     {
       throw new RestLiServiceException(HttpStatus.S_400_BAD_REQUEST);
     }
-    List<ValidationDemo> validationDemos = new ArrayList<ValidationDemo>();
+    List<ValidationDemo> validationDemos = new ArrayList<>();
     // Generate entities that are missing stringB fields
     for (int i = 0; i < 3; i++)
     {
@@ -233,5 +240,59 @@ public class AutomaticValidationDemoResource implements KeyValueResource<Integer
       validationDemos.add(new ValidationDemo().setStringA("valueA").setIntA(intA).setUnionFieldWithInlineRecord(union));
     }
     return validationDemos;
+  }
+
+  @BatchFinder(value = "searchValidationDemos", batchParam = "criteria")
+  public BatchFinderResult<ValidationDemoCriteria, ValidationDemo, Empty> searchValidationDemos(@PagingContextParam PagingContext context,
+      @QueryParam("criteria") ValidationDemoCriteria[] criteria)
+  {
+    BatchFinderResult<ValidationDemoCriteria, ValidationDemo, Empty> batchFinderResult = new BatchFinderResult<>();
+
+    for (ValidationDemoCriteria currentCriteria : criteria) {
+      List<ValidationDemo> validationDemos = new ArrayList<>();
+      if (currentCriteria.getIntA() == 1111) {
+        // Generate entities that are missing stringB fields
+        for (int i = 0; i < 3; i++)
+        {
+          ValidationDemo.UnionFieldWithInlineRecord union = new ValidationDemo.UnionFieldWithInlineRecord();
+          union.setMyEnum(myEnum.FOOFOO);
+          validationDemos.add(new ValidationDemo().setStringA("valueA").setIntA(currentCriteria.getIntA()).setUnionFieldWithInlineRecord(union));
+        }
+      } else if (currentCriteria.getIntA() == 2222) {
+        // Generate entities that their stringA field has a value over the length limitation
+        for (int i = 0; i < 3; i++)
+        {
+          ValidationDemo.UnionFieldWithInlineRecord union = new ValidationDemo.UnionFieldWithInlineRecord();
+          union.setMyEnum(myEnum.FOOFOO);
+          validationDemos.add(new ValidationDemo().setStringA("longLengthValueA").setIntA(currentCriteria.getIntA()).setStringB("valueB").setUnionFieldWithInlineRecord(union));
+        }
+      } else if (currentCriteria.getIntA() == 3333) {
+        // Generate entities that have multiple errors
+        // the stringA field has a value over the length limitation and miss stringB fields
+        for (int i = 0; i < 3; i++)
+        {
+          ValidationDemo.UnionFieldWithInlineRecord union = new ValidationDemo.UnionFieldWithInlineRecord();
+          union.setMyEnum(myEnum.FOOFOO);
+          validationDemos.add(new ValidationDemo().setStringA("longLengthValueA").setIntA(currentCriteria.getIntA()).setUnionFieldWithInlineRecord(union));
+        }
+      } else if (currentCriteria.getIntA() == 4444) {
+        // entities without errors
+        for (int i = 0; i < 3; i++)
+        {
+          ValidationDemo.UnionFieldWithInlineRecord union = new ValidationDemo.UnionFieldWithInlineRecord();
+          union.setMyEnum(myEnum.FOOFOO);
+          validationDemos.add(new ValidationDemo().setStringA("valueA").setIntA(currentCriteria.getIntA()).setStringB("valueB").setUnionFieldWithInlineRecord(union));
+        }
+      } else {
+        // on errorResponse
+        batchFinderResult.putError(currentCriteria, new RestLiServiceException(HttpStatus.S_404_NOT_FOUND, "Fail to find Validation Demo!"));
+        continue;
+      }
+
+      CollectionResult<ValidationDemo, Empty> cr = new CollectionResult<>(validationDemos, validationDemos.size());
+      batchFinderResult.putResult(currentCriteria, cr);
+    }
+
+    return batchFinderResult;
   }
 }

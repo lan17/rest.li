@@ -16,18 +16,6 @@
 
 package com.linkedin.data.schema.validator;
 
-
-import java.lang.reflect.Constructor;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.IdentityHashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.NoSuchElementException;
-
 import com.linkedin.data.DataMap;
 import com.linkedin.data.element.DataElement;
 import com.linkedin.data.message.Message;
@@ -38,6 +26,18 @@ import com.linkedin.data.schema.DataSchemaTraverse;
 import com.linkedin.data.schema.NamedDataSchema;
 import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.schema.TyperefDataSchema;
+import com.linkedin.data.schema.UnionDataSchema;
+import java.lang.reflect.Constructor;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.concurrent.ConcurrentHashMap;
 
 
 /**
@@ -168,6 +168,7 @@ import com.linkedin.data.schema.TyperefDataSchema;
 public class DataSchemaAnnotationValidator implements Validator
 {
   public static final String VALIDATE = "validate";
+  public static final String JAVA_PROPERTY = "java";
   public static final String VALIDATOR_PRIORITY = "validatorPriority";
 
   public static final int DEFAULT_VALIDATOR_PRIORITY = 0;
@@ -195,11 +196,16 @@ public class DataSchemaAnnotationValidator implements Validator
     }
   };
 
+  private static final Map<String, Class<? extends Validator>> VALIDATOR_CLASS_CACHE = new ConcurrentHashMap<>();
+
+  // No-op {@link Validator} implementation to denote a negative cache value in {@link #VALIDATOR_CLASS_CACHE}
+  private static final Validator NULL_VALIDATOR = (context) -> {};
+
   private boolean _debugMode = false;
   private DataSchema _schema = DataSchemaConstants.NULL_DATA_SCHEMA;
-  private Map<String, Class<? extends Validator>> _classMap = Collections.emptyMap();
-  private Map<Object, List<Validator>> _cache = Collections.emptyMap();
-  private MessageList<Message> _initMessages = new MessageList<Message>();
+  private Map<String, Class<? extends Validator>> _customValidatorClassMap = Collections.emptyMap();
+  private Map<Object, List<Validator>> _schemaValidators = Collections.emptyMap();
+  private MessageList<Message> _initMessages = new MessageList<>();
 
   private static final List<Validator> NO_VALIDATORS = Collections.emptyList();
 
@@ -273,8 +279,8 @@ public class DataSchemaAnnotationValidator implements Validator
   {
     _initMessages.clear();
     _schema = schema;
-    _classMap = classMap;
-    _cache = cacheValidators(_schema);
+    _customValidatorClassMap = classMap;
+    _schemaValidators = buildSchemaValidators(_schema);
     return isInitOk();
   }
 
@@ -327,9 +333,9 @@ public class DataSchemaAnnotationValidator implements Validator
    * @param schema to cache {@link Validator}s for.
    * @return the cache if successful.
    */
-  private IdentityHashMap<Object, List<Validator>> cacheValidators(DataSchema schema)
+  private IdentityHashMap<Object, List<Validator>> buildSchemaValidators(DataSchema schema)
   {
-    final IdentityHashMap<Object, List<Validator>> map = new IdentityHashMap<Object, List<Validator>>();
+    final IdentityHashMap<Object, List<Validator>> map = new IdentityHashMap<>();
 
     DataSchemaTraverse traverse = new DataSchemaTraverse();
     traverse.traverse(schema, new DataSchemaTraverse.Callback()
@@ -369,6 +375,30 @@ public class DataSchemaAnnotationValidator implements Validator
               map.put(field, validatorList);
             }
           }
+          else if (schema.getType() == DataSchema.Type.UNION)
+          {
+            UnionDataSchema unionDataSchema = (UnionDataSchema) schema;
+            // Only aliased unions can have custom properties (and thus validators).
+            if (unionDataSchema.areMembersAliased())
+            {
+              for (UnionDataSchema.Member member : unionDataSchema.getMembers())
+              {
+                validateObject = member.getProperties().get(VALIDATE);
+                if (validateObject == null)
+                {
+                  validatorList = NO_VALIDATORS;
+                }
+                else
+                {
+                  path.add(member.getAlias());
+                  validatorList = buildValidatorList(validateObject, path, member);
+                  path.remove(path.size() - 1);
+                }
+                map.put(member, validatorList);
+              }
+
+            }
+          }
         }
       }
     });
@@ -399,7 +429,7 @@ public class DataSchemaAnnotationValidator implements Validator
     else
     {
       DataMap validateMap = (DataMap) validateObject;
-      List<ValidatorInfo> validatorInfoList = new ArrayList<ValidatorInfo>(validateMap.size());
+      List<ValidatorInfo> validatorInfoList = new ArrayList<>(validateMap.size());
       for (Map.Entry<String, Object> entry : validateMap.entrySet())
       {
         Object config = entry.getValue();
@@ -419,6 +449,9 @@ public class DataSchemaAnnotationValidator implements Validator
         {
           Constructor<? extends Validator> ctor = clazz.getConstructor(DataMap.class);
           DataMap configDataMap = (DataMap) config;
+          // Marking the config read-only as this is being shared by all validators (across multiple threads).
+          // This also ensures change listeners on the map are not created everytime a validator warps it in a record.
+          configDataMap.makeReadOnly();
           Integer priority = configDataMap.getInteger(VALIDATOR_PRIORITY);
           Validator validator = ctor.newInstance(configDataMap);
           validatorInfoList.add(new ValidatorInfo(priority, validator));
@@ -434,7 +467,7 @@ public class DataSchemaAnnotationValidator implements Validator
         }
       }
       Collections.sort(validatorInfoList, PRIORITY_COMPARATOR);
-      validatorList = new ArrayList<Validator>(validatorInfoList.size());
+      validatorList = new ArrayList<>(validatorInfoList.size());
       for (ValidatorInfo validatorInfo : validatorInfoList)
       {
         validatorList.add(validatorInfo._validator);
@@ -458,38 +491,58 @@ public class DataSchemaAnnotationValidator implements Validator
    */
   protected Class<? extends Validator> locateValidatorClass(String key, List<String> path, Object source)
   {
-    Class<? extends Validator> clazz = _classMap.get(key);
-    if (clazz == null)
+    // Look up the custom class map for the passed in 'key'
+    Class<? extends Validator> clazz = _customValidatorClassMap.get(key);
+    if (clazz != null)
     {
-      Iterator<String> it = validatorClassNamesForKey(key);
-      while (it.hasNext())
+      return clazz;
+    }
+
+    // If we have already seen this key before, use the cached Validator class
+    clazz = VALIDATOR_CLASS_CACHE.get(key);
+    if (clazz != null)
+    {
+      return (NULL_VALIDATOR.getClass().equals(clazz) ? null : clazz);
+    }
+
+    Iterator<String> it = validatorClassNamesForKey(key);
+    while (it.hasNext())
+    {
+      String className = it.next();
+      try
       {
-        String className = it.next();
-        try
+        Class<?> classFromName = Class.forName(className, true, Thread.currentThread().getContextClassLoader());
+        if (Validator.class.isAssignableFrom(classFromName))
         {
-          Class<?> classFromName = Class.forName(className, true, Thread.currentThread().getContextClassLoader());
-          if (Validator.class.isAssignableFrom(classFromName))
-          {
-            @SuppressWarnings("unchecked")
-            Class<? extends Validator> validatorClass = (Class<? extends Validator>) classFromName;
-            clazz = validatorClass;
-            break;
-          }
-          else
-          {
-            addMessage(path,
-                       (className.equals(key) ? true : false),
-                       "\"validate\" property of %1$s, %2$s is not a %3$s",
-                       source,
-                       classFromName.getName(),
-                       Validator.class.getName());
-          }
+          @SuppressWarnings("unchecked")
+          Class<? extends Validator> validatorClass = (Class<? extends Validator>) classFromName;
+          clazz = validatorClass;
+          break;
         }
-        catch (ClassNotFoundException e)
+        else
         {
+          addMessage(path, (className.equals(key) ? true : false),
+              "\"validate\" property of %1$s, %2$s is not a %3$s", source, classFromName.getName(), Validator.class.getName());
         }
       }
+      catch (ClassNotFoundException e)
+      {
+      }
     }
+
+    // Stash the loaded Validator class with the passed in 'key' as the cache key. For keys that didn't map to a valid
+    // Validator class, we stash a negative entry to avoid the costly class loading attempts again. The string 'key' is
+    // used instead of 'className' for the cache key to prevent attempting to load all possible classes for this 'key'
+    // returned from #validatorClassNamesForKey().
+    if (clazz != null)
+    {
+      VALIDATOR_CLASS_CACHE.put(key, clazz);
+    }
+    else
+    {
+      VALIDATOR_CLASS_CACHE.put(key, NULL_VALIDATOR.getClass());
+    }
+
     return clazz;
   }
 
@@ -566,7 +619,7 @@ public class DataSchemaAnnotationValidator implements Validator
 
   private void getAndInvokeValidatorList(ValidatorContext ctx, Object key)
   {
-    List<Validator> validatorList = _cache.get(key);
+    List<Validator> validatorList = _schemaValidators.get(key);
     if (validatorList == null)
     {
       // this means schema or field to be validated has not been cached.
@@ -630,6 +683,18 @@ public class DataSchemaAnnotationValidator implements Validator
           }
         }
       }
+      // check if the value belongs to a member in an aliased union and if the member has
+      // validators.
+      if (parentSchema != null && parentSchema.getType() == DataSchema.Type.UNION)
+      {
+        UnionDataSchema unionDataSchema = (UnionDataSchema) parentSchema;
+        Object name = element.getName();
+        if (unionDataSchema.areMembersAliased() && unionDataSchema.contains((String) name))
+        {
+          UnionDataSchema.Member member = unionDataSchema.getMemberByMemberKey((String) name);
+          getAndInvokeValidatorList(context, member);
+        }
+      }
     }
   }
 
@@ -644,7 +709,7 @@ public class DataSchemaAnnotationValidator implements Validator
       _initMessages.appendTo(sb);
     }
     sb.append("Validators:\n");
-    for (Map.Entry<Object, List<Validator>> e : _cache.entrySet())
+    for (Map.Entry<Object, List<Validator>> e : _schemaValidators.entrySet())
     {
       sb.append("  ");
       Object key = e.getKey();

@@ -1,10 +1,5 @@
 {
   "models" : [ {
-    "type" : "enum",
-    "name" : "Tone",
-    "namespace" : "com.linkedin.restli.examples.greetings.api",
-    "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
-  }, {
     "type" : "record",
     "name" : "Greeting",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -17,25 +12,37 @@
       "type" : "string"
     }, {
       "name" : "tone",
-      "type" : "Tone",
+      "type" : {
+        "type" : "enum",
+        "name" : "Tone",
+        "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
+      },
       "doc" : "tone"
+    }, {
+      "name" : "senders",
+      "type" : {
+        "type" : "array",
+        "items" : "string"
+      },
+      "doc" : "Sender(s) of the message",
+      "optional" : true
     } ]
-  }, {
-    "type" : "typeref",
-    "name" : "DateRef",
-    "namespace" : "com.linkedin.restli.examples.typeref.api",
-    "ref" : "long",
-    "java" : {
-      "coercerClass" : "com.linkedin.restli.examples.custom.types.DateCoercer",
-      "class" : "java.util.Date"
-    }
-  }, {
+  }, "com.linkedin.restli.examples.greetings.api.Tone", {
     "type" : "typeref",
     "name" : "CustomLongRef",
     "namespace" : "com.linkedin.restli.examples.typeref.api",
     "ref" : "long",
     "java" : {
       "class" : "com.linkedin.restli.examples.custom.types.CustomLong"
+    }
+  }, {
+    "type" : "typeref",
+    "name" : "DateRef",
+    "namespace" : "com.linkedin.restli.examples.typeref.api",
+    "ref" : "long",
+    "java" : {
+      "class" : "java.util.Date",
+      "coercerClass" : "com.linkedin.restli.examples.custom.types.DateCoercer"
     }
   } ],
   "schema" : {
@@ -44,6 +51,7 @@
     "path" : "/customTypes3",
     "schema" : "com.linkedin.restli.examples.greetings.api.Greeting",
     "doc" : "generated from: com.linkedin.restli.examples.greetings.server.CustomTypesResource3",
+    "resourceClass" : "com.linkedin.restli.examples.greetings.server.CustomTypesResource3",
     "association" : {
       "identifier" : "customTypes3Id",
       "assocKeys" : [ {
@@ -55,12 +63,15 @@
       } ],
       "supports" : [ "batch_update", "get" ],
       "methods" : [ {
-        "method" : "get"
+        "method" : "get",
+        "javaMethodName" : "get"
       }, {
-        "method" : "batch_update"
+        "method" : "batch_update",
+        "javaMethodName" : "batchUpdate"
       } ],
       "finders" : [ {
         "name" : "dateOnly",
+        "javaMethodName" : "dateOnly",
         "assocKeys" : [ "dateId" ]
       } ],
       "entity" : {

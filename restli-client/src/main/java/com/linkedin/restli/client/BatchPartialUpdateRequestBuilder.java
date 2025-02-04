@@ -21,28 +21,34 @@
 package com.linkedin.restli.client;
 
 
-import com.linkedin.data.DataMap;
 import com.linkedin.data.template.RecordTemplate;
+import com.linkedin.internal.common.util.CollectionUtils;
 import com.linkedin.restli.common.CollectionRequest;
 import com.linkedin.restli.common.KeyValueRecord;
 import com.linkedin.restli.common.KeyValueRecordFactory;
 import com.linkedin.restli.common.PatchRequest;
 import com.linkedin.restli.common.ResourceSpec;
 import com.linkedin.restli.common.TypeSpec;
+import com.linkedin.restli.common.attachments.RestLiAttachmentDataSourceWriter;
+import com.linkedin.restli.common.attachments.RestLiDataSourceIterator;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+
 
 /**
  * @author Josh Walker
  * @version $Revision: $
  */
-
 public class BatchPartialUpdateRequestBuilder<K, V extends RecordTemplate> extends
     BatchKVRequestBuilder<K, V, BatchPartialUpdateRequest<K, V>>
 {
   private final KeyValueRecordFactory<K, PatchRequest<V>> _keyValueRecordFactory;
   private final Map<K, PatchRequest<V>> _partialUpdateInputMap;
+  private List<Object> _streamingAttachments; //We initialize only when we need to.
 
   @SuppressWarnings({"unchecked", "rawtypes"})
   public BatchPartialUpdateRequestBuilder(String baseUriTemplate,
@@ -51,11 +57,11 @@ public class BatchPartialUpdateRequestBuilder<K, V extends RecordTemplate> exten
                                           RestliRequestOptions requestOptions)
   {
     super(baseUriTemplate, resourceSpec, requestOptions);
-    _partialUpdateInputMap = new HashMap<K, PatchRequest<V>>();
+    _partialUpdateInputMap = new HashMap<>();
     _keyValueRecordFactory = new KeyValueRecordFactory(_resourceSpec.getKeyType(),
                                     _resourceSpec.getComplexKeyType(),
                                     _resourceSpec.getKeyParts(),
-                                    new TypeSpec<PatchRequest>(PatchRequest.class));
+                                    new TypeSpec<>(PatchRequest.class));
   }
 
   public BatchPartialUpdateRequestBuilder<K, V> input(K id, PatchRequest<V> patch)
@@ -74,6 +80,28 @@ public class BatchPartialUpdateRequestBuilder<K, V extends RecordTemplate> exten
       PatchRequest<V> value = entry.getValue();
       _partialUpdateInputMap.put(key, value);
     }
+    return this;
+  }
+
+  public BatchPartialUpdateRequestBuilder<K, V> appendSingleAttachment(final RestLiAttachmentDataSourceWriter streamingAttachment)
+  {
+    if (_streamingAttachments == null)
+    {
+      _streamingAttachments = new ArrayList<>();
+    }
+
+    _streamingAttachments.add(streamingAttachment);
+    return this;
+  }
+
+  public BatchPartialUpdateRequestBuilder<K, V> appendMultipleAttachments(final RestLiDataSourceIterator dataSourceIterator)
+  {
+    if (_streamingAttachments == null)
+    {
+      _streamingAttachments = new ArrayList<>();
+    }
+
+    _streamingAttachments.add(dataSourceIterator);
     return this;
   }
 
@@ -138,40 +166,20 @@ public class BatchPartialUpdateRequestBuilder<K, V extends RecordTemplate> exten
   {
     ensureBatchKeys();
 
-    return new BatchPartialUpdateRequest<K, V>(buildReadOnlyHeaders(),
-                                               buildReadOnlyCookies(),
-                                               buildReadOnlyInput(),
-                                               buildReadOnlyQueryParameters(),
-                                               getQueryParamClasses(),
-                                               _resourceSpec,
-                                               getBaseUriTemplate(),
-                                               buildReadOnlyPathKeys(),
-                                               getRequestOptions());
-  }
+    Map<K, PatchRequest<V>> readOnlyPartialUpdateInputMap = new HashMap<>(
+            CollectionUtils.getMapInitialCapacity(_partialUpdateInputMap.size(), 0.75f), 0.75f);
+    CollectionRequest<KeyValueRecord<K, PatchRequest<V>>> readOnlyInput = buildReadOnlyInput(readOnlyPartialUpdateInputMap, _partialUpdateInputMap, _keyValueRecordFactory);
 
-  private CollectionRequest<KeyValueRecord<K, PatchRequest<V>>> buildReadOnlyInput()
-  {
-    try
-    {
-      DataMap map = new DataMap();
-      @SuppressWarnings({ "unchecked", "rawtypes" })
-      CollectionRequest<KeyValueRecord<K, PatchRequest<V>>> input = new CollectionRequest(map, KeyValueRecord.class);
-
-      for (Map.Entry<K, PatchRequest<V>> inputEntityEntry : _partialUpdateInputMap.entrySet())
-      {
-        K key = getReadOnlyOrCopyKey(inputEntityEntry.getKey());
-        PatchRequest<V> entity = getReadOnlyOrCopyDataTemplate(inputEntityEntry.getValue());
-        KeyValueRecord<K, PatchRequest<V>> keyValueRecord = _keyValueRecordFactory.create(key, entity);
-        keyValueRecord.data().setReadOnly();
-        input.getElements().add(keyValueRecord);
-      }
-
-      map.setReadOnly();
-      return input;
-    }
-    catch (CloneNotSupportedException cloneException)
-    {
-      throw new IllegalArgumentException("Entity cannot be copied.", cloneException);
-    }
+    return new BatchPartialUpdateRequest<>(buildReadOnlyHeaders(),
+                                           buildReadOnlyCookies(),
+                                           readOnlyInput,
+                                           buildReadOnlyQueryParameters(),
+                                           getQueryParamClasses(),
+                                           _resourceSpec,
+                                           getBaseUriTemplate(),
+                                           buildReadOnlyPathKeys(),
+                                           getRequestOptions(),
+                                           readOnlyPartialUpdateInputMap,
+                                           _streamingAttachments == null ? null : Collections.unmodifiableList(_streamingAttachments));
   }
 }

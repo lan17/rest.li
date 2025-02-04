@@ -53,7 +53,6 @@ public class MockSuccessfulResponseFutureBuilder<K, V extends RecordTemplate> ex
    * Set the entity. This is the object that will be returned by {@link com.linkedin.restli.client.Response#getEntity()}
    *
    * @param entity the entity to set
-   * @return
    */
   @Override
   public MockSuccessfulResponseFutureBuilder<K, V> setEntity(V entity)
@@ -69,7 +68,6 @@ public class MockSuccessfulResponseFutureBuilder<K, V extends RecordTemplate> ex
    * An {@link IllegalArgumentException} is thrown if the status is not in the range [200, 300).
    *
    * @param status the HTTP status we want to set
-   * @return
    */
   @Override
   public MockSuccessfulResponseFutureBuilder<K, V> setStatus(int status)
@@ -86,7 +84,6 @@ public class MockSuccessfulResponseFutureBuilder<K, V extends RecordTemplate> ex
    * Sets the headers. This will be returned by {@link com.linkedin.restli.client.Response#getHeaders()}
    *
    * @param headers the headers we want to set
-   * @return
    */
   @Override
   public MockSuccessfulResponseFutureBuilder<K, V> setHeaders(Map<String, String> headers)
@@ -106,7 +103,6 @@ public class MockSuccessfulResponseFutureBuilder<K, V extends RecordTemplate> ex
    * Set the {@link ProtocolVersion}
    *
    * @param protocolVersion the {@link ProtocolVersion} to set
-   * @return
    */
   @Override
   public MockSuccessfulResponseFutureBuilder<K, V> setProtocolVersion(ProtocolVersion protocolVersion)
@@ -124,7 +120,7 @@ public class MockSuccessfulResponseFutureBuilder<K, V extends RecordTemplate> ex
   @Override
   public ResponseFuture<V> build()
   {
-    MockResponseBuilder<K, V> responseBuilder = new MockResponseBuilder<K, V>();
+    MockResponseBuilder<K, V> responseBuilder = new MockResponseBuilder<>();
     Response<V> response = responseBuilder
         .setEntity(getEntity())
         .setStatus(getStatus())
@@ -133,6 +129,6 @@ public class MockSuccessfulResponseFutureBuilder<K, V extends RecordTemplate> ex
         .setProtocolVersion(getProtocolVersion())
         .build();
 
-    return new ResponseFutureImpl<V>(buildFuture(response, null));
+    return new ResponseFutureImpl<>(buildFuture(response, null));
   }
 }

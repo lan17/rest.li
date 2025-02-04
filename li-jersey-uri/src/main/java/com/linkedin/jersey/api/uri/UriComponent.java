@@ -62,6 +62,7 @@
  *   Removed dependency on javax.ws.rs interfaces
  *   Added JavaDoc documentation to conform to Pegasus style guidelines
  *   Remove special-case encoding of ' ' in query params
+ *   Updated _encode() and appendPercentEncodedOctet() methods to handle surrogate pairs
  */
 
 package com.linkedin.jersey.api.uri;
@@ -72,12 +73,16 @@ import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.ByteBuffer;
+import java.nio.Buffer;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Objects;
+import java.util.StringJoiner;
+
 
 /**
  * Utility class for validating, encoding and decoding components
@@ -296,39 +301,56 @@ public class UriComponent {
         return s;
     }
 
-    private static String _encode(String s, Type t, boolean template, boolean contextualEncode) {
+    private static String _encode(final String s, final Type t, final boolean template, final boolean contextualEncode) {
         final boolean[] table = ENCODING_TABLES[t.ordinal()];
+        boolean insideTemplateParam = false;
 
         StringBuilder sb = null;
-        for (int i = 0; i < s.length(); i++) {
-            final char c = s.charAt(i);
-            if (c < 0x80 && table[c]) {
-                if (sb != null) sb.append(c);
+        for (int offset = 0, codePoint; offset < s.length(); offset += Character.charCount(codePoint)) {
+            codePoint = s.codePointAt(offset);
+
+            if (codePoint < 0x80 && table[codePoint]) {
+                if (sb != null) {
+                    sb.append((char) codePoint);
+                }
             } else {
-                if (template && (c == '{' || c == '}')) {
-                    if (sb != null) sb.append(c);
-                    continue;
-                } else if (contextualEncode) {
-                    if (c == '%' && i + 2 < s.length()) {
-                        if (isHexCharacter(s.charAt(i + 1)) &&
-                                isHexCharacter(s.charAt(i + 2))) {
-                            if (sb != null)
-                                sb.append('%').append(s.charAt(i + 1)).append(s.charAt(i + 2));
-                            i += 2;
-                            continue;
-                        }
+                if (template) {
+                    boolean leavingTemplateParam = false;
+                    if (codePoint == '{') {
+                        insideTemplateParam = true;
+                    } else if (codePoint == '}') {
+                        insideTemplateParam = false;
+                        leavingTemplateParam = true;
                     }
+                    if (insideTemplateParam || leavingTemplateParam) {
+                        if (sb != null) {
+                            sb.append(Character.toChars(codePoint));
+                        }
+                        continue;
+                    }
+                }
+
+                if (contextualEncode
+                    && codePoint == '%'
+                    && offset + 2 < s.length()
+                    && isHexCharacter(s.charAt(offset + 1))
+                    && isHexCharacter(s.charAt(offset + 2))) {
+                    if (sb != null) {
+                        sb.append('%').append(s.charAt(offset + 1)).append(s.charAt(offset + 2));
+                    }
+                    offset += 2;
+                    continue;
                 }
 
                 if (sb == null) {
                     sb = new StringBuilder();
-                    sb.append(s.substring(0, i));
+                    sb.append(s.substring(0, offset));
                 }
 
-                if (c < 0x80) {
-                    appendPercentEncodedOctet(sb, c);
+                if (codePoint < 0x80) {
+                    appendPercentEncodedOctet(sb, (char) codePoint);
                 } else {
-                    appendUTF8EncodedCharacter(sb, c);
+                    appendUTF8EncodedCharacter(sb, codePoint);
                 }
             }
         }
@@ -346,13 +368,15 @@ public class UriComponent {
         sb.append(HEX_DIGITS[b & 0x0F]);
     }
 
-    private static void appendUTF8EncodedCharacter(StringBuilder sb, char c) {
-        final ByteBuffer bb = UTF_8_CHARSET.encode("" + c);
+    private static void appendUTF8EncodedCharacter(final StringBuilder sb, final int codePoint) {
+        final CharBuffer chars = CharBuffer.wrap(Character.toChars(codePoint));
+        final ByteBuffer bytes = UTF_8_CHARSET.encode(chars);
 
-        while (bb.hasRemaining()) {
-            appendPercentEncodedOctet(sb, bb.get() & 0xFF);
+        while (bytes.hasRemaining()) {
+            appendPercentEncodedOctet(sb, bytes.get() & 0xFF);
         }
     }
+
     private static final String[] SCHEME = {"0-9", "A-Z", "a-z", "+", "-", "."};
     private static final String[] UNRESERVED = {"0-9", "A-Z", "a-z", "-", ".", "_", "~"};
     private static final String[] SUB_DELIMS = {"!", "$", "&", "'", "(", ")", "*", "+", ",", ";", "="};
@@ -361,7 +385,7 @@ public class UriComponent {
     private static boolean[][] creatingEncodingTables() {
         boolean[][] tables = new boolean[Type.values().length][];
 
-        List<String> l = new ArrayList<String>();
+        List<String> l = new ArrayList<>();
         l.addAll(Arrays.asList(SCHEME));
         tables[Type.SCHEME.ordinal()] = creatingEncodingTable(l);
 
@@ -583,6 +607,30 @@ public class UriComponent {
         public MultivaluedMap getMatrixParameters() {
             return matrixParameters;
         }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            PathSegment that = (PathSegment) o;
+            return Objects.equals(path, that.path) && Objects.equals(matrixParameters, that.matrixParameters);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(path, matrixParameters);
+        }
+
+        @Override
+        public String toString() {
+            return new StringJoiner(", ", PathSegment.class.getSimpleName() + "[", "]").add("path='" + path + "'")
+                .add("matrixParameters=" + matrixParameters)
+                .toString();
+        }
     }
 
     /**
@@ -619,7 +667,7 @@ public class UriComponent {
      * @return the list of path segments.
      */
     public static List<PathSegment> decodePath(String path, boolean decode) {
-        List<PathSegment> segments = new LinkedList<PathSegment>();
+        List<PathSegment> segments = new LinkedList<>();
 
         if (path == null) {
             return segments;
@@ -784,7 +832,9 @@ public class UriComponent {
         if (bb == null)
             bb = ByteBuffer.allocate(1);
         else
-            bb.clear();
+            // Fix java.lang.NoSuchMethodError: java.nio.ByteBuffer.clear()Ljava/nio/ByteBuffer based on the suggestions from
+            // https://stackoverflow.com/questions/61267495/exception-in-thread-main-java-lang-nosuchmethoderror-java-nio-bytebuffer-flip
+            ((Buffer)bb).clear();
 
         while (true) {
             // Decode the hex digits
@@ -802,7 +852,9 @@ public class UriComponent {
 
             // Check if the byte buffer needs to be increased in size
             if (bb.position() == bb.capacity()) {
-                bb.flip();
+                // Fix java.lang.NoSuchMethodError: java.nio.ByteBuffer.flip()Ljava/nio/ByteBuffer based on the suggestions from
+                // https://stackoverflow.com/questions/61267495/exception-in-thread-main-java-lang-nosuchmethoderror-java-nio-bytebuffer-flip
+                ((Buffer)bb).flip();
                 // Create a new byte buffer with the maximum number of possible
                 // octets, hence resize should only occur once
                 ByteBuffer bb_new = ByteBuffer.allocate(s.length() / 3);
@@ -810,8 +862,9 @@ public class UriComponent {
                 bb = bb_new;
             }
         }
-
-        bb.flip();
+        // Fix java.lang.NoSuchMethodError: java.nio.ByteBuffer.flip()Ljava/nio/ByteBuffer based on the suggestions from
+        // https://stackoverflow.com/questions/61267495/exception-in-thread-main-java-lang-nosuchmethoderror-java-nio-bytebuffer-flip
+        ((Buffer)bb).flip();
         return bb;
     }
 

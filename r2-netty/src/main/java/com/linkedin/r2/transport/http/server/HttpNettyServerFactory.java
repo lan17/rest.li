@@ -28,7 +28,10 @@ import com.linkedin.r2.transport.common.bridge.server.TransportDispatcher;
  * @author Chris Pettitt
  * @author Joe Betz
  * @version $Revision$
+ *
+ * @deprecated Use {@link HttpNettyServerBuilder} instead.
  */
+@Deprecated
 public class HttpNettyServerFactory
 {
   public static final int DEFAULT_THREAD_POOL_SIZE = 256;
@@ -52,7 +55,7 @@ public class HttpNettyServerFactory
   public HttpServer createServer(int port, int threadPoolSize, TransportDispatcher transportDispatcher)
   {
     final TransportDispatcher filterDispatcher = new FilterChainDispatcher(transportDispatcher, _filters);
-    final HttpDispatcher dispatcher = new HttpDispatcher(filterDispatcher);
+    final HttpDispatcher dispatcher = HttpDispatcherFactory.create((filterDispatcher));
     return new HttpNettyServer(port, threadPoolSize, dispatcher);
   }
 }

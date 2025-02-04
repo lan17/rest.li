@@ -24,8 +24,14 @@ import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.DataSchemaResolver;
 import com.linkedin.data.schema.DataSchemaUtil;
 import com.linkedin.data.schema.NamedDataSchema;
-import com.linkedin.data.schema.SchemaParserFactory;
+import com.linkedin.data.schema.SchemaFormatType;
 import com.linkedin.data.schema.PegasusSchemaParser;
+import com.linkedin.data.schema.validation.CoercionMode;
+import com.linkedin.data.schema.validation.RequiredMode;
+import com.linkedin.data.schema.validation.UnrecognizedFieldMode;
+import com.linkedin.data.schema.validation.ValidationOptions;
+import com.linkedin.data.schema.validation.ValidationResult;
+import com.linkedin.data.schema.validation.ValidateDataAgainstSchema;
 
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
@@ -37,6 +43,8 @@ import java.lang.reflect.InvocationTargetException;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class DataTemplateUtil
 {
@@ -45,9 +53,33 @@ public class DataTemplateUtil
   public static final String UNKNOWN_ENUM = "$UNKNOWN";
   public static final PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out));
   private static final boolean debug = false;
+  // Cache to speed up data schema retrieval
+  private static final Map<Class<?>, DataSchema> _classToSchemaMap = new ConcurrentHashMap<>();
 
   private DataTemplateUtil()
   {
+  }
+
+  /**
+   * Cast the given value to the given class. If the cast fails, throw a {@link TemplateOutputCastException}. If the
+   * input is null, this method returns null.
+   *
+   * @param value   The given value.
+   * @param klass   The target class to cast to.
+   * @param <E>     The type of the object we want to cast to.
+   *
+   * @return The cast object.
+   */
+  public static <E> E castOrThrow(Object value, Class<E> klass)
+  {
+    try
+    {
+      return value == null ? null : klass.cast(value);
+    }
+    catch (ClassCastException e)
+    {
+      throw new TemplateOutputCastException("Cannot coerce " + value + " to desired class " + klass, e);
+    }
   }
 
   /**
@@ -272,6 +304,8 @@ public class DataTemplateUtil
   /**
    * Parse data schema in JSON format to obtain a {@link DataSchema}.
    *
+   * TODO: deprecate this later, since current use cases still use this in generated data templates.
+   *
    * @param schemaText provides the data schema in JSON format.
    * @return the {@link DataSchema} parsed from the data schema in JSON format.
    * @throws IllegalArgumentException if the data schema in JSON format is invalid or
@@ -279,7 +313,7 @@ public class DataTemplateUtil
    */
   public static DataSchema parseSchema(String schemaText) throws IllegalArgumentException
   {
-    return parseSchema(schemaText, null);
+    return parseSchema(schemaText, null, SchemaFormatType.PDSC);
   }
 
   /**
@@ -290,10 +324,42 @@ public class DataTemplateUtil
    * @return the {@link DataSchema} parsed from the data schema in JSON format.
    * @throws IllegalArgumentException if the data schema in JSON format is invalid or
    *                                  there is more than one top level schema.
+   * @deprecated This method assumes the data schema is encoded in {@link SchemaFormatType#PDSC},
+   *             use {@link #parseSchema(String, DataSchemaResolver, SchemaFormatType)} instead.
    */
+  @Deprecated
   public static DataSchema parseSchema(String schemaText, DataSchemaResolver schemaResolver) throws IllegalArgumentException
   {
-    PegasusSchemaParser parser = SchemaParserFactory.instance().create(schemaResolver);
+    return parseSchema(schemaText, schemaResolver, SchemaFormatType.PDSC);
+  }
+
+  /**
+   * Parse data schema encoded in any format to obtain a {@link DataSchema}.
+   *
+   * @param schemaText the encoded data schema.
+   * @param schemaFormatType the format in which the schema is encoded.
+   * @return the {@link DataSchema} parsed from the encoded data schema.
+   * @throws IllegalArgumentException if the encoded data schema is invalid or there is more than one top-level schema.
+   */
+  public static DataSchema parseSchema(String schemaText, SchemaFormatType schemaFormatType) throws IllegalArgumentException
+  {
+    return parseSchema(schemaText, null, schemaFormatType);
+  }
+
+  /**
+   * Parse data schema encoded in any format to obtain a {@link DataSchema}.
+   *
+   * @param schemaText the encoded data schema.
+   * @param schemaFormatType the format in which the schema is encoded.
+   * @param schemaResolver resolver for resolving referenced schemas.
+   * @return the {@link DataSchema} parsed from the encoded data schema.
+   * @throws IllegalArgumentException if the encoded data schema is invalid or there is more than one top-level schema.
+   */
+  public static DataSchema parseSchema(String schemaText, DataSchemaResolver schemaResolver,
+      SchemaFormatType schemaFormatType) throws IllegalArgumentException
+  {
+    final PegasusSchemaParser parser = schemaFormatType.getSchemaParserFactory().create(schemaResolver);
+
     parser.parse(schemaText);
     if (parser.hasError())
     {
@@ -305,7 +371,7 @@ public class DataTemplateUtil
     }
     if (parser.topLevelDataSchemas().size() != 1)
     {
-      throw new IllegalArgumentException("More than one top level schemas");
+      throw new IllegalArgumentException("More than one top level schema");
     }
 
     return parser.topLevelDataSchemas().get(0);
@@ -350,39 +416,82 @@ public class DataTemplateUtil
   }
 
   /**
-   * Gets the data schema for a given java type.
+   * @return The class for the raw in-memory representation for objects of the given schema.
+   */
+  public static Class<?> getDataClass(DataSchema schema)
+  {
+    DataSchema.Type type = Optional.ofNullable(schema.getDereferencedType()).orElse(DataSchema.Type.NULL);
+    switch (type)
+    {
+      case ENUM:
+      case STRING:
+        return String.class;
+      case MAP:
+      case UNION:
+      case RECORD:
+        return DataMap.class;
+      case ARRAY:
+        return DataList.class;
+      case BYTES:
+      case FIXED:
+        return ByteString.class;
+      case INT:
+        return Integer.class;
+      case LONG:
+        return Long.class;
+      case FLOAT:
+        return Float.class;
+      case DOUBLE:
+        return Double.class;
+      case BOOLEAN:
+        return Boolean.class;
+      default:
+        return Object.class;
+    }
+  }
+
+  /**
+   * Gets the data schema for a given java type. We will first get cached data schema for the given type if it has already
+   * been accessed before, otherwise we will use reflection to retrieve its data schema and cache it for later use.
    *
    * @param type to get a schema for. Has to be primitive or a generated data template.
    * @throws TemplateRuntimeException if the {@link DataSchema} for the specified type cannot be provided.
    */
   public static DataSchema getSchema(Class<?> type) throws TemplateRuntimeException
   {
+    // primitive type has already been cached in a static map
     final DataSchema primitiveSchema = DataSchemaUtil.classToPrimitiveDataSchema(type);
     if (primitiveSchema != null)
     {
       return primitiveSchema;
     }
 
-    try
+    // complex type
+    // NOTE: due to a non-optimized implementation of ConcurrentHashMap.computeIfAbsent in Java 8
+    // (https://bugs.openjdk.java.net/browse/JDK-8161372), we are doing a pre-screen here before calling
+    // computeIfAbsent to avoid pessimistic locking in case of key present. This tradeoff
+    // (http://cs.oswego.edu/pipermail/concurrency-interest/2014-December/013360.html) can be removed
+    // when we upgrade to Java 9 when this concurrent issue is improved.
+    DataSchema typeSchema = _classToSchemaMap.get(type);
+    return (typeSchema != null) ? typeSchema : _classToSchemaMap.computeIfAbsent(type, key ->
     {
-      Field schemaField = type.getDeclaredField(SCHEMA_FIELD_NAME);
-      schemaField.setAccessible(true);
-      DataSchema schema = (DataSchema) schemaField.get(null);
-      if (schema == null)
+      try
       {
-        throw new TemplateRuntimeException("Schema field is not set in class: " + type.getName());
-      }
+        Field schemaField = type.getDeclaredField(SCHEMA_FIELD_NAME);
+        schemaField.setAccessible(true);
+        DataSchema schema = (DataSchema) schemaField.get(null);
+        if (schema == null)
+        {
+          throw new TemplateRuntimeException("Schema field is not set in class: " + type.getName());
+        }
 
-      return schema;
-    }
-    catch (IllegalAccessException e)
-    {
-      throw new TemplateRuntimeException("Error accessing schema field in class: " + type.getName(), e);
-    }
-    catch (NoSuchFieldException e)
-    {
-      throw new TemplateRuntimeException("Error accessing schema field in class: " + type.getName(), e);
-    }
+        return schema;
+      }
+      catch (IllegalAccessException | NoSuchFieldException e)
+      {
+        throw new TemplateRuntimeException("Error accessing schema field in class: " + type.getName(), e);
+      }
+    });
   }
 
   /**
@@ -430,7 +539,11 @@ public class DataTemplateUtil
     @Override
     public Object coerceInput(T object) throws ClassCastException
     {
-      if (object instanceof Number)
+      if (object.getClass() == _targetClass)
+      {
+        return object;
+      }
+      else if (object instanceof Number)
       {
         return coerce(object);
       }
@@ -441,16 +554,54 @@ public class DataTemplateUtil
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public T coerceOutput(Object object) throws TemplateOutputCastException
     {
-      if (object instanceof Number)
+      if (object.getClass() == _targetClass)
+      {
+        return (T) object;
+      }
+      else if (object instanceof Number)
       {
         return coerce(object);
       }
+      else if (object instanceof String && isStringAllowed())
+      {
+        return coerceString((String) object);
+      }
       else
       {
-        throw new TemplateOutputCastException("Output " + object + " has type " + object.getClass().getName() + ", but expected type is " + Number.class.getName());
+        throw new TemplateOutputCastException("Output " + object + " has type " + object.getClass().getName() + ", but expected type is " + _targetClass.getName());
       }
+    }
+
+    /**
+     * Indicates if this coercer accepts String values.
+     * @return false, as default value.
+     */
+    protected boolean isStringAllowed()
+    {
+      return false;
+    }
+
+    /**
+     * Checks if the input string is non-numeric string : NaN, Infinity or -Infinity.
+     * @param object, input string.
+     * @return true, if the input string is non-numeric string.
+     */
+    protected Boolean isNonNumericFloat(String object)
+    {
+      return object.equals(String.valueOf(Float.NaN)) || object.equals(String.valueOf(Float.POSITIVE_INFINITY)) || object.equals(String.valueOf(Float.NEGATIVE_INFINITY));
+    }
+
+    protected TemplateOutputCastException generateExceptionForInvalidString(String object)
+    {
+      return new TemplateOutputCastException("Cannot coerce String value : " + object +  " to type : " + _targetClass.getName());
+    }
+
+    protected T coerceString(String object)
+    {
+      throw new UnsupportedOperationException("Only supported for floating-point number coercers");
     }
 
     protected abstract T coerce(Object object);
@@ -520,6 +671,10 @@ public class DataTemplateUtil
     @Override
     public ByteString coerceOutput(Object object) throws TemplateOutputCastException
     {
+      if (object instanceof ByteString)
+      {
+        return (ByteString) object;
+      }
       if (object.getClass() == String.class)
       {
         String input = (String) object;
@@ -577,6 +732,25 @@ public class DataTemplateUtil
     {
       return ((Number) object).floatValue();
     }
+
+    @Override
+    protected Float coerceString(String object)
+    {
+      if(isNonNumericFloat(object))
+      {
+        return Float.valueOf(object);
+      }
+      else
+      {
+        throw generateExceptionForInvalidString(object);
+      }
+    }
+
+    @Override
+    protected boolean isStringAllowed()
+    {
+      return true;
+    }
   }
 
   private static class DoubleCoercer extends NumberCoercer<Double>
@@ -590,6 +764,25 @@ public class DataTemplateUtil
     protected Double coerce(Object object)
     {
       return ((Number) object).doubleValue();
+    }
+
+    @Override
+    protected Double coerceString(String object)
+    {
+      if(isNonNumericFloat(object))
+      {
+        return Double.valueOf(object);
+      }
+      else
+      {
+        throw generateExceptionForInvalidString(object);
+      }
+    }
+
+    @Override
+    protected boolean isStringAllowed()
+    {
+      return true;
     }
   }
 
@@ -605,7 +798,7 @@ public class DataTemplateUtil
 
   static
   {
-    IdentityHashMap<Class<?>, DirectCoercer<?>> map = new IdentityHashMap<Class<?>, DirectCoercer<?>>();
+    IdentityHashMap<Class<?>, DirectCoercer<?>> map = new IdentityHashMap<>();
     map.put(Integer.TYPE, INTEGER_COERCER);
     map.put(Integer.class, INTEGER_COERCER);
     map.put(Long.TYPE, LONG_COERCER);
@@ -656,7 +849,7 @@ public class DataTemplateUtil
           throw new IllegalArgumentException(targetClass.getName() + " already has a coercer");
         }
       }
-      Map<Class<?>, DirectCoercer<?>> newMap = new IdentityHashMap<Class<?>, DirectCoercer<?>>(_classToCoercerMap);
+      Map<Class<?>, DirectCoercer<?>> newMap = new IdentityHashMap<>(_classToCoercerMap);
       newMap.put(targetClass, coercer);
       _classToCoercerMap = Collections.unmodifiableMap(newMap);
     }
@@ -710,14 +903,46 @@ public class DataTemplateUtil
       if (fromClass.isEnum())
         return object.toString();
     }
-    @SuppressWarnings("unchecked") DirectCoercer<T> coercer = (DirectCoercer<T>) _classToCoercerMap.get(fromClass);
+
+    return coerceCustomInput(object, fromClass);
+  }
+
+  public static Object coerceIntInput(Integer value)
+  {
+    return value;
+  }
+
+  public static Object coerceLongInput(Long value)
+  {
+    return value;
+  }
+
+  public static Object coerceFloatInput(Float value)
+  {
+    return value;
+  }
+
+  public static Object coerceDoubleInput(Double value)
+  {
+    return value;
+  }
+
+  public static <C> Object coerceCustomInput(C value, Class<C> customClass)
+  {
+    if (value == null)
+    {
+      return null;
+    }
+
+    @SuppressWarnings("unchecked") DirectCoercer<C> coercer = (DirectCoercer<C>) _classToCoercerMap.get(customClass);
     if (coercer == null)
     {
-      throw new ClassCastException("Input " + object + " has type " + fromClass.getName() + ", but does not have a registered coercer");
+      throw new ClassCastException("Input " + value + " has type " + value.getClass().getName() + ", but does not have a registered coercer");
+
     }
     else
     {
-      return coercer.coerceInput(object);
+      return coercer.coerceInput(value);
     }
   }
 
@@ -822,14 +1047,83 @@ public class DataTemplateUtil
       }
       throw new TemplateOutputCastException("Output " + object + " has type " + object.getClass().getName() + ", and cannot be coerced to enum type " + targetClass.getName());
     }
-    DirectCoercer<?> coercer = _classToCoercerMap.get(targetClass);
+
+    return coerceCustomOutput(object, targetClass);
+  }
+
+  public static Integer coerceIntOutput(Object value)
+  {
+    return value == null ? null : INTEGER_COERCER.coerceOutput(value);
+  }
+
+  public static Long coerceLongOutput(Object value)
+  {
+    return value == null ? null : LONG_COERCER.coerceOutput(value);
+  }
+
+  public static Float coerceFloatOutput(Object value)
+  {
+    return value == null ? null : FLOAT_COERCER.coerceOutput(value);
+  }
+
+  public static Double coerceDoubleOutput(Object value)
+  {
+    return value == null ? null : DOUBLE_COERCER.coerceOutput(value);
+  }
+
+  public static ByteString coerceBytesOutput(Object value)
+  {
+    return value == null ? null : BYTES_COERCER.coerceOutput(value);
+  }
+
+  public static Boolean coerceBooleanOutput(Object value)
+  {
+    return value == null ? null : BOOLEAN_COERCER.coerceOutput(value);
+  }
+
+  public static String coerceStringOutput(Object value)
+  {
+    return value == null ? null : STRING_COERCER.coerceOutput(value);
+  }
+
+  public static <E extends Enum<E>> E coerceEnumOutput(Object value, Class<E> targetClass, E fallback)
+  {
+    if (value == null)
+    {
+      return null;
+    }
+
+    if (value instanceof String)
+    {
+      try
+      {
+        return Enum.valueOf(targetClass, (String) value);
+      }
+      catch (IllegalArgumentException e)
+      {
+        return fallback;
+      }
+    }
+    throw new TemplateOutputCastException("Output " + value + " has type " + value.getClass().getName() + ", and cannot be coerced to enum type " + targetClass.getName());
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <C> C coerceCustomOutput(Object value, Class<C> customClass)
+  {
+    if (value == null)
+    {
+      return null;
+    }
+
+    DirectCoercer<?> coercer = _classToCoercerMap.get(customClass);
     if (coercer == null)
     {
-      throw new TemplateOutputCastException("Output " + object + " has type " + object.getClass().getName() + ", but does not have a registered coercer and cannot be coerced to type " + targetClass.getName());
+      throw new TemplateOutputCastException("Output " + value + " has type " + value.getClass().getName() +
+          ", but does not have a registered coercer and cannot be coerced to type " + customClass.getName());
     }
     else
     {
-      return (T) coercer.coerceOutput(object);
+      return (C) coercer.coerceOutput(value);
     }
   }
 
@@ -891,4 +1185,94 @@ public class DataTemplateUtil
       throw new IllegalArgumentException(clazz + " cannot be initialized", exc);
     }
   }
+
+  /**
+   * Check if two data templates of the same type are semantically equal. We call two data templates semantically equal if all their
+   * fields satisfy any of the following:
+   * <ul>
+   *   <li>Both objects have the field set to the same value
+   *   <li>One object has the required field set to the default value and the other doesn't have the field set
+   *   <li>They both don't have the field set
+   * </ul>
+   * We will first check if data stored in the two data templates are equal. If not equal, we will apply fix-up to their data
+   * and compare equality of the fixed-up data. The fix-up will do the following massage to the original data:
+   * <ul>
+   *    <li>populate absent fields with their default values</li>
+   *    <li>coerce numeric values and strings containing numeric values to the schema's numeric type</li>
+   *    <li>keep any unrecognized fields not in the data template schema</li>
+   * </ul>
+   * @param data1 first data template.
+   * @param data2 second data template
+   * @return true if two data templates are semantically equal, false otherwise.
+   */
+  public static <T extends DataTemplate<?>> boolean areEqual(T data1, T data2)
+  {
+    return areEqual(data1, data2, false);
+  }
+
+  /**
+   * Check if two data templates of the same type are semantically equal. We call two data templates semantically equal if all their
+   * fields satisfy any of the following:
+   * <ul>
+   *   <li>Both objects have the field set to the same value
+   *   <li>One object has the required field set to the default value and the other doesn't have the field set
+   *   <li>They both don't have the field set
+   * </ul>
+   * We will first check if data stored in the two data templates are equal. If not equal, we will apply fix-up to their data
+   * and compare equality of the fixed-up data. The fix-up will do the following massage to the original data:
+   * <ul>
+   *    <li>populate absent fields with their default values</li>
+   *    <li>coerce numeric values and strings containing numeric values to data template schema's numeric type</li>
+   *    <li>ignore any unrecognized fields not in the data template schema if ignoreUnrecognizedField flag is true, otherwise we will
+   * keep those unrecognized fields in comparison.</li>
+   * </ul>
+   * @param data1 first data template.
+   * @param data2 second data template
+   * @param ignoreUnrecognizedField if this flag is set to true, we don't include unrecognized fields into data template comparison.
+   *                                Otherwise, we will compare those fields as well.
+   * @return true if two data templates are semantically equal, false otherwise.
+   */
+  public static <T extends DataTemplate<?>> boolean areEqual(T data1, T data2, boolean ignoreUnrecognizedField)
+  {
+    // default fix-up option
+    ValidationOptions validationOption = new ValidationOptions(RequiredMode.FIXUP_ABSENT_WITH_DEFAULT,
+            CoercionMode.NORMAL, ignoreUnrecognizedField ? UnrecognizedFieldMode.TRIM : UnrecognizedFieldMode.IGNORE);
+    return areEqual(data1, data2, validationOption);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <T extends DataTemplate<?>> boolean areEqual(T data1, T data2, ValidationOptions validationOption)
+  {
+    if (data1 == null || data2 == null)
+    {
+      return data1 == data2;
+    }
+    // return true if data1 and data2 are already equal
+    if (data1.equals(data2))
+    {
+      return true;
+    }
+    // try to fix up two data based on given data schema
+    // since fix-up will modify the original data, we need to make a copy before performing fix-up to avoid such side-effects.
+    try {
+      T data1Copy = (T)data1.copy();
+      T data2Copy = (T)data2.copy();
+      ValidationResult validateResult1 = ValidateDataAgainstSchema.validate(data1Copy, validationOption);
+      ValidationResult validateResult2 = ValidateDataAgainstSchema.validate(data2Copy, validationOption);
+      if (validateResult1.hasFix() || validateResult2.hasFix())
+      {
+        return data1Copy.equals(data2Copy);
+      }
+      else
+      {
+        // no fix-up is done
+        return false;
+      }
+    }
+    catch (CloneNotSupportedException e)
+    {
+      return false;
+    }
+  }
+
 }

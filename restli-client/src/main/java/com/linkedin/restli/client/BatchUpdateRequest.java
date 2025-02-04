@@ -41,14 +41,13 @@ import java.util.Map;
  * @author Josh Walker
  * @version $Revision: $
  */
-
 public class BatchUpdateRequest<K, V extends RecordTemplate>
         extends BatchRequest<BatchKVResponse<K, UpdateStatus>>
 {
   private final Map<K, V> _updateInputMap;
 
   @SuppressWarnings("unchecked")
-  BatchUpdateRequest(Map<String, String> headers,
+  public BatchUpdateRequest(Map<String, String> headers,
                      List<HttpCookie> cookies,
                      CollectionRequest<KeyValueRecord<K, V>> entities,
                      Map<String, Object> queryParams,
@@ -57,21 +56,23 @@ public class BatchUpdateRequest<K, V extends RecordTemplate>
                      String baseUriTemplate,
                      Map<String, Object> pathKeys,
                      RestliRequestOptions requestOptions,
-                     Map<K, V> updateInputMap)
+                     Map<K, V> updateInputMap,
+                     List<Object> streamingAttachments)
   {
     super(ResourceMethod.BATCH_UPDATE,
           entities,
           headers,
           cookies,
-          new BatchUpdateResponseDecoder<K>((TypeSpec<K>) resourceSpec.getKeyType(),
-                                            resourceSpec.getKeyParts(),
-                                            resourceSpec.getComplexKeyType()),
+        new BatchUpdateResponseDecoder<>((TypeSpec<K>) resourceSpec.getKeyType(),
+            resourceSpec.getKeyParts(),
+            resourceSpec.getComplexKeyType()),
           resourceSpec,
           queryParams,
           queryParamClasses,
           baseUriTemplate,
           pathKeys,
-          requestOptions);
+          requestOptions,
+          streamingAttachments);
     _updateInputMap = Collections.unmodifiableMap(updateInputMap);
   }
 

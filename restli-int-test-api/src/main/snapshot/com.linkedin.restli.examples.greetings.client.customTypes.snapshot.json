@@ -1,10 +1,5 @@
 {
   "models" : [ {
-    "type" : "enum",
-    "name" : "Tone",
-    "namespace" : "com.linkedin.restli.examples.greetings.api",
-    "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
-  }, {
     "type" : "record",
     "name" : "Greeting",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -17,17 +12,29 @@
       "type" : "string"
     }, {
       "name" : "tone",
-      "type" : "Tone",
+      "type" : {
+        "type" : "enum",
+        "name" : "Tone",
+        "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
+      },
       "doc" : "tone"
+    }, {
+      "name" : "senders",
+      "type" : {
+        "type" : "array",
+        "items" : "string"
+      },
+      "doc" : "Sender(s) of the message",
+      "optional" : true
     } ]
-  }, {
+  }, "com.linkedin.restli.examples.greetings.api.Tone", {
     "type" : "typeref",
     "name" : "CalendarRef",
     "namespace" : "com.linkedin.restli.examples.typeref.api",
     "ref" : "int",
     "java" : {
-      "coercerClass" : "com.linkedin.restli.examples.custom.types.CalendarCoercer",
-      "class" : "java.util.Calendar"
+      "class" : "java.util.Calendar",
+      "coercerClass" : "com.linkedin.restli.examples.custom.types.CalendarCoercer"
     }
   }, {
     "type" : "typeref",
@@ -43,8 +50,8 @@
     "namespace" : "com.linkedin.restli.examples.typeref.api",
     "ref" : "long",
     "java" : {
-      "coercerClass" : "com.linkedin.restli.examples.custom.types.DateCoercer",
-      "class" : "java.util.Date"
+      "class" : "java.util.Date",
+      "coercerClass" : "com.linkedin.restli.examples.custom.types.DateCoercer"
     }
   }, {
     "type" : "typeref",
@@ -52,8 +59,8 @@
     "namespace" : "com.linkedin.restli.examples.typeref.api",
     "ref" : "bytes",
     "java" : {
-      "coercerClass" : "com.linkedin.restli.examples.custom.types.IPAddressSimpleCoercer",
-      "class" : "java.net.InetAddress"
+      "class" : "java.net.InetAddress",
+      "coercerClass" : "com.linkedin.restli.examples.custom.types.IPAddressSimpleCoercer"
     }
   } ],
   "schema" : {
@@ -62,6 +69,7 @@
     "path" : "/customTypes",
     "schema" : "com.linkedin.restli.examples.greetings.api.Greeting",
     "doc" : "generated from: com.linkedin.restli.examples.greetings.server.CustomTypesResource",
+    "resourceClass" : "com.linkedin.restli.examples.greetings.server.CustomTypesResource",
     "collection" : {
       "identifier" : {
         "name" : "customTypesId",
@@ -70,36 +78,42 @@
       "supports" : [ ],
       "finders" : [ {
         "name" : "calendar",
+        "javaMethodName" : "calendar",
         "parameters" : [ {
           "name" : "calendar",
           "type" : "com.linkedin.restli.examples.typeref.api.CalendarRef"
         } ]
       }, {
         "name" : "calendars",
+        "javaMethodName" : "calendars",
         "parameters" : [ {
           "name" : "calendars",
           "type" : "{ \"type\" : \"array\", \"items\" : \"com.linkedin.restli.examples.typeref.api.CalendarRef\" }"
         } ]
       }, {
         "name" : "customLong",
+        "javaMethodName" : "customLong",
         "parameters" : [ {
           "name" : "l",
           "type" : "com.linkedin.restli.examples.typeref.api.CustomLongRef"
         } ]
       }, {
         "name" : "customLongArray",
+        "javaMethodName" : "customLongArray",
         "parameters" : [ {
           "name" : "ls",
           "type" : "{ \"type\" : \"array\", \"items\" : \"com.linkedin.restli.examples.typeref.api.CustomLongRef\" }"
         } ]
       }, {
         "name" : "date",
+        "javaMethodName" : "date",
         "parameters" : [ {
           "name" : "d",
           "type" : "com.linkedin.restli.examples.typeref.api.DateRef"
         } ]
       }, {
         "name" : "ip",
+        "javaMethodName" : "ip",
         "parameters" : [ {
           "name" : "ip",
           "type" : "com.linkedin.restli.examples.typeref.api.IPAddressSimple"
@@ -107,6 +121,7 @@
       } ],
       "actions" : [ {
         "name" : "action",
+        "javaMethodName" : "action",
         "parameters" : [ {
           "name" : "l",
           "type" : "com.linkedin.restli.examples.typeref.api.CustomLongRef"
@@ -114,6 +129,7 @@
         "returns" : "long"
       }, {
         "name" : "arrayAction",
+        "javaMethodName" : "arrayAction",
         "parameters" : [ {
           "name" : "ls",
           "type" : "{ \"type\" : \"array\", \"items\" : \"com.linkedin.restli.examples.typeref.api.CustomLongRef\" }"
@@ -121,6 +137,7 @@
         "returns" : "{ \"type\" : \"array\", \"items\" : \"com.linkedin.restli.examples.typeref.api.CustomLongRef\" }"
       }, {
         "name" : "calendarAction",
+        "javaMethodName" : "calendarAction",
         "parameters" : [ {
           "name" : "calendar",
           "type" : "com.linkedin.restli.examples.typeref.api.CalendarRef"

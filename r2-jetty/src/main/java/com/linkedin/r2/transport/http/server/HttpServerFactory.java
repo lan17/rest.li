@@ -34,6 +34,7 @@ public class HttpServerFactory
   public static final String  DEFAULT_CONTEXT_PATH          = "/";
   public static final int     DEFAULT_THREAD_POOL_SIZE      = 512;
   public static final int     DEFAULT_ASYNC_TIMEOUT         = 30000;
+  public static final boolean DEFAULT_LOG_SERVLET_EXCEPTIONS = false;
   public static final HttpJettyServer.ServletType DEFAULT_SERVLET_TYPE = HttpJettyServer.ServletType.RAP;
 
   private final FilterChain _filters;
@@ -112,7 +113,7 @@ public class HttpServerFactory
   {
     final TransportDispatcher filterDispatcher =
         new FilterChainDispatcher(transportDispatcher,  _filters);
-    final HttpDispatcher dispatcher = new HttpDispatcher(filterDispatcher);
+    final HttpDispatcher dispatcher = HttpDispatcherFactory.create((filterDispatcher));
     return new HttpJettyServer(port,
                                contextPath,
                                threadPoolSize,
@@ -171,7 +172,7 @@ public class HttpServerFactory
   {
     final TransportDispatcher filterDispatcher =
       new FilterChainDispatcher(transportDispatcher, _filters);
-    final HttpDispatcher dispatcher = new HttpDispatcher(filterDispatcher);
+    final HttpDispatcher dispatcher = HttpDispatcherFactory.create((filterDispatcher));
     return new HttpsJettyServer(port,
                                 sslPort,
                                 keyStore,
@@ -184,6 +185,97 @@ public class HttpServerFactory
                                 restOverStream);
   }
 
+  public HttpServer createHttpsH2cServer(int port,
+                                      int sslPort,
+                                      String keyStore,
+                                      String keyStorePassword,
+                                      TransportDispatcher transportDispatcher,
+                                      HttpJettyServer.ServletType servletType,
+                                      boolean restOverStream)
+  {
+    final TransportDispatcher filterDispatcher =
+      new FilterChainDispatcher(transportDispatcher, _filters);
+    final HttpDispatcher dispatcher = HttpDispatcherFactory.create((filterDispatcher));
+    return new HttpsH2JettyServer(port,
+      sslPort,
+      keyStore,
+      keyStorePassword,
+      DEFAULT_CONTEXT_PATH,
+      DEFAULT_THREAD_POOL_SIZE,
+      dispatcher,
+      servletType,
+      DEFAULT_ASYNC_TIMEOUT,
+      restOverStream);
+  }
+
+  public HttpServer createHttpsH2cServer(int port,
+      int sslPort,
+      String keyStore,
+      String keyStorePassword,
+      String contextPath,
+      int threadPoolSize,
+      TransportDispatcher transportDispatcher,
+      HttpJettyServer.ServletType servletType,
+      int asyncTimeOut,
+      boolean restOverStream)
+  {
+    final TransportDispatcher filterDispatcher =
+        new FilterChainDispatcher(transportDispatcher, _filters);
+    final HttpDispatcher dispatcher = HttpDispatcherFactory.create((filterDispatcher));
+    return new HttpsH2JettyServer(port,
+        sslPort,
+        keyStore,
+        keyStorePassword,
+        contextPath,
+        threadPoolSize,
+        dispatcher,
+        servletType,
+        asyncTimeOut,
+        restOverStream);
+  }
+
+  public HttpServer createH2cServer(int port, TransportDispatcher transportDispatcher, boolean restOverStream)
+  {
+    return createH2cServer(port, DEFAULT_CONTEXT_PATH, DEFAULT_THREAD_POOL_SIZE, transportDispatcher, restOverStream);
+  }
+
+  public HttpServer createH2cServer(int port,
+      String contextPath,
+      int threadPoolSize,
+      TransportDispatcher transportDispatcher,
+      boolean restOverStream)
+  {
+    final TransportDispatcher filterDispatcher = new FilterChainDispatcher(transportDispatcher,  _filters);
+    final HttpDispatcher dispatcher = HttpDispatcherFactory.create((filterDispatcher));
+    return new H2cJettyServer(
+        port,
+        contextPath,
+        threadPoolSize,
+        dispatcher,
+        restOverStream);
+  }
+
+  public HttpServer createH2cServer(int port,
+      String contextPath,
+      int threadPoolSize,
+      TransportDispatcher transportDispatcher,
+      HttpJettyServer.ServletType servletType,
+      int serverTimeout,
+      boolean restOverStream)
+  {
+    final TransportDispatcher filterDispatcher = new FilterChainDispatcher(transportDispatcher,  _filters);
+    final HttpDispatcher dispatcher = HttpDispatcherFactory.create((filterDispatcher));
+    return new H2cJettyServer(
+        port,
+        contextPath,
+        threadPoolSize,
+        dispatcher,
+        servletType,
+        serverTimeout,
+        restOverStream
+        );
+  }
+
   public HttpServer createServer(int port, TransportDispatcher transportDispatcher, int timeout, boolean restOverStream)
   {
     return createServer(port, DEFAULT_CONTEXT_PATH, DEFAULT_THREAD_POOL_SIZE, transportDispatcher, _servletType, timeout, restOverStream);
@@ -193,7 +285,9 @@ public class HttpServerFactory
   {
     final TransportDispatcher filterDispatcher =
         new FilterChainDispatcher(transportDispatcher,  _filters);
-    HttpServlet httpServlet = restOverStream ? new RAPStreamServlet(filterDispatcher, timeout) : new RAPServlet(filterDispatcher);
+    HttpServlet httpServlet = restOverStream ?
+        new RAPStreamServlet(filterDispatcher, timeout, DEFAULT_LOG_SERVLET_EXCEPTIONS) :
+        new RAPServlet(filterDispatcher);
     return new HttpJettyServer(port, httpServlet);
   }
 }

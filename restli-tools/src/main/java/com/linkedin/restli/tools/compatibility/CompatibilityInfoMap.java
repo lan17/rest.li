@@ -35,16 +35,22 @@ import java.util.Stack;
 
 public class CompatibilityInfoMap
 {
-  private Map<CompatibilityInfo.Level, Collection<CompatibilityInfo>> _restSpecMap = new HashMap<CompatibilityInfo.Level, Collection<CompatibilityInfo>>();
-  private Map<CompatibilityInfo.Level, Collection<CompatibilityInfo>> _modelMap = new HashMap<CompatibilityInfo.Level, Collection<CompatibilityInfo>>();
+  private Map<CompatibilityInfo.Level, Collection<CompatibilityInfo>> _restSpecMap = new HashMap<>();
+  private Map<CompatibilityInfo.Level, Collection<CompatibilityInfo>> _modelMap = new HashMap<>();
+  private Map<CompatibilityInfo.Level, Collection<CompatibilityInfo>> _annotationMap = new HashMap<>();
 
   public CompatibilityInfoMap()
   {
-    _restSpecMap.put(CompatibilityInfo.Level.INCOMPATIBLE, new ArrayList<CompatibilityInfo>());
-    _restSpecMap.put(CompatibilityInfo.Level.COMPATIBLE, new ArrayList<CompatibilityInfo>());
+    _restSpecMap.put(CompatibilityInfo.Level.INCOMPATIBLE, new ArrayList<>());
+    _restSpecMap.put(CompatibilityInfo.Level.WIRE_COMPATIBLE, new ArrayList<>());
+    _restSpecMap.put(CompatibilityInfo.Level.COMPATIBLE, new ArrayList<>());
 
-    _modelMap.put(CompatibilityInfo.Level.INCOMPATIBLE, new ArrayList<CompatibilityInfo>());
-    _modelMap.put(CompatibilityInfo.Level.COMPATIBLE, new ArrayList<CompatibilityInfo>());
+    _modelMap.put(CompatibilityInfo.Level.INCOMPATIBLE, new ArrayList<>());
+    _modelMap.put(CompatibilityInfo.Level.WIRE_COMPATIBLE, new ArrayList<>());
+    _modelMap.put(CompatibilityInfo.Level.COMPATIBLE, new ArrayList<>());
+
+    _annotationMap.put(CompatibilityInfo.Level.INCOMPATIBLE, new ArrayList<>());
+    _annotationMap.put(CompatibilityInfo.Level.COMPATIBLE, new ArrayList<>());
   }
 
   public void addRestSpecInfo(CompatibilityInfo.Type infoType, Stack<Object> path,
@@ -114,6 +120,9 @@ public class CompatibilityInfoMap
         case BREAKS_NEW_AND_OLD_READERS:
           infoType = CompatibilityInfo.Type.TYPE_BREAKS_NEW_AND_OLD_READERS;
           break;
+        case BREAK_OLD_CLIENTS:
+          infoType = CompatibilityInfo.Type.BREAK_OLD_CLIENTS;
+          break;
         default:
           infoType = CompatibilityInfo.Type.OTHER_ERROR;
           break;
@@ -121,7 +130,11 @@ public class CompatibilityInfoMap
     }
     else
     {
-      infoType = CompatibilityInfo.Type.TYPE_INFO;
+      if (message.getImpact() == CompatibilityMessage.Impact.ENUM_VALUE_ADDED) {
+        infoType = CompatibilityInfo.Type.ENUM_VALUE_ADDED;
+      } else {
+        infoType = CompatibilityInfo.Type.TYPE_INFO;
+      }
     }
     info = new CompatibilityInfo(Arrays.asList(message.getPath()), infoType, infoMessage);
     _modelMap.get(infoType.getLevel()).add(info);
@@ -187,9 +200,10 @@ public class CompatibilityInfoMap
   public boolean isCompatible(CompatibilityLevel level)
   {
     final Collection<CompatibilityInfo> incompatibles = getIncompatibles();
+    final Collection<CompatibilityInfo> wireCompatibles = getWireCompatibles();
     final Collection<CompatibilityInfo> compatibles = getCompatibles();
 
-    return isCompatible(incompatibles, compatibles, level);
+    return isCompatible(incompatibles, wireCompatibles, compatibles, level);
   }
 
   public boolean isRestSpecCompatible(CompatibilityLevel level)
@@ -197,20 +211,22 @@ public class CompatibilityInfoMap
     final Collection<CompatibilityInfo> incompatibles = getRestSpecIncompatibles();
     final Collection<CompatibilityInfo> compatibles = getRestSpecCompatibles();
 
-    return isCompatible(incompatibles, compatibles, level);
+    return isCompatible(incompatibles, new ArrayList<>(), compatibles, level);
   }
 
   public boolean isModelCompatible(CompatibilityLevel level)
   {
     final Collection<CompatibilityInfo> incompatibles = getModelIncompatibles();
+    final Collection<CompatibilityInfo> wireCompatibles = getModelWireCompatibles();
     final Collection<CompatibilityInfo> compatibles = getModelCompatibles();
 
-    return isCompatible(incompatibles, compatibles, level);
+    return isCompatible(incompatibles, wireCompatibles, compatibles, level);
   }
 
-  private boolean isCompatible(Collection<CompatibilityInfo> incompatibles, Collection<CompatibilityInfo> compatibles, CompatibilityLevel level)
+  private boolean isCompatible(Collection<CompatibilityInfo> incompatibles, Collection<CompatibilityInfo> wireCompatibles, Collection<CompatibilityInfo> compatibles, CompatibilityLevel level)
   {
-    return ((incompatibles.isEmpty() || level.ordinal() < CompatibilityLevel.BACKWARDS.ordinal()) &&
+    return ((incompatibles.isEmpty() || level.ordinal() < CompatibilityLevel.WIRE_COMPATIBLE.ordinal()) &&
+            (wireCompatibles.isEmpty() || level.ordinal() < CompatibilityLevel.BACKWARDS.ordinal()) &&
             (compatibles.isEmpty()   || level.ordinal() < CompatibilityLevel.EQUIVALENT.ordinal()));
   }
 
@@ -247,6 +263,15 @@ public class CompatibilityInfoMap
     return get(CompatibilityInfo.Level.COMPATIBLE);
   }
 
+  /**
+   * @return check results in the backwards wire compatibility category.
+   *         empty collection if called before checking any files
+   */
+  public Collection<CompatibilityInfo> getWireCompatibles()
+  {
+    return get(CompatibilityInfo.Level.WIRE_COMPATIBLE);
+  }
+
   public Collection<CompatibilityInfo> getRestSpecIncompatibles()
   {
     return getRestSpecInfo(CompatibilityInfo.Level.INCOMPATIBLE);
@@ -267,9 +292,14 @@ public class CompatibilityInfoMap
     return getModelInfo(CompatibilityInfo.Level.COMPATIBLE);
   }
 
+  public Collection<CompatibilityInfo> getModelWireCompatibles()
+  {
+    return getModelInfo(CompatibilityInfo.Level.WIRE_COMPATIBLE);
+  }
+
   public Collection<CompatibilityInfo> get(CompatibilityInfo.Level level)
   {
-    Collection<CompatibilityInfo> infos = new ArrayList<CompatibilityInfo>(getRestSpecInfo(level));
+    Collection<CompatibilityInfo> infos = new ArrayList<>(getRestSpecInfo(level));
     infos.addAll(getModelInfo(level));
     return infos;
   }
@@ -295,5 +325,57 @@ public class CompatibilityInfoMap
       entry.getValue().addAll(other.getModelInfo(entry.getKey()));
     }
     return true;
+  }
+
+  public void addAnnotation(CompatibilityMessage message)
+  {
+    final CompatibilityInfo.Type infoType;
+    CompatibilityInfo info;
+    String infoMessage = String.format(message.getFormat(), message.getArgs());
+
+    if (message.isError())
+    {
+      switch (message.getImpact())
+      {
+        case ANNOTATION_INCOMPATIBLE_CHANGE:
+          infoType = CompatibilityInfo.Type.SCHEMA_ANNOTATION_INCOMPATIBLE_CHANGE;
+          break;
+        default:
+          infoType = CompatibilityInfo.Type.OTHER_ERROR;
+          break;
+      }
+    }
+    else
+    {
+      infoType = CompatibilityInfo.Type.TYPE_INFO;
+    }
+    info = new CompatibilityInfo(Arrays.asList(message.getPath()), infoType, infoMessage);
+    _annotationMap.get(infoType.getLevel()).add(info);
+  }
+
+  /**
+   * This method indicates whether the schema annotation changes are compatible or not,
+   * by default it uses "backwards" as compatibility level.
+   * @return boolean
+   */
+  public boolean isAnnotationCompatible()
+  {
+    return isAnnotationCompatible(CompatibilityLevel.BACKWARDS);
+  }
+
+  /**
+   * This method indicates whether the schema annotation changes are compatible or not based on the given compatibility level.
+   * @param level, the given {@link CompatibilityLevel}.
+   * @return boolean
+   */
+  public boolean isAnnotationCompatible(CompatibilityLevel level)
+  {
+    return isCompatible(_annotationMap.get(CompatibilityInfo.Level.INCOMPATIBLE), new ArrayList<>(),
+            _annotationMap.get(CompatibilityInfo.Level.COMPATIBLE), level);
+  }
+
+  public Collection<CompatibilityInfo> getAnnotationInfo(CompatibilityInfo.Level level)
+  {
+    return _annotationMap.get(level);
   }
 }

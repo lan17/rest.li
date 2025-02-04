@@ -26,6 +26,7 @@ import com.linkedin.restli.common.ComplexResourceKey;
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.common.IdEntityResponse;
+import com.linkedin.restli.common.attachments.RestLiAttachmentReader;
 import com.linkedin.restli.internal.common.ProtocolVersionUtil;
 import com.linkedin.restli.internal.common.URIParamUtils;
 
@@ -49,10 +50,11 @@ import java.util.ArrayList;
 public class ResponseImpl<T> implements Response<T>
 {
   private int _status = 102;  // SC_PROCESSING
-  private final Map<String, String> _headers;
+  private final TreeMap<String, String> _headers;
   private final List<HttpCookie> _cookies;
   private T _entity;
   private RestLiResponseException _error;
+  private RestLiAttachmentReader  _attachmentReader;
 
   ResponseImpl(Response<T> origin, RestLiResponseException error)
   {
@@ -85,9 +87,9 @@ public class ResponseImpl<T> implements Response<T>
   ResponseImpl(int status, Map<String, String> headers, List<HttpCookie> cookies)
   {
     _status = status;
-    _headers = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+    _headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     _headers.putAll(headers);
-    _cookies = new ArrayList<HttpCookie>(cookies);
+    _cookies = new ArrayList<>(cookies);
   }
 
   /**
@@ -124,7 +126,7 @@ public class ResponseImpl<T> implements Response<T>
   @Override
   public Map<String, String> getHeaders()
   {
-    return Collections.unmodifiableMap(_headers);
+    return Collections.unmodifiableSortedMap(_headers);
   }
 
   @Override
@@ -140,7 +142,7 @@ public class ResponseImpl<T> implements Response<T>
    * and the key is a {@link ComplexResourceKey} or {@link CompoundKey}.
    *
    * @deprecated
-   * @see {@link com.linkedin.restli.client.Response#getId()}
+   * @see com.linkedin.restli.client.Response#getId()
    */
   @Override
   @Deprecated
@@ -214,5 +216,22 @@ public class ResponseImpl<T> implements Response<T>
   public boolean hasError()
   {
     return _error != null;
+  }
+
+  @Override
+  public boolean hasAttachments()
+  {
+    return _attachmentReader != null;
+  }
+
+  @Override
+  public RestLiAttachmentReader getAttachmentReader()
+  {
+    return _attachmentReader;
+  }
+
+  public void setAttachmentReader(RestLiAttachmentReader attachmentReader)
+  {
+    _attachmentReader = attachmentReader;
   }
 }

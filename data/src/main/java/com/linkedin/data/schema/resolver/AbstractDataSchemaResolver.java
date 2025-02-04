@@ -35,6 +35,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -53,7 +55,7 @@ import java.util.Set;
  * <li> the locations to search for the named DataSchema
  *      (by implementing {@link #possibleLocations(String)},
  * <li> how transform the name and a search path into a location
- *      (by implementing {@link AbstractIterator#transform(String)}, and
+ *      (by implementing {@link AbstractPathAndSchemaDirectoryIterator#transform(String, SchemaDirectory)}, and
  * <li> how to obtain an {@link InputStream} from a location
  *      (by implementing {@link #locationToInputStream(DataSchemaLocation, StringBuilder)}.
  * </ul>
@@ -84,7 +86,10 @@ public abstract class AbstractDataSchemaResolver implements DataSchemaResolver
    * Abstract class to help implement iterator returned by {@link #possibleLocations(String)}.
    *
    * @author slim
+   * @deprecated This class was intended for internal use and was replaced with {@link AbstractPathAndSchemaDirectoryIterator}.
+   * Recommend not depending on this class.
    */
+  @Deprecated
   public abstract static class AbstractIterator implements Iterator<DataSchemaLocation>
   {
     protected abstract DataSchemaLocation transform(String input);
@@ -156,6 +161,105 @@ public abstract class AbstractDataSchemaResolver implements DataSchemaResolver
   }
 
   /**
+   * Abstract class to help implement iterator returned by {@link #possibleLocations(String)}.
+   *
+   * @author kbalasub
+   */
+  abstract static class AbstractPathAndSchemaDirectoryIterator implements Iterator<DataSchemaLocation>
+  {
+    protected abstract DataSchemaLocation transform(String path, SchemaDirectory schemaDirectory);
+
+    /**
+     * Constructor.
+     *
+     * @param paths is the ordered list of search paths.
+     * @param schemaDirectories List of schema directories to use as possible schema locations.
+     */
+    protected AbstractPathAndSchemaDirectoryIterator(
+        Iterable<String> paths, List<SchemaDirectory> schemaDirectories)
+    {
+      _it = paths.iterator();
+      _schemaDirectories = schemaDirectories;
+    }
+
+    /**
+     * Return whether there is another location to search. True when there is another path to search or schema
+     * directories to search for the current/last path.
+     *
+     * @return true if there is another location to search.
+     */
+    @Override
+    public boolean hasNext()
+    {
+      if (_currentPath == null || !_directoryNameIterator.hasNext())
+      {
+        if (_it.hasNext())
+        {
+          _currentPath = _it.next();
+          _directoryNameIterator = _schemaDirectories.iterator();
+        }
+        else
+        {
+          return false;
+        }
+      }
+      return _directoryNameIterator.hasNext();
+    }
+
+    /**
+     * Obtains the next element, invokes and returns the output of {@link #transform(String, SchemaDirectory)}.
+     *
+     * @return the next location to search.
+     */
+    @Override
+    public DataSchemaLocation next()
+    {
+      if (_currentPath == null || !_directoryNameIterator.hasNext())
+      {
+        _currentPath = _it.next();
+        _directoryNameIterator = _schemaDirectories.iterator();
+      }
+      return transform(_currentPath, _directoryNameIterator.next());
+    }
+
+    /**
+     * Not implemented.
+     *
+     * @throws UnsupportedOperationException always.
+     */
+    @Override
+    public void remove()
+    {
+      throw new UnsupportedOperationException();
+    }
+
+    /**
+     * The underlying {@link Iterator} for paths.
+     */
+    private final Iterator<String> _it;
+    private String _currentPath;
+    private Iterator<SchemaDirectory> _directoryNameIterator;
+    private final List<SchemaDirectory> _schemaDirectories;
+  }
+
+  private final DataSchemaResolver _dependencyResolver;
+
+  /**
+   * Constructor.
+   *
+   * @param parserFactory that will be used by the resolver to parse schemas.
+   * @param dependencyResolver provides the parser used to resolve dependencies.  Note that
+   *                     when multiple file formats (e.g. both .pdsc and .pdl) are in use,
+   *                     a resolver that supports multiple file formats such as
+   *                     {@link MultiFormatDataSchemaResolver} must be provided.
+   */
+  protected AbstractDataSchemaResolver(DataSchemaParserFactory parserFactory, DataSchemaResolver dependencyResolver)
+  {
+    _parserFactory = parserFactory;
+    _dependencyResolver = dependencyResolver;
+  }
+
+  /**
    * Constructor.
    *
    * @param parserFactory that will be used by the resolver to parse schemas.
@@ -163,16 +267,17 @@ public abstract class AbstractDataSchemaResolver implements DataSchemaResolver
   protected AbstractDataSchemaResolver(DataSchemaParserFactory parserFactory)
   {
     _parserFactory = parserFactory;
+    _dependencyResolver = this;
   }
 
   protected boolean isBadLocation(DataSchemaLocation location)
   {
-    return _badLocations.contains(location);
+    return _badLocations.contains(location.getLightweightRepresentation());
   }
 
   protected boolean addBadLocation(DataSchemaLocation location)
   {
-    return _badLocations.add(location);
+    return _badLocations.add(location.getLightweightRepresentation());
   }
 
   @Override
@@ -217,9 +322,48 @@ public abstract class AbstractDataSchemaResolver implements DataSchemaResolver
   }
 
   @Override
+  public void addPendingSchema(String name)
+  {
+    _pendingSchemas.put(name, false);
+  }
+
+  @Override
+  public void updatePendingSchema(String name, Boolean isParsingInclude)
+  {
+    _pendingSchemas.computeIfPresent(name, (key, oldValue) -> isParsingInclude);
+  }
+
+  @Override
+  public void removePendingSchema(String name)
+  {
+    _pendingSchemas.remove(name);
+  }
+
+  @Override
+  public LinkedHashMap<String, Boolean> getPendingSchemas() {
+    return _pendingSchemas;
+  }
+
+  @Override
   public boolean locationResolved(DataSchemaLocation location)
   {
     return _resolvedLocations.contains(location);
+  }
+
+  @Override
+  public List<SchemaDirectory> getSchemaDirectories()
+  {
+    return _schemaDirectories;
+  }
+
+  /**
+   * Sets the file directory names of all locations the resolver should use for resolving schemas.
+   *
+   * @param schemaDirectories schema directory names.
+   */
+  void setSchemaDirectories(List<SchemaDirectory> schemaDirectories)
+  {
+    _schemaDirectories = schemaDirectories;
   }
 
   /**
@@ -241,14 +385,12 @@ public abstract class AbstractDataSchemaResolver implements DataSchemaResolver
         continue;
       }
 
-      //out.println("Location " + location);
       InputStream inputStream = null;
       try
       {
         inputStream = locationToInputStream(location, errorMessageBuilder);
         if (inputStream == null)
         {
-          //out.println("Bad location " + location);
           addBadLocation(location);
         }
         else
@@ -290,9 +432,9 @@ public abstract class AbstractDataSchemaResolver implements DataSchemaResolver
   protected NamedDataSchema parse(InputStream inputStream, final DataSchemaLocation location, String name, StringBuilder errorMessageBuilder)
   {
     NamedDataSchema schema = null;
-    PegasusSchemaParser parser = _parserFactory.create(this);
+
+    PegasusSchemaParser parser = _parserFactory.create(_dependencyResolver);
     parser.setLocation(location);
-    //out.println("start parsing " + location);
 
     parser.parse(new FilterInputStream(inputStream)
     {
@@ -305,38 +447,38 @@ public abstract class AbstractDataSchemaResolver implements DataSchemaResolver
 
     if (parser.hasError())
     {
-      //out.println(parser.errorMessageBuilder().toString());
-
       errorMessageBuilder.append("Error parsing ").append(location).append(" for \"").append(name).append("\".\n");
       errorMessageBuilder.append(parser.errorMessageBuilder());
       errorMessageBuilder.append("Done parsing ").append(location).append(".\n");
 
-      _badLocations.add(location);
+      addBadLocation(location);
     }
     else
     {
-      //out.println(parser.schemasToString());
-
       DataSchema found = _nameToDataSchema.get(name);
       if (found != null && found instanceof NamedDataSchema)
       {
         schema = (NamedDataSchema) found;
       }
-
-      //out.println(name + " can" + (schema == null ? "not" : "") + " be found in " + location + ".");
     }
 
-    //out.println("Done parsing " + location);
     return schema;
   }
 
-  // private final PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out));
-
-  private final Map<String, NamedDataSchema> _nameToDataSchema = new HashMap<String, NamedDataSchema>();
-  private final Map<String, DataSchemaLocation> _nameToDataSchemaLocations = new HashMap<String, DataSchemaLocation>();
+  private final Map<String, NamedDataSchema> _nameToDataSchema = new HashMap<>();
+  private final Map<String, DataSchemaLocation> _nameToDataSchemaLocations = new HashMap<>();
   private final DataSchemaParserFactory _parserFactory;
-  private final Set<DataSchemaLocation> _badLocations = new HashSet<DataSchemaLocation>();
-  private final Set<DataSchemaLocation> _resolvedLocations = new HashSet<DataSchemaLocation>();
+  private final Set<DataSchemaLocation> _badLocations = new HashSet<>();
+  private final Set<DataSchemaLocation> _resolvedLocations = new HashSet<>();
+  // Map of pending records with the boolean flag indicating if includes are being processed for that schema.
+  private final LinkedHashMap<String, Boolean> _pendingSchemas = new LinkedHashMap<>();
+  /**
+   * The top level directory names in which the resolver would look for schemas. Default is a single directory
+   * {@link SchemaDirectoryName#PEGASUS}.
+   *
+   * Ex "pegasus" for data or "extensions" for relationship extension schema files
+   */
+  private List<SchemaDirectory> _schemaDirectories = Collections.singletonList(SchemaDirectoryName.PEGASUS);
 
   protected static final PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out));
 }

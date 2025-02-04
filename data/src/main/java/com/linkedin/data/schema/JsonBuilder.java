@@ -16,19 +16,18 @@
 
 package com.linkedin.data.schema;
 
-
-import com.linkedin.data.codec.JacksonDataCodec;
-import com.linkedin.data.template.DataTemplate;
-import com.linkedin.data.template.JacksonDataTemplateCodec;
-
-import java.io.IOException;
-import java.io.StringWriter;
-import java.util.List;
-import java.util.Map;
-
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.PrettyPrinter;
+import com.linkedin.data.codec.JacksonDataCodec;
+import com.linkedin.data.template.DataTemplate;
+import com.linkedin.data.template.JacksonDataTemplateCodec;
+import java.io.IOException;
+import java.io.StringWriter;
+import java.io.Writer;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 
 /**
@@ -43,14 +42,14 @@ import com.fasterxml.jackson.core.PrettyPrinter;
  *
  * @author slim
  */
-public class JsonBuilder
+public class JsonBuilder implements AutoCloseable
 {
   /**
    * Pretty printing format.
    *
    * @author slim
    */
-  public static enum Pretty
+  public enum Pretty
   {
     /**
      * As compact as possible.
@@ -67,14 +66,27 @@ public class JsonBuilder
   }
 
   /**
-   * Constructor.
+   * Constructor that writes to a {@link StringWriter}.
    *
    * @param pretty is the pretty printing format.
    * @throws IOException if there is an error during construction.
    */
   public JsonBuilder(Pretty pretty) throws IOException
   {
-    _writer = new StringWriter();
+    this(pretty, new StringWriter());
+  }
+
+  /**
+   * Constructor with custom writer.
+   *
+   * @param pretty is the pretty printing format.
+   * @param writer the writer to write to.
+   *
+   * @throws IOException if there is an error during construction.
+   */
+  public JsonBuilder(Pretty pretty, Writer writer) throws IOException
+  {
+    _writer = writer;
     _jsonGenerator = _jsonFactory.createGenerator(_writer);
     switch (pretty)
     {
@@ -90,14 +102,27 @@ public class JsonBuilder
   }
 
   /**
-   * Get the resulting JSON output.
+   * Get the resulting JSON output if configured to write to a {@link StringWriter}.
    * @return the resulting JSON output.
    * @throws IOException if there is an error generating the output.
    */
   public String result() throws IOException
   {
     _jsonGenerator.flush();
-    return _writer.toString();
+    if (_writer instanceof StringWriter)
+    {
+      return _writer.toString();
+    }
+
+    throw new IOException("Cannot get string result from non string writer: " + _writer.getClass());
+  }
+
+  /**
+   * Flush the contents of the underlying {@link JsonGenerator}.
+   */
+  public void flush() throws IOException
+  {
+    _jsonGenerator.flush();
   }
 
   /**
@@ -273,7 +298,21 @@ public class JsonBuilder
   }
 
   /**
+   * Write Data object. But if the Data Object contains DataMap or itself is a DataMap,
+   * the result would output the map entries using sorted key order.
+   *
+   * @param object is the Data object to write.
+   */
+  public void writeDataWithMapEntriesSorted(Object object) throws IOException
+  {
+    _jacksonDataCodec.objectToJsonGenerator(object, _jsonGenerator, true);
+  }
+
+
+  /**
    * Write properties by adding each property as a field to current JSON object.
+   * The property would be key value pair with keys sorted
+   * Of the property's value contains Data Map, its output would have those map keys sorted as well
    *
    * @param value provides the properties to be written.
    * @throws IOException if there is an error writing.
@@ -282,10 +321,13 @@ public class JsonBuilder
   {
     if (value.isEmpty() == false)
     {
-      for (Map.Entry<String, ?> entry : value.entrySet())
+      List<Map.Entry<String, ?>> orderedProperties =  value.entrySet().stream()
+                                                                     .sorted(Map.Entry.comparingByKey())
+                                                                     .collect(Collectors.toList());
+        for (Map.Entry<String, ?> entry : orderedProperties)
       {
         _jsonGenerator.writeFieldName(entry.getKey());
-        writeData(entry.getValue());
+        writeDataWithMapEntriesSorted(entry.getValue());
       }
     }
   }
@@ -295,12 +337,12 @@ public class JsonBuilder
     _jacksonDataTemplateCodec.dataTemplateToJsonGenerator(template, _jsonGenerator, order);
   }
 
-  private final StringWriter _writer;
+  private final Writer _writer;
   private final JsonGenerator _jsonGenerator;
-  private final JacksonDataCodec _jacksonDataCodec = new JacksonDataCodec();
-  private final JacksonDataTemplateCodec _jacksonDataTemplateCodec = new JacksonDataTemplateCodec();
 
-  private static final JsonFactory _jsonFactory = new JsonFactory().disable(JsonFactory.Feature.INTERN_FIELD_NAMES);
+  private static final JsonFactory _jsonFactory = new JsonFactory();
+  private static final JacksonDataCodec _jacksonDataCodec = new JacksonDataCodec(_jsonFactory);
+  private static final JacksonDataTemplateCodec _jacksonDataTemplateCodec = new JacksonDataTemplateCodec(_jsonFactory);
   private static final PrettyPrinter _spacesPrettyPrinter = new SpacesPrettyPrinter();
 
   private static class SpacesPrettyPrinter implements PrettyPrinter

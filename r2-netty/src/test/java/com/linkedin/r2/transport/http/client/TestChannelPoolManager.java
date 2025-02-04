@@ -21,8 +21,11 @@
 package com.linkedin.r2.transport.http.client;
 
 import com.linkedin.common.callback.Callback;
-import com.linkedin.r2.util.Cancellable;
 import com.linkedin.common.util.None;
+import com.linkedin.r2.transport.http.client.common.ChannelPoolFactory;
+import com.linkedin.r2.transport.http.client.common.ChannelPoolManager;
+import com.linkedin.r2.transport.http.client.common.ChannelPoolManagerImpl;
+import com.linkedin.r2.util.Cancellable;
 import io.netty.channel.Channel;
 import org.testng.Assert;
 import org.testng.annotations.Test;
@@ -49,18 +52,18 @@ public class TestChannelPoolManager
       @Override
       public AsyncPool<Channel> getPool(SocketAddress address)
       {
-        return new FakePool<Channel>();
+        return new FakePool<>();
       }
     };
-    ChannelPoolManager m = new ChannelPoolManager(factory);
+    ChannelPoolManager m = new ChannelPoolManagerImpl(factory, null, null);
 
     final int NUM = 100;
-    List<SocketAddress> addresses = new ArrayList<SocketAddress>(NUM);
+    List<SocketAddress> addresses = new ArrayList<>(NUM);
     for (int i = 0; i < NUM; i++)
     {
       addresses.add(new InetSocketAddress(i));
     }
-    List<AsyncPool<Channel>> pools = new ArrayList<AsyncPool<Channel>>(NUM);
+    List<AsyncPool<Channel>> pools = new ArrayList<>(NUM);
     for (int i = 0; i < NUM; i++)
     {
       pools.add(m.getPoolForAddress(addresses.get(i)));

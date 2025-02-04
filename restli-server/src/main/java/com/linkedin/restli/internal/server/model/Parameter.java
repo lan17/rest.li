@@ -20,6 +20,7 @@ package com.linkedin.restli.internal.server.model;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.codec.JacksonDataCodec;
+import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.validation.ValidateDataAgainstSchema;
 import com.linkedin.data.schema.validation.ValidationOptions;
@@ -37,7 +38,11 @@ import com.linkedin.restli.server.ResourceConfigException;
 import com.linkedin.restli.server.annotations.ActionParam;
 import com.linkedin.restli.server.annotations.QueryParam;
 
+import com.linkedin.util.CustomTypeUtil;
 import java.io.IOException;
+import java.util.stream.Collectors;
+
+import static com.linkedin.data.schema.DataSchemaUtil.getDataClassFromSchema;
 
 
 /**
@@ -73,13 +78,17 @@ public class Parameter<T> extends FieldDef<T>
     @Deprecated
     PATH_KEYS,                    // @Keys
     PATH_KEYS_PARAM,              // @PathKeysParam
+    PATH_KEY_PARAM,               // @PathKeyParam
     @Deprecated
     RESOURCE_CONTEXT,             // @ResourceContextParam
     RESOURCE_CONTEXT_PARAM,       // @ResourceContextParam
     HEADER,                       // @HeaderParam
     METADATA_PROJECTION_PARAM,    // @MetadataProjectionParam
     PAGING_PROJECTION_PARAM,      // @PagingProjectionParam
-    VALIDATOR_PARAM               // @ValidatorParam
+    VALIDATOR_PARAM,              // @ValidatorParam
+    RESTLI_ATTACHMENTS_PARAM,     // @RestLiAttachmentsParam
+    UNSTRUCTURED_DATA_WRITER_PARAM, // @UnstructuredDataWriterParam
+    UNSTRUCTURED_DATA_REACTIVE_READER_PARAM  // @UnstructuredDataReactiveReaderParam
   }
 
   private final boolean _optional;
@@ -144,7 +153,18 @@ public class Parameter<T> extends FieldDef<T>
       {
         if (getType().isArray())
         {
-          final DataList valueAsDataList = _codec.stringToList(defaultValueString);
+          DataList valueAsDataList = _codec.stringToList(defaultValueString);
+          DataSchema itemSchema = ((ArrayDataSchema) getDataSchema()).getItems();
+          // Handle custom type arrays. Only single level arrays are supported.
+          if (CustomTypeUtil.getJavaCustomTypeClassNameFromSchema(itemSchema) != null)
+          {
+            // First coerce the default value to the de-referenced type.
+            valueAsDataList = new DataList(
+                valueAsDataList.stream()
+                    .map(val -> DataTemplateUtil.coerceOutput(val, getDataClassFromSchema(itemSchema)))
+                    .collect(Collectors.toList())
+            );
+          }
           result = DataTemplateUtil.convertDataListToArray(valueAsDataList, getItemType());
         }
         else if (DataTemplate.class.isAssignableFrom(getType()))
@@ -167,6 +187,13 @@ public class Parameter<T> extends FieldDef<T>
 
           result = DataTemplateUtil.wrap(input, getType().asSubclass(DataTemplate.class));
           validate((DataTemplate<?>) result, getType());
+        }
+        else if (CustomTypeUtil.getJavaCustomTypeClassNameFromSchema(getDataSchema()) != null)
+        {
+          // First convert the default value from string to the de-referenced type.
+          Object deReferencedResult =  ValueConverter.coerceString(defaultValueString, getDataClass());
+          // Use the coercer to get the custom type.
+          result = DataTemplateUtil.coerceOutput(deReferencedResult, getType());
         }
         else
         {

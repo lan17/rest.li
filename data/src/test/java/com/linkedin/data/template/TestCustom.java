@@ -193,7 +193,7 @@ public class TestCustom
   @Test
   public void testCustomPointArray()
   {
-    final List<String> input = new ArrayList<String>(Arrays.asList("1,1", "2,2", "3,3"));
+    final List<String> input = new ArrayList<>(Arrays.asList("1,1", "2,2", "3,3"));
     final DataList inputDataList = new DataList(input);
 
     CustomPointArray a1 = new CustomPointArray();
@@ -388,8 +388,8 @@ public class TestCustom
   public final static class Union extends UnionTemplate
   {
     private final static UnionDataSchema SCHEMA = ((UnionDataSchema) DataTemplateUtil.parseSchema("[{\"type\":\"typeref\",\"name\":\"CustomPoint\",\"ref\":\"string\"}, \"int\"]"));
-    private final static DataSchema MEMBER_CustomPoint = SCHEMA.getType("string");
-    private final static DataSchema MEMBER_int = SCHEMA.getType("int");
+    private final static DataSchema MEMBER_CustomPoint = SCHEMA.getTypeByMemberKey("string");
+    private final static DataSchema MEMBER_int = SCHEMA.getTypeByMemberKey("int");
 
     public Union() {
       super(new DataMap(), SCHEMA);

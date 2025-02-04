@@ -1,10 +1,5 @@
 {
   "models" : [ {
-    "type" : "enum",
-    "name" : "Tone",
-    "namespace" : "com.linkedin.restli.examples.greetings.api",
-    "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
-  }, {
     "type" : "record",
     "name" : "Message",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -17,10 +12,14 @@
       "type" : "string"
     }, {
       "name" : "tone",
-      "type" : "Tone",
+      "type" : {
+        "type" : "enum",
+        "name" : "Tone",
+        "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
+      },
       "doc" : "tone"
     } ]
-  }, {
+  }, "com.linkedin.restli.examples.greetings.api.Tone", {
     "type" : "typeref",
     "name" : "LongRef",
     "namespace" : "com.linkedin.restli.examples.typeref.api",
@@ -32,6 +31,7 @@
     "path" : "/typerefPrimitiveLongAssociationKeyResource",
     "schema" : "com.linkedin.restli.examples.greetings.api.Message",
     "doc" : "generated from: com.linkedin.restli.examples.greetings.server.TyperefPrimitiveLongAssociationKeyResource",
+    "resourceClass" : "com.linkedin.restli.examples.greetings.server.TyperefPrimitiveLongAssociationKeyResource",
     "association" : {
       "identifier" : "typerefPrimitiveLongAssociationKeyResourceId",
       "assocKeys" : [ {
@@ -43,7 +43,8 @@
       } ],
       "supports" : [ "get" ],
       "methods" : [ {
-        "method" : "get"
+        "method" : "get",
+        "javaMethodName" : "get"
       } ],
       "entity" : {
         "path" : "/typerefPrimitiveLongAssociationKeyResource/{typerefPrimitiveLongAssociationKeyResourceId}"

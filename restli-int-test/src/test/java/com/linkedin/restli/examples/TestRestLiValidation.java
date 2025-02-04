@@ -16,7 +16,6 @@
 
 package com.linkedin.restli.examples;
 
-
 import com.linkedin.data.DataMap;
 import com.linkedin.data.element.DataElement;
 import com.linkedin.data.message.Message;
@@ -34,6 +33,7 @@ import com.linkedin.restli.client.RestClient;
 import com.linkedin.restli.client.RestLiResponseException;
 import com.linkedin.restli.client.response.BatchKVResponse;
 import com.linkedin.restli.client.response.CreateResponse;
+import com.linkedin.restli.common.BatchCollectionResponse;
 import com.linkedin.restli.common.BatchCreateIdResponse;
 import com.linkedin.restli.common.BatchResponse;
 import com.linkedin.restli.common.CollectionResponse;
@@ -53,6 +53,7 @@ import com.linkedin.restli.examples.greetings.api.GreetingMap;
 import com.linkedin.restli.examples.greetings.api.MyItemArray;
 import com.linkedin.restli.examples.greetings.api.Tone;
 import com.linkedin.restli.examples.greetings.api.ValidationDemo;
+import com.linkedin.restli.examples.greetings.api.ValidationDemoCriteria;
 import com.linkedin.restli.examples.greetings.api.myEnum;
 import com.linkedin.restli.examples.greetings.api.myItem;
 import com.linkedin.restli.examples.greetings.api.myRecord;
@@ -60,21 +61,19 @@ import com.linkedin.restli.examples.greetings.client.AutoValidationDemosBuilders
 import com.linkedin.restli.examples.greetings.client.AutoValidationDemosRequestBuilders;
 import com.linkedin.restli.examples.greetings.client.ValidationDemosBuilders;
 import com.linkedin.restli.examples.greetings.client.ValidationDemosRequestBuilders;
-import com.linkedin.restli.server.validation.RestLiInputValidationFilter;
-import com.linkedin.restli.server.validation.RestLiOutputValidationFilter;
+import com.linkedin.restli.server.validation.RestLiValidationFilter;
 import com.linkedin.restli.test.util.PatchBuilder;
 import com.linkedin.restli.test.util.RootBuilderWrapper;
-import org.testng.Assert;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.testng.Assert;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.DataProvider;
+import org.testng.annotations.Test;
 
 
 /**
@@ -99,7 +98,7 @@ public class TestRestLiValidation extends RestLiIntegrationTest
   {
     super.init();
     _restClientManual = getClient();
-    super.init(Arrays.asList(new RestLiInputValidationFilter()), Arrays.asList(new RestLiOutputValidationFilter()));
+    super.init(Arrays.asList(new RestLiValidationFilter()));
     _restClientAuto = getClient();
   }
 
@@ -251,8 +250,8 @@ public class TestRestLiValidation extends RestLiIntegrationTest
   @DataProvider
   public static Object[][] batchCreateFailureData()
   {
-    List<ValidationDemo> validationDemos = new ArrayList<ValidationDemo>();
-    List<String> errorMessages = new ArrayList<String>();
+    List<ValidationDemo> validationDemos = new ArrayList<>();
+    List<String> errorMessages = new ArrayList<>();
     Object[][] cases = createFailures();
     for (int i = 0; i < cases.length; i++)
     {
@@ -332,8 +331,8 @@ public class TestRestLiValidation extends RestLiIntegrationTest
   @DataProvider
   public static Object[][] batchCreateAndGetFailureData()
   {
-    List<ValidationDemo> validationDemos = new ArrayList<ValidationDemo>();
-    List<String> errorMessages = new ArrayList<String>();
+    List<ValidationDemo> validationDemos = new ArrayList<>();
+    List<String> errorMessages = new ArrayList<>();
     Object[][] cases = batchCreateAndGetFailures();
     for (int i = 0; i < cases.length; i++)
     {
@@ -403,11 +402,11 @@ public class TestRestLiValidation extends RestLiIntegrationTest
     Assert.assertEquals(response.getStatus(), HttpStatus.S_201_CREATED.getCode());
     if (response.getEntity() instanceof CreateResponse)
     {
-      Assert.assertEquals(((CreateResponse<Integer>)response.getEntity()).getId(), new Integer(1234));
+      Assert.assertEquals(((CreateResponse<Integer>)response.getEntity()).getId(), Integer.valueOf(1234));
     }
     else
     {
-      Assert.assertEquals(((IdResponse<Integer>)(Object)response.getEntity()).getId(), new Integer(1234));
+      Assert.assertEquals(((IdResponse<Integer>)(Object)response.getEntity()).getId(), Integer.valueOf(1234));
     }
   }
 
@@ -483,7 +482,7 @@ public class TestRestLiValidation extends RestLiIntegrationTest
                 "ERROR :: /validationDemoNext/stringA :: cannot delete a required field\n"},
             {"{\"patch\": {\"MapWithTyperefs\": {\"key1\": {\"$delete\": [\"message\"]}}}}",
                 "ERROR :: /MapWithTyperefs/key1/message :: cannot delete a required field\n"},
-            // Cannot set ReadOnly or CreateOnly fields in a partial update request
+            // Cannot set ReadOnly or CreateOnly fields in a partial_update request (unless the field is the descendant of an array)
             {"{\"patch\": {\"$set\": {\"stringA\": \"abc\"}}}",
                 "ERROR :: /stringA :: ReadOnly field present in a partial_update request\n"},
             {"{\"patch\": {\"$set\": {\"intA\": 123}}}",
@@ -492,8 +491,6 @@ public class TestRestLiValidation extends RestLiIntegrationTest
                 "ERROR :: /UnionFieldWithInlineRecord/com.linkedin.restli.examples.greetings.api.myRecord/foo1 :: ReadOnly field present in a partial_update request\n"},
             {"{\"patch\": {\"$set\": {\"UnionFieldWithInlineRecord\": {\"com.linkedin.restli.examples.greetings.api.myRecord\": {\"foo1\": 1234}}}}}",
                 "ERROR :: /UnionFieldWithInlineRecord/com.linkedin.restli.examples.greetings.api.myRecord/foo1 :: ReadOnly field present in a partial_update request\n"},
-            {"{\"patch\": {\"$set\": {\"ArrayWithInlineRecord\": [{\"bar1\": \"bbb\", \"bar2\": \"barbar\"}]}}}",
-                "ERROR :: /ArrayWithInlineRecord/0/bar1 :: ReadOnly field present in a partial_update request\n"},
             {"{\"patch\": {\"validationDemoNext\": {\"$set\": {\"stringB\": \"abc\"}}}}",
                 "ERROR :: /validationDemoNext/stringB :: ReadOnly field present in a partial_update request\n"},
             {"{\"patch\": {\"validationDemoNext\": {\"UnionFieldWithInlineRecord\": {\"$set\": {\"com.linkedin.restli.examples.greetings.api.myEnum\": \"FOOFOO\"}}}}}",
@@ -558,10 +555,18 @@ public class TestRestLiValidation extends RestLiIntegrationTest
             "{\"patch\": {\"validationDemoNext\": {\"$set\": {\"stringA\": \"some value\"}}}}",
             // A field (MapWithTyperefs/key1) containing a CreateOnly field (MapWithTyperefs/key1/id) has to be partially set
             "{\"patch\": {\"MapWithTyperefs\": {\"key1\": {\"$set\": {\"message\": \"some message\", \"tone\": \"SINCERE\"}}}}}",
+            // Okay to set a field containing a ReadOnly field if the ReadOnly field is omitted
+            "{\"patch\": {\"$set\": {\"ArrayWithInlineRecord\": [{\"bar2\": \"missing bar1\"}]}}}",
+            "{\"patch\": {\"$set\": {\"UnionFieldWithInlineRecord\": {\"com.linkedin.restli.examples.greetings.api.myRecord\": {}}}}}",
+            "{\"patch\": {\"$set\": {\"validationDemoNext\": {\"stringA\": \"no stringB\"}}}}",
             // Okay to delete a field containing a ReadOnly field
             "{\"patch\": {\"$delete\": [\"ArrayWithInlineRecord\"]}}",
             // Okay to delete a field containing a CreateOnly field
-            "{\"patch\": {\"MapWithTyperefs\": {\"$delete\": [\"key1\"]}}}"
+            "{\"patch\": {\"MapWithTyperefs\": {\"$delete\": [\"key1\"]}}}",
+            // Okay to set a ReadOnly field if it's the descendant of an array
+            "{\"patch\": {\"$set\": {\"ArrayWithInlineRecord\": [{\"bar1\": \"setting ReadOnly field\", \"bar2\": \"foo\"}]}}}",
+            // Okay to set a CreateOnly field if it's the descendant of an array
+            "{\"patch\": {\"$set\": {\"ArrayWithInlineRecord\": [{\"bar3\": \"setting CreateOnly field\", \"bar2\": \"foo\"}]}}}"
         };
   }
 
@@ -585,8 +590,8 @@ public class TestRestLiValidation extends RestLiIntegrationTest
   {
     String[][] failures = partialUpdateFailures();
     String[] successes = partialUpdateSuccesses();
-    Map<Integer, PatchRequest<ValidationDemo>> inputs = new HashMap<Integer, PatchRequest<ValidationDemo>>();
-    Map<Integer, String> errorMessages = new HashMap<Integer, String>();
+    Map<Integer, PatchRequest<ValidationDemo>> inputs = new HashMap<>();
+    Map<Integer, String> errorMessages = new HashMap<>();
     for (int i = 0; i < failures.length; i++)
     {
       inputs.put(i, PatchBuilder.<ValidationDemo>buildPatchFromString(failures[i][0]));
@@ -663,6 +668,9 @@ public class TestRestLiValidation extends RestLiIntegrationTest
     greetingMap.put("key1", new Greeting());
     return new Object[][]
         {
+            // Required fields even if marked createOnly should be present
+            {new ValidationDemo(),
+                 "/stringB :: field is required but not found and has no default value"},
             // Required fields should be present in an update request
             {new ValidationDemo().setArrayWithInlineRecord(myItems),
                 "/ArrayWithInlineRecord/0/bar2 :: field is required but not found and has no default value"},
@@ -703,6 +711,9 @@ public class TestRestLiValidation extends RestLiIntegrationTest
     }
   }
 
+  /**
+   * Required but read-only fields are optional. Required create-only fields must be present.
+   */
   public static Object[] updateSuccesses()
   {
     ValidationDemo.UnionFieldWithInlineRecord unionField = new ValidationDemo.UnionFieldWithInlineRecord();
@@ -717,8 +728,11 @@ public class TestRestLiValidation extends RestLiIntegrationTest
     map.put("key1", new Greeting().setId(1).setMessage("msg").setTone(Tone.FRIENDLY));
     return new Object[]
         {
-            // All required fields have to be present, regardless of ReadOnly or CreateOnly annotations
+            // All fields present.
             validationDemo1,
+            // ReadOnly fields stringA, intA not present
+            new ValidationDemo().setStringB("BBB").setUnionFieldWithInlineRecord(unionField2)
+                    .setIntB(5432).setArrayWithInlineRecord(array).setMapWithTyperefs(map).setValidationDemoNext(validationDemo1),
             new ValidationDemo().setStringA("aaa").setStringB("bbb").setUnionFieldWithInlineRecord(unionField2)
                 .setIntA(1234).setIntB(5678).setArrayWithInlineRecord(array).setMapWithTyperefs(map).setValidationDemoNext(validationDemo1)
         };
@@ -772,6 +786,19 @@ public class TestRestLiValidation extends RestLiIntegrationTest
     Request<CollectionResponse<ValidationDemo>> request = new RootBuilderWrapper<Integer, ValidationDemo>(builder)
         .findBy("search").setQueryParam("intA", 1234).build();
     Response<CollectionResponse<ValidationDemo>> response = _restClientManual.sendRequest(request).getResponse();
+    Assert.assertEquals(response.getStatus(), HttpStatus.S_200_OK.getCode());
+  }
+
+  @Test(dataProvider = "manualBuilders")
+  public void testBatchFinder(Object builder) throws RemoteInvocationException
+  {
+    ValidationDemoCriteria c1 = new ValidationDemoCriteria().setIntA(1111).setStringB("hello");
+    ValidationDemoCriteria c2 = new ValidationDemoCriteria().setIntA(1111).setStringB("world");
+
+    Request<BatchCollectionResponse<ValidationDemo>> request = new RootBuilderWrapper<Integer, ValidationDemo>(builder)
+        .batchFindBy("searchValidationDemos").setQueryParam("criteria", Arrays.asList(c1, c2)).build();
+    Response<BatchCollectionResponse<ValidationDemo>> response = _restClientManual.sendRequest(request).getResponse();
+
     Assert.assertEquals(response.getStatus(), HttpStatus.S_200_OK.getCode());
   }
 
@@ -860,6 +887,87 @@ public class TestRestLiValidation extends RestLiIntegrationTest
           "ERROR :: /stringB :: field is required but not found and has no default value\n");
     }
   }
+
+  @Test(dataProvider = "autoBuilders")
+  public void testBatchFinderAutoWithMissingField(Object builder) throws RemoteInvocationException
+  {
+    try
+    {
+      ValidationDemoCriteria c1 = new ValidationDemoCriteria().setIntA(1111).setStringB("hello");
+      ValidationDemoCriteria c2 = new ValidationDemoCriteria().setIntA(4444).setStringB("world");
+
+      Request<BatchCollectionResponse<ValidationDemo>> request = new RootBuilderWrapper<Integer, ValidationDemo>(builder)
+          .batchFindBy("searchValidationDemos").setQueryParam("criteria", Arrays.asList(c1, c2)).build();
+      _restClientAuto.sendRequest(request).getResponse();
+      Assert.fail("Expected RestLiResponseException");
+    }
+    catch (RestLiResponseException e)
+    {
+      Assert.assertEquals(e.getServiceErrorMessage(), "BatchCriteria: 0 Element: 0 ERROR :: /stringB :: field is required but not found and has no default value\n" +
+          "BatchCriteria: 0 Element: 1 ERROR :: /stringB :: field is required but not found and has no default value\n" +
+          "BatchCriteria: 0 Element: 2 ERROR :: /stringB :: field is required but not found and has no default value\n");
+    }
+  }
+
+  @Test(dataProvider = "autoBuilders")
+  public void testBatchFinderAutoWithOverLengthField(Object builder) throws RemoteInvocationException
+  {
+    try
+    {
+      ValidationDemoCriteria c1 = new ValidationDemoCriteria().setIntA(2222).setStringB("hello");
+      ValidationDemoCriteria c2 = new ValidationDemoCriteria().setIntA(4444).setStringB("world");
+
+      Request<BatchCollectionResponse<ValidationDemo>> request = new RootBuilderWrapper<Integer, ValidationDemo>(builder)
+          .batchFindBy("searchValidationDemos").setQueryParam("criteria", Arrays.asList(c1, c2)).build();
+      _restClientAuto.sendRequest(request).getResponse();
+      Assert.fail("Expected RestLiResponseException");
+    }
+    catch (RestLiResponseException e)
+    {
+      Assert.assertEquals(e.getServiceErrorMessage(), "BatchCriteria: 0 Element: 0 ERROR :: /stringA :: length of \"longLengthValueA\" is out of range 1...10\n" +
+          "BatchCriteria: 0 Element: 1 ERROR :: /stringA :: length of \"longLengthValueA\" is out of range 1...10\n" +
+          "BatchCriteria: 0 Element: 2 ERROR :: /stringA :: length of \"longLengthValueA\" is out of range 1...10\n");
+    }
+  }
+
+  @Test(dataProvider = "autoBuilders")
+  public void testBatchFinderAutoWithMultipleErrorFields(Object builder) throws RemoteInvocationException
+  {
+    try
+    {
+      ValidationDemoCriteria c1 = new ValidationDemoCriteria().setIntA(3333).setStringB("hello");
+      ValidationDemoCriteria c2 = new ValidationDemoCriteria().setIntA(4444).setStringB("world");
+
+      Request<BatchCollectionResponse<ValidationDemo>> request = new RootBuilderWrapper<Integer, ValidationDemo>(builder)
+          .batchFindBy("searchValidationDemos").setQueryParam("criteria", Arrays.asList(c1, c2)).build();
+      _restClientAuto.sendRequest(request).getResponse();
+      Assert.fail("Expected RestLiResponseException");
+    }
+    catch (RestLiResponseException e)
+    {
+      Assert.assertEquals(e.getServiceErrorMessage(), "BatchCriteria: 0 Element: 0 ERROR :: /stringA :: length of \"longLengthValueA\" is out of range 1...10\n" +
+          "ERROR :: /stringB :: field is required but not found and has no default value\n" +
+          "BatchCriteria: 0 Element: 1 ERROR :: /stringA :: length of \"longLengthValueA\" is out of range 1...10\n" +
+          "ERROR :: /stringB :: field is required but not found and has no default value\n" +
+          "BatchCriteria: 0 Element: 2 ERROR :: /stringA :: length of \"longLengthValueA\" is out of range 1...10\n" +
+          "ERROR :: /stringB :: field is required but not found and has no default value\n");
+    }
+  }
+
+
+  @Test(dataProvider = "autoBuilders")
+  public void testBatchFinderAutoWithErrorCriteriaResult(Object builder) throws RemoteInvocationException
+  {
+    ValidationDemoCriteria c1 = new ValidationDemoCriteria().setIntA(5555).setStringB("hello");
+    ValidationDemoCriteria c2 = new ValidationDemoCriteria().setIntA(4444).setStringB("world");
+
+    Request<BatchCollectionResponse<ValidationDemo>> request = new RootBuilderWrapper<Integer, ValidationDemo>(builder)
+        .batchFindBy("searchValidationDemos").setQueryParam("criteria", Arrays.asList(c1, c2)).build();
+    _restClientAuto.sendRequest(request).getResponse();
+    Response<BatchCollectionResponse<ValidationDemo>> response = _restClientAuto.sendRequest(request).getResponse();
+    Assert.assertEquals(response.getStatus(), HttpStatus.S_200_OK.getCode());
+  }
+
 
   // Tests for output validation filter handling exceptions from the resource
   @Test(dataProvider = "autoBuilders")

@@ -30,18 +30,20 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import com.linkedin.common.callback.Callback;
 import com.linkedin.common.callback.Callbacks;
 import com.linkedin.common.util.None;
 import com.linkedin.d2.discovery.PropertySerializer;
+
 import org.apache.zookeeper.AsyncCallback;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
-import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.Watcher.Event.KeeperState;
+import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.data.Stat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,15 +72,17 @@ public class ZKConnection
   private final long _initInterval;
   private final boolean _shutdownAsynchronously;
   private final boolean _isSymlinkAware;
-  private PropertySerializer<String> _symlinkSerializer = new SymlinkAwareZooKeeper.DefaultSerializer();;
+  private final Function<ZooKeeper, ZooKeeper> _zkDecorator;
+  private PropertySerializer<String> _symlinkSerializer = new SymlinkAwareZooKeeper.DefaultSerializer();
+  private final boolean _isWaitForConnected;
 
   // _countDownLatch signals when _zkRef is ready to be used
   private final CountDownLatch _zkRefLatch = new CountDownLatch(1);
-  private final AtomicReference<ZooKeeper> _zkRef = new AtomicReference<ZooKeeper>();
+  private final AtomicReference<ZooKeeper> _zkRef = new AtomicReference<>();
 
   // _mutex protects the two fields below: _listeners and _currentState
   private final Object _mutex = new Object();
-  private final Set<StateListener> _listeners = new HashSet<StateListener>();
+  private final Set<StateListener> _listeners = new HashSet<>();
   private Watcher.Event.KeeperState _currentState;
 
   public interface StateListener
@@ -129,9 +133,26 @@ public class ZKConnection
     this(connectString, timeout, retryLimit, exponentialBackoff, scheduler, initInterval, shutdownAsynchronously, false);
   }
 
+
   public ZKConnection(String connectString, int timeout, int retryLimit, boolean exponentialBackoff,
                       ScheduledExecutorService scheduler, long initInterval, boolean shutdownAsynchronously,
                       boolean isSymlinkAware)
+  {
+    this(connectString, timeout, retryLimit, exponentialBackoff, scheduler, initInterval, shutdownAsynchronously,
+      isSymlinkAware, null, false);
+  }
+
+  public ZKConnection(String connectString, int timeout, int retryLimit, boolean exponentialBackoff,
+                      ScheduledExecutorService scheduler, long initInterval, boolean shutdownAsynchronously,
+                      boolean isSymlinkAware, Function<ZooKeeper,ZooKeeper> zkDecorator)
+  {
+    this(connectString, timeout, retryLimit, exponentialBackoff, scheduler, initInterval, shutdownAsynchronously,
+         isSymlinkAware, zkDecorator, false);
+  }
+
+  public ZKConnection(String connectString, int timeout, int retryLimit, boolean exponentialBackoff,
+                      ScheduledExecutorService scheduler, long initInterval, boolean shutdownAsynchronously,
+                      boolean isSymlinkAware, Function<ZooKeeper,ZooKeeper> zkDecorator, boolean isWaitForConnected)
   {
     _connectString = connectString;
     _timeout = timeout;
@@ -141,7 +162,13 @@ public class ZKConnection
     _initInterval = initInterval;
     _shutdownAsynchronously = shutdownAsynchronously;
     _isSymlinkAware = isSymlinkAware;
-
+    _isWaitForConnected = isWaitForConnected;
+    if (zkDecorator == null)
+    {
+      // if null, just return itself
+      zkDecorator = zooKeeper -> zooKeeper;
+    }
+    _zkDecorator = zkDecorator;
   }
 
   public void start() throws IOException
@@ -151,11 +178,26 @@ public class ZKConnection
       throw new IllegalStateException("Already started");
     }
 
+    final CountDownLatch connectionLatch = new CountDownLatch(1);
+    StateListener connectionListener = state -> {
+      if (state == Watcher.Event.KeeperState.SyncConnected || state == Watcher.Event.KeeperState.ConnectedReadOnly)
+      {
+        connectionLatch.countDown();
+      }
+    };
+
+    if (_isWaitForConnected)
+    {
+      addStateListener(connectionListener);
+    }
+
     // We take advantage of the fact that the default watcher is always
     // notified of connection state changes (without having to explicitly register)
     // and never notified of anything else.
     Watcher defaultWatcher = new DefaultWatcher();
-    ZooKeeper  zk = new VanillaZooKeeperAdapter(_connectString, _timeout, defaultWatcher);
+    ZooKeeper zk = new VanillaZooKeeperAdapter(_connectString, _timeout, defaultWatcher);
+
+    zk = _zkDecorator.apply(zk);
     if (_retryLimit <= 0)
     {
       if (_isSymlinkAware)
@@ -205,6 +247,26 @@ public class ZKConnection
     }
     LOG.debug("counting down");
     _zkRefLatch.countDown();
+
+    // wait for connection establishes.
+    if (_isWaitForConnected)
+    {
+      try
+      {
+        if (!connectionLatch.await(_timeout, TimeUnit.MILLISECONDS))
+        {
+          LOG.error("Error: Timeout waiting for zk connection");
+        }
+      }
+      catch (InterruptedException e)
+      {
+        LOG.warn("Error: interrupted while waiting for zookeeper connecting", e);
+      }
+      finally
+      {
+        removeStateListener(connectionListener);
+      }
+    }
   }
 
   public void shutdown() throws InterruptedException
@@ -261,7 +323,8 @@ public class ZKConnection
       zk = _zkRef.get();
       if (zk == null)
       {
-        throw new IllegalStateException("Null zkRef after countdownlatch.");
+        throw new IllegalStateException("Null zkRef after countdownlatch. If this happened at shutdown, please check if your app has custom de-announcements. "
+            + "Mis-coordinating custom de-announcement with the default de-announcement could cause double de-announcing and lead to this exception.");
       }
     }
     catch (InterruptedException e)
@@ -274,6 +337,16 @@ public class ZKConnection
   public ZooKeeper getZooKeeper()
   {
     return zk();
+  }
+
+  public String getConnectString()
+  {
+    return _connectString;
+  }
+
+  public int getTimeout()
+  {
+    return _timeout;
   }
 
   public void waitForState(KeeperState state, long timeout, TimeUnit timeUnit)
@@ -293,7 +366,7 @@ public class ZKConnection
         }
         else
         {
-          throw new TimeoutException("timeout expired without state being reached");
+          throw new TimeoutException("timeout expired without state being reached, current state: " + _currentState.name());
         }
       }
     }
@@ -304,6 +377,14 @@ public class ZKConnection
     synchronized (_mutex)
     {
       _listeners.add(listener);
+    }
+  }
+
+  public void removeStateListener(StateListener listener)
+  {
+    synchronized (_mutex)
+    {
+      _listeners.remove(listener);
     }
   }
 
@@ -746,7 +827,17 @@ public class ZKConnection
     @Override
     public void process(WatchedEvent watchedEvent)
     {
-      ZooKeeper zk = zk();
+      ZooKeeper zk;
+      try
+      {
+        zk = zk();
+      }
+      catch (IllegalStateException e)
+      {
+        // if connection state change event is received after zk object is gone, it is a legitimate race.
+        LOG.debug("Watched event received after connection shutdown (type {}, state {}.", watchedEvent.getType(), watchedEvent.getState());
+        return;
+      }
       long sessionID = zk.getSessionId();
 
       if (watchedEvent.getType() == Event.EventType.None)
@@ -760,7 +851,7 @@ public class ZKConnection
           {
             _currentState = state;
             _mutex.notifyAll();
-            listeners = new HashSet<StateListener>(_listeners);
+            listeners = new HashSet<>(_listeners);
           }
         }
         for (StateListener listener : listeners)
@@ -771,7 +862,9 @@ public class ZKConnection
       }
       else
       {
-        LOG.warn("Received unexpected event of type {} for session 0x{}", watchedEvent.getType(), Long.toHexString(sessionID));
+        LOG.warn("Received unexpected event of type {} for session 0x{}. " +
+            "This event is NOT propagated and NONE of the watchers will receive data for this event",
+          watchedEvent.getType(), Long.toHexString(sessionID));
       }
     }
   }

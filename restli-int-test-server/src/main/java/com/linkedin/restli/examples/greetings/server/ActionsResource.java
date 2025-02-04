@@ -21,6 +21,8 @@
 package com.linkedin.restli.examples.greetings.server;
 
 
+import com.linkedin.restli.examples.custom.types.CustomLong;
+import com.linkedin.restli.examples.typeref.api.CustomLongRef;
 import com.linkedin.restli.server.annotations.Optional;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.server.ActionResult;
@@ -62,7 +64,7 @@ public class ActionsResource
   @Action(name="returnVoid")
   public ActionResult<Void> returnVoid()
   {
-    return new ActionResult<Void>(HttpStatus.S_200_OK);
+    return new ActionResult<>(HttpStatus.S_200_OK);
   }
 
   @Action(name="returnInt")
@@ -119,6 +121,12 @@ public class ActionsResource
     return tones;
   }
 
+  @Action(name = "customTypeRef", returnTyperef= CustomLongRef.class)
+  public CustomLong customTypeRef(@ActionParam(value="customLong", typeref=CustomLongRef.class) CustomLong customLong)
+  {
+    return customLong;
+  }
+
   @Action(name = "timeout")
   public Promise<Void> timeout()
   {
@@ -171,7 +179,7 @@ public class ActionsResource
   }
 
   private static Task<String> makeConcatTask(final Task<?>... tasks) {
-    return Tasks.callable("concat", new Callable<String>()
+    return Task.callable("concat", new Callable<String>()
     {
       @Override
       public String call() throws Exception
@@ -256,7 +264,7 @@ public class ActionsResource
     final Task<String> t3 = makeTaskC(c);
     final Task<String> collect = makeConcatTask(t1, t2, t3);
 
-    return Tasks.seq(Tasks.par(t1, t2, t3), collect);
+    return Task.par(t1, t2, t3).andThen(collect);
   }
 
   /**

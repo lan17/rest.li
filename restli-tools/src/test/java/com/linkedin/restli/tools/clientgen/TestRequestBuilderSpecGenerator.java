@@ -75,10 +75,10 @@ public class TestRequestBuilderSpecGenerator
 
   private Set<BuilderSpec> generateBuilderSpec(String[] sources)
   {
-    final DataSchemaParser schemaParser = new DataSchemaParser(RESOLVER_DIR);
+    final DataSchemaParser schemaParser = new DataSchemaParser.Builder(RESOLVER_DIR).build();
     final TemplateSpecGenerator specGenerator = new TemplateSpecGenerator(schemaParser.getSchemaResolver());
     final RestSpecParser parser = new RestSpecParser();
-    final Map<ResourceMethod, String> builderBaseMap = new HashMap<ResourceMethod, String>();
+    final Map<ResourceMethod, String> builderBaseMap = new HashMap<>();
     builderBaseMap.put(ResourceMethod.GET, "GetRequestBuilder");
     builderBaseMap.put(ResourceMethod.DELETE, "DeleteRequestBuilder");
     builderBaseMap.put(ResourceMethod.UPDATE, "UpdateRequestBuilder");
@@ -115,7 +115,7 @@ public class TestRequestBuilderSpecGenerator
     Set<BuilderSpec> builderSpecs = generateBuilderSpec(new String[] {idl});
     Assert.assertNotNull(builderSpecs);
     Assert.assertTrue(builderSpecs.size() == 6);
-    Map<String, String> methodMap = new HashMap<String, String>();
+    Map<String, String> methodMap = new HashMap<>();
     methodMap.put("get", "Gets the greeting.");
     methodMap.put("delete","Deletes the greeting.");
     methodMap.put("update", "Updates the greeting.");
@@ -156,8 +156,10 @@ public class TestRequestBuilderSpecGenerator
       }
       else if (spec instanceof RestMethodBuilderSpec)
       {
-        ResourceMethod method = ((RestMethodBuilderSpec) spec).getResourceMethod();
+        RestMethodBuilderSpec builderSpec = (RestMethodBuilderSpec) spec;
+        ResourceMethod method = builderSpec.getResourceMethod();
         Assert.assertTrue(methodMap.containsKey(method.toString()));
+        Assert.assertFalse(builderSpec.hasBindingMethods());
       }
     }
   }
@@ -170,12 +172,12 @@ public class TestRequestBuilderSpecGenerator
     Assert.assertNotNull(builderSpecs);
     Assert.assertTrue(builderSpecs.size() == 15);
     List<String> expectedMethods = Arrays.asList("actionAnotherAction", "actionSomeAction", "actionVoidAction", "batchGet", "create", "delete", "findBySearch", "get", "getAll", "partialUpdate", "update");
-    List<String> actualMethods = new ArrayList<String>();
+    List<String> actualMethods = new ArrayList<>();
     CollectionRootBuilderSpec rootBuilder = null;
     CollectionRootBuilderSpec subRootBuilder = null;
     FinderBuilderSpec finderBuilder = null;
-    List<ActionBuilderSpec> actionBuilders = new ArrayList<ActionBuilderSpec>();
-    List<RestMethodBuilderSpec> basicMethodBuilders = new ArrayList<RestMethodBuilderSpec>();
+    List<ActionBuilderSpec> actionBuilders = new ArrayList<>();
+    List<RestMethodBuilderSpec> basicMethodBuilders = new ArrayList<>();
 
     for (BuilderSpec spec : builderSpecs)
     {
@@ -214,6 +216,7 @@ public class TestRequestBuilderSpecGenerator
     Assert.assertNotNull(subRootBuilder);
     Assert.assertEquals(subRootBuilder.getSourceIdlName(), idl);
     Assert.assertEquals(subRootBuilder.getResourcePath(), "testCollection/{testCollectionId}/testCollectionSub");
+    Assert.assertEquals(subRootBuilder.getParentRootBuilder(), rootBuilder);
     Assert.assertNotNull(subRootBuilder.getRestMethods());
     Assert.assertTrue(subRootBuilder.getRestMethods().size() == 2);
     Assert.assertTrue(subRootBuilder.getFinders().isEmpty());
@@ -251,6 +254,7 @@ public class TestRequestBuilderSpecGenerator
     Assert.assertNotNull(finderBuilder);
     Assert.assertEquals("search", finderBuilder.getFinderName());
     Assert.assertNotNull(finderBuilder.getQueryParamMethods());
+    Assert.assertTrue(finderBuilder.hasBindingMethods());
     Assert.assertEquals(finderBuilder.getMetadataType().getFullName(),
                         "com.linkedin.restli.tools.test.TestRecord");
     Assert.assertTrue(finderBuilder.getQueryParamMethods().size() == 1);
@@ -267,6 +271,14 @@ public class TestRequestBuilderSpecGenerator
     for (ActionBuilderSpec spec : actionBuilders)
     {
       Assert.assertTrue(spec.getActionName().equals("someAction") || spec.getActionName().equals("anotherAction") || spec.getActionName().equals("voidAction"));
+      if (spec.getActionName().equals("voidAction"))
+      {
+        Assert.assertFalse(spec.hasBindingMethods());
+      }
+      else
+      {
+        Assert.assertTrue(spec.hasBindingMethods());
+      }
     }
 
     // assert get method builder query method
@@ -278,6 +290,7 @@ public class TestRequestBuilderSpecGenerator
       {
         Assert.assertNotNull(spec.getQueryParamMethods());
         Assert.assertTrue(spec.getQueryParamMethods().size() == 1);
+        Assert.assertTrue(spec.hasBindingMethods());
         QueryParamBindingMethodSpec getQuery = spec.getQueryParamMethods().get(0);
         Assert.assertEquals(getQuery.getParamName(), "message");
         Assert.assertEquals(getQuery.getMethodName(), "messageParam");
@@ -297,6 +310,7 @@ public class TestRequestBuilderSpecGenerator
         List<PathKeyBindingMethodSpec> pathKeys = spec.getPathKeyMethods();
         Assert.assertNotNull(pathKeys);
         Assert.assertTrue(pathKeys.size() == 1);
+        Assert.assertTrue(spec.hasBindingMethods());
         PathKeyBindingMethodSpec pathKeyMethod = pathKeys.get(0);
         Assert.assertEquals(pathKeyMethod.getPathKey(), "testCollectionId");
         Assert.assertEquals(pathKeyMethod.getMethodName(), "testCollectionIdKey");
@@ -305,6 +319,7 @@ public class TestRequestBuilderSpecGenerator
       else if (spec.getResourceMethod() == ResourceMethod.CREATE)
       {
         Assert.assertEquals(spec.getQueryParamMethods().size(), 1);
+        Assert.assertTrue(spec.hasBindingMethods());
         QueryParamBindingMethodSpec queryParam = spec.getQueryParamMethods().get(0);
         Assert.assertEquals(queryParam.getParamName(), "isNullId");
         Assert.assertEquals(queryParam.isOptional(), true);
@@ -324,7 +339,7 @@ public class TestRequestBuilderSpecGenerator
     Assert.assertEquals(builderSpecs.size(), 27);
 
     ActionSetRootBuilderSpec rootBuilder = null;
-    List<ActionBuilderSpec> actionBuilders = new ArrayList<ActionBuilderSpec>();
+    List<ActionBuilderSpec> actionBuilders = new ArrayList<>();
 
     for (BuilderSpec spec : builderSpecs)
     {
@@ -357,12 +372,12 @@ public class TestRequestBuilderSpecGenerator
 
     Assert.assertNotNull(actionBuilders);
     Assert.assertEquals(actionBuilders.size(), 26);
-    Set<String> actionNames = new HashSet<String>(Arrays.asList("arrayPromise", "echo", "echoRecord", "echoRecordArray", "echoStringArray",
-                                                                "echoEnumArray", "failCallbackCall", "failCallbackThrow", "failPromiseCall", "failPromiseThrow",
-                                                                "failTaskCall", "failTaskThrow", "failThrowInTask", "get", "nullPromise",
-                                                                "nullTask", "parseq", "parseq3", "returnBool", "returnBoolOptionalParam",
-                                                                "returnInt", "returnIntOptionalParam", "returnVoid", "timeout", "timeoutCallback",
-                                                                "ultimateAnswer"));
+    Set<String> actionNames = new HashSet<>(Arrays.asList("arrayPromise", "echo", "echoRecord", "echoRecordArray", "echoStringArray",
+        "echoEnumArray", "failCallbackCall", "failCallbackThrow", "failPromiseCall", "failPromiseThrow",
+        "failTaskCall", "failTaskThrow", "failThrowInTask", "get", "nullPromise",
+        "nullTask", "parseq", "parseq3", "returnBool", "returnBoolOptionalParam",
+        "returnInt", "returnIntOptionalParam", "returnVoid", "timeout", "timeoutCallback",
+        "ultimateAnswer"));
     for (ActionBuilderSpec spec : actionBuilders)
     {
       Assert.assertTrue(actionNames.contains(spec.getActionName()));

@@ -20,7 +20,7 @@
 
 package com.linkedin.restli.internal.server.methods.arguments;
 
-import com.linkedin.r2.message.rest.RestRequest;
+import com.linkedin.data.DataMap;
 import com.linkedin.restli.internal.server.RoutingResult;
 import com.linkedin.restli.server.RestLiRequestData;
 import com.linkedin.restli.server.RestLiRequestDataImpl;
@@ -37,11 +37,12 @@ public class CollectionArgumentBuilder implements RestLiArgumentBuilder
     return ArgumentBuilder.buildArgs(new Object[0],
                                      routingResult.getResourceMethod(),
                                      routingResult.getContext(),
-                                     null);
+                                     null,
+                                     routingResult.getResourceMethodConfig());
   }
 
   @Override
-  public RestLiRequestData extractRequestData(RoutingResult routingResult, RestRequest request)
+  public RestLiRequestData extractRequestData(RoutingResult routingResult, DataMap dataMap)
   {
     return new RestLiRequestDataImpl.Builder().build();
   }

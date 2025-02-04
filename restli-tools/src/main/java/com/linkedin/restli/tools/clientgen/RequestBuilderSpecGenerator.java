@@ -93,7 +93,7 @@ public class RequestBuilderSpecGenerator
   private final String _customMethodBuilderSuffix;
 
   // use LinkedHashSet to keep insertion order to avoid randomness in generated code in giant root builder case.
-  protected final Set<BuilderSpec> _builderSpecs = new LinkedHashSet<BuilderSpec>();
+  protected final Set<BuilderSpec> _builderSpecs = new LinkedHashSet<>();
 
   private final DataSchemaResolver _schemaResolver;
   private final TemplateSpecGenerator _templateSpecGenerator;
@@ -105,11 +105,11 @@ public class RequestBuilderSpecGenerator
 
   static
   {
-    ROOT_BUILDERS_SUFFIX = new HashMap<RestliVersion, String>();
+    ROOT_BUILDERS_SUFFIX = new HashMap<>();
     ROOT_BUILDERS_SUFFIX.put(RestliVersion.RESTLI_1_0_0, "Builders");
     ROOT_BUILDERS_SUFFIX.put(RestliVersion.RESTLI_2_0_0, "RequestBuilders");
 
-    METHOD_BUILDER_SUFFIX = new HashMap<RestliVersion, String>();
+    METHOD_BUILDER_SUFFIX = new HashMap<>();
     METHOD_BUILDER_SUFFIX.put(RestliVersion.RESTLI_1_0_0, "Builder");
     METHOD_BUILDER_SUFFIX.put(RestliVersion.RESTLI_2_0_0, "RequestBuilder");
   }
@@ -170,7 +170,7 @@ public class RequestBuilderSpecGenerator
     try
     {
       _currentSchemaLocation = new FileDataSchemaLocation(sourceFile);
-      generateRootRequestBuilder(resource, sourceFile.getAbsolutePath(), new HashMap<String, String>());
+      generateRootRequestBuilder(null, resource, sourceFile.getAbsolutePath(), new HashMap<>());
     }
     catch (IOException e)
     {
@@ -178,12 +178,13 @@ public class RequestBuilderSpecGenerator
     }
   }
 
-  private RootBuilderSpec generateRootRequestBuilder(ResourceSchema resource,
+  private RootBuilderSpec generateRootRequestBuilder(RootBuilderSpec parentRootBuilder,
+                                                     ResourceSchema resource,
                                                      String sourceFile,
                                                      Map<String, String> pathKeyTypes)
       throws IOException
   {
-    ValidationResult validationResult = ValidateDataAgainstSchema.validate(resource.data(), resource.schema(), new ValidationOptions(RequiredMode.MUST_BE_PRESENT));
+    ValidationResult validationResult = ValidateDataAgainstSchema.validate(resource.data(), resource.schema(), new ValidationOptions());
     if (!validationResult.isValid())
     {
       throw new IllegalArgumentException(String.format(
@@ -218,7 +219,8 @@ public class RequestBuilderSpecGenerator
     }
     else
     {
-      throw new IllegalArgumentException("unsupported resource type for resource: '" + resourceName + '\'');
+      log.warn("Ignoring unsupported association resource: " + resourceName);
+      return null;
     }
     rootBuilderSpec.setNamespace(packageName);
     rootBuilderSpec.setClassName(className);
@@ -231,6 +233,7 @@ public class RequestBuilderSpecGenerator
     rootBuilderSpec.setResourcePath(resourcePath);
     List<String> pathKeys = getPathKeys(resourcePath);
     rootBuilderSpec.setPathKeys(pathKeys);
+    rootBuilderSpec.setParentRootBuilder(parentRootBuilder);
 
     StringArray supportsList = null;
     RestMethodSchemaArray restMethods = null;
@@ -278,11 +281,11 @@ public class RequestBuilderSpecGenerator
       }
     }
 
-    List<RootBuilderMethodSpec> restMethodSpecs = new ArrayList<RootBuilderMethodSpec>();
-    List<RootBuilderMethodSpec> finderSpecs = new ArrayList<RootBuilderMethodSpec>();
-    List<RootBuilderMethodSpec> resourceActionSpecs = new ArrayList<RootBuilderMethodSpec>();
-    List<RootBuilderMethodSpec> entityActionSpecs = new ArrayList<RootBuilderMethodSpec>();
-    List<RootBuilderSpec> subresourceSpecs = new ArrayList<RootBuilderSpec>();
+    List<RootBuilderMethodSpec> restMethodSpecs = new ArrayList<>();
+    List<RootBuilderMethodSpec> finderSpecs = new ArrayList<>();
+    List<RootBuilderMethodSpec> resourceActionSpecs = new ArrayList<>();
+    List<RootBuilderMethodSpec> entityActionSpecs = new ArrayList<>();
+    List<RootBuilderSpec> subresourceSpecs = new ArrayList<>();
     String schemaClass = resource.getSchema();
 
     if (restMethods != null)
@@ -312,7 +315,7 @@ public class RequestBuilderSpecGenerator
 
     if (subresources != null)
     {
-      subresourceSpecs = generateSubResources(sourceFile, subresources, pathKeyTypes);
+      subresourceSpecs = generateSubResources(sourceFile, rootBuilderSpec, subresources, pathKeyTypes);
     }
 
     // assign to rootBuilderClass
@@ -348,9 +351,9 @@ public class RequestBuilderSpecGenerator
     if (resourcePath.contains("="))
     {
       // this is an old-style IDL.
-      List<String> newPathKeys = new ArrayList<String>(pathKeys.size());
+      List<String> newPathKeys = new ArrayList<>(pathKeys.size());
       Map<String, String> assocToPathKeys = reverseMap(pathToAssocKeys);
-      Set<String> prevRealPathKeys = new HashSet<String>();
+      Set<String> prevRealPathKeys = new HashSet<>();
       for (String currKey : pathKeys)
       {
         if (assocToPathKeys.containsKey(currKey))
@@ -378,7 +381,7 @@ public class RequestBuilderSpecGenerator
 
   private static Map<String, String> reverseMap(Map<String, List<String>> toReverse)
   {
-    Map<String, String> reversed = new HashMap<String, String>();
+    Map<String, String> reversed = new HashMap<>();
     for (Map.Entry<String, List<String>> entry : toReverse.entrySet())
     {
       for (String element : entry.getValue())
@@ -400,24 +403,28 @@ public class RequestBuilderSpecGenerator
     }
   }
 
-  private static List<String> getPathKeys(String basePath)
+  static List<String> getPathKeys(String basePath)
   {
     UriTemplate template = new UriTemplate(basePath);
-    return fixOldStylePathKeys(template.getTemplateVariables(), basePath, new HashMap<String, List<String>>());
+    return fixOldStylePathKeys(template.getTemplateVariables(), basePath, new HashMap<>());
   }
 
   private List<RootBuilderSpec> generateSubResources(String sourceFile,
+                                                     RootBuilderSpec parentRootBuilder,
                                                      ResourceSchemaArray subresources,
                                                      Map<String, String> pathKeyTypes)
       throws IOException
   {
-    List<RootBuilderSpec> subSpecList = new ArrayList<RootBuilderSpec>();
+    List<RootBuilderSpec> subSpecList = new ArrayList<>();
     if (subresources != null)
     {
       for (ResourceSchema resource : subresources)
       {
-        RootBuilderSpec resourceSpec = generateRootRequestBuilder(resource, sourceFile, pathKeyTypes);
-        subSpecList.add(resourceSpec);
+        RootBuilderSpec resourceSpec = generateRootRequestBuilder(parentRootBuilder, resource, sourceFile, pathKeyTypes);
+        if (resourceSpec != null)
+        {
+          subSpecList.add(resourceSpec);
+        }
       }
     }
     return subSpecList;
@@ -431,7 +438,7 @@ public class RequestBuilderSpecGenerator
                                                       List<String> pathKeys,
                                                       Map<String, String> pathKeyTypes)
   {
-    List<RootBuilderMethodSpec> finderSpecList = new ArrayList<RootBuilderMethodSpec>();
+    List<RootBuilderMethodSpec> finderSpecList = new ArrayList<>();
     if (finderSchemas != null)
     {
       String baseBuilderClass = getBuilderBase(ResourceMethod.FINDER);
@@ -540,7 +547,7 @@ public class RequestBuilderSpecGenerator
                                                       List<String> pathKeys,
                                                       Map<String, String> pathKeyTypes)
   {
-    List<RootBuilderMethodSpec> actionSpecList = new ArrayList<RootBuilderMethodSpec>();
+    List<RootBuilderMethodSpec> actionSpecList = new ArrayList<>();
     if (actions != null)
     {
       for (ActionSchema action : actions)
@@ -591,7 +598,7 @@ public class RequestBuilderSpecGenerator
                                                            List<String> pathKeys,
                                                            Map<String, String> pathKeyTypes)
   {
-    final Map<ResourceMethod, RestMethodSchema> schemaMap = new HashMap<ResourceMethod, RestMethodSchema>();
+    final Map<ResourceMethod, RestMethodSchema> schemaMap = new HashMap<>();
     if (restMethods != null)
     {
       for (RestMethodSchema restMethod : restMethods)
@@ -600,7 +607,7 @@ public class RequestBuilderSpecGenerator
       }
     }
 
-    List<RootBuilderMethodSpec> methodSpecList = new ArrayList<RootBuilderMethodSpec>();
+    List<RootBuilderMethodSpec> methodSpecList = new ArrayList<>();
     for (Map.Entry<ResourceMethod, String> entry : _builderBaseMap.entrySet())
     {
       ResourceMethod method = entry.getKey();

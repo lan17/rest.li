@@ -16,10 +16,12 @@
 
 package com.linkedin.restli.internal.server.util;
 
-
+import com.linkedin.data.ByteString;
+import com.linkedin.data.Data;
 import com.linkedin.data.DataComplex;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.codec.DataCodec;
 import com.linkedin.data.codec.JacksonDataCodec;
 import com.linkedin.data.codec.PsonDataCodec;
 import com.linkedin.data.schema.DataSchema;
@@ -34,27 +36,31 @@ import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.internal.common.DataMapConverter;
 import com.linkedin.restli.internal.server.RestLiInternalException;
 import com.linkedin.restli.server.RoutingException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import javax.activation.MimeTypeParseException;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import javax.activation.MimeTypeParseException;
 
 public class DataMapUtils
 {
   private static final JacksonDataCodec CODEC = new JacksonDataCodec();
   private static final PsonDataCodec PSON_DATA_CODEC = new PsonDataCodec();
   private static final JacksonDataTemplateCodec TEMPLATE_CODEC = new JacksonDataTemplateCodec();
-  private static final Logger LOG = LoggerFactory.getLogger(DataMapUtils.class);
 
   /**
-   * Read {@link DataMap} from InputStream.
+   * Read JSON encoded {@link DataMap} from InputStream.
    *
    * @param stream input stream
    * @return {@link DataMap}
+   *
+   * @deprecated due to assuming JSON encoding. Use {@link #readMap(InputStream, Map)} instead.
    */
+  @Deprecated
   public static DataMap readMap(final InputStream stream)
   {
     try
@@ -69,6 +75,25 @@ public class DataMapUtils
 
   /**
    * Read {@link DataMap} from InputStream.
+   *
+   * @param stream input stream
+   * @param headers Request or response headers
+   * @return {@link DataMap}
+   */
+  public static DataMap readMap(final InputStream stream, final Map<String, String> headers)
+  {
+    try
+    {
+      return DataMapConverter.getContentType(headers).getCodec().readMap(stream);
+    }
+    catch (IOException | MimeTypeParseException e)
+    {
+      throw new RestLiInternalException(e);
+    }
+  }
+
+  /**
+   * Read PSON encoded {@link DataMap} from InputStream.
    *
    * @param stream input stream
    * @return {@link DataMap}
@@ -86,10 +111,10 @@ public class DataMapUtils
   }
 
   /**
-   * Read {@link DataMap} from a {@link com.linkedin.r2.message.MessageHeaders}, using the message's headers to determine the
+   * Read {@link DataMap} from a {@link com.linkedin.r2.message.rest.RestMessage}, using the message's headers to determine the
    * correct encoding type.
    *
-   * @param message {@link com.linkedin.r2.message.MessageHeaders}
+   * @param message {@link com.linkedin.r2.message.rest.RestMessage}
    * @return {@link DataMap}
    */
   public static DataMap readMap(final RestMessage message)
@@ -110,11 +135,11 @@ public class DataMapUtils
    *
    * @throws IOException if the message entity cannot be parsed.
    */
-  private static DataMap readMapWithExceptions(final RestMessage message) throws IOException
+  public static DataMap readMapWithExceptions(final RestMessage message) throws IOException
   {
     try
     {
-      return DataMapConverter.bytesToDataMap(message.getHeader(RestConstants.HEADER_CONTENT_TYPE), message.getEntity());
+      return DataMapConverter.bytesToDataMap(message.getHeaders(), message.getEntity());
     }
     catch (MimeTypeParseException e)
     {
@@ -164,13 +189,16 @@ public class DataMapUtils
    * Effectively a combination of {@link #readMap(InputStream)} and
    * {@link #convert(DataMap, Class)}.
    *
-   * @param stream input stream
+   * @param stream JSON encoded input stream
    * @param recordClass class of the requested type
    * @param <T> requested object type
    * @return a new object of the requested type constructed with DataMap read from input
    *         stream
    * @throws IOException on error reading input stream
+   *
+   * @deprecated due to assuming JSON encoding. Use {@link #read(InputStream, Class, Map)} instead.
    */
+  @Deprecated
   public static <T extends RecordTemplate> T read(final InputStream stream,
                                                   final Class<T> recordClass) throws IOException
   {
@@ -184,6 +212,32 @@ public class DataMapUtils
       throw new RestLiInternalException(e);
     }
     catch (SecurityException e)
+    {
+      throw new RestLiInternalException(e);
+    }
+  }
+
+  /**
+   * Effectively a combination of {@link #readMap(InputStream, Map)} and
+   * {@link #convert(DataMap, Class)}.
+   *
+   * @param stream Encoded input stream
+   * @param recordClass class of the requested type
+   * @param headers Request or response headers
+   * @param <T> requested object type
+   * @return a new object of the requested type constructed with DataMap read from input
+   *         stream
+   * @throws IOException on error reading input stream
+   */
+  public static <T extends RecordTemplate> T read(final InputStream stream,
+      final Class<T> recordClass, Map<String, String> headers) throws IOException
+  {
+    try
+    {
+      DataMap dataMap = DataMapConverter.getContentType(headers).getCodec().readMap(stream);
+      return DataTemplateUtil.wrap(dataMap, recordClass);
+    }
+    catch (IllegalArgumentException | MimeTypeParseException | SecurityException e)
     {
       throw new RestLiInternalException(e);
     }
@@ -220,21 +274,24 @@ public class DataMapUtils
 
   /**
    * A combination of {@link #readMap(java.io.InputStream)} and
-   * {@link #convert(com.linkedin.data.DataMap, Class)} for collection responses.
+   * {@link #convert(com.linkedin.data.DataMap, Class)} for JSON encoded collection responses.
    *
-   * @param stream input stream
+   * @param stream JSON encoded input stream
    * @param recordClass class of the requested type
    * @param <T> requested object type
    * @return a new object of the requested type constructed with DataMap read from input
    *         stream
+   *
+   * @deprecated due to assuming JSON encoding. Use {@link #readCollectionResponse(RestMessage,Class)} instead.
    */
+  @Deprecated
   public static <T extends RecordTemplate> CollectionResponse<T> readCollectionResponse(final InputStream stream,
                                                                                         final Class<T> recordClass)
   {
     try
     {
       DataMap dataMap = CODEC.readMap(stream);
-      return new CollectionResponse<T>(dataMap, recordClass);
+      return new CollectionResponse<>(dataMap, recordClass);
     }
     catch (IOException e)
     {
@@ -255,9 +312,8 @@ public class DataMapUtils
                                                                                         final Class<T> recordClass)
   {
     DataMap dataMap = readMap(message);
-    return new CollectionResponse<T>(dataMap, recordClass);
+    return new CollectionResponse<>(dataMap, recordClass);
   }
-
 
   public static void write(final DataTemplate<?> record,
                            final OutputStream stream,
@@ -288,6 +344,30 @@ public class DataMapUtils
     }
   }
 
+  /**
+   * Serialize the write the dataMap to the outputstream.
+   *
+   * <p>The encoding is determined on the basis of the {@link RestConstants#HEADER_CONTENT_TYPE} header.</p>
+   *
+   * @param data The {@link DataMap} to serialize
+   * @param stream The {@link OutputStream} to serialize to
+   * @param headers Request or response headers.
+   */
+  public static void write(final DataMap data,
+                           final OutputStream stream,
+                           final Map<String, String> headers)
+  {
+    try
+    {
+      DataMapConverter.getContentType(headers).getCodec().writeMap(data, stream);
+    }
+    catch (IOException | MimeTypeParseException e)
+    {
+      throw new RestLiInternalException(e);
+    }
+  }
+
+  @Deprecated
   public static byte[] dataTemplateToBytes(final DataTemplate<?> record,
                                            final boolean orderFields)
   {
@@ -306,7 +386,10 @@ public class DataMapUtils
    *
    * @param dataMap input {@link DataMap}
    * @return byte array
+   *
+   * @deprecated use {@link #mapToBytes(DataMap, Map)} instead.
    */
+  @Deprecated
   public static byte[] mapToBytes(final DataMap dataMap)
   {
     try
@@ -319,6 +402,66 @@ public class DataMapUtils
     }
   }
 
+  /**
+   * Encode {@link DataMap} as a byte array.
+   *
+   * @param dataMap input {@link DataMap}
+   * @param headers Request or response headers. This is used to determine the codec to use to encode.
+   * @return byte array
+   */
+  public static byte[] mapToBytes(final DataMap dataMap, final Map<String, String> headers)
+  {
+    try
+    {
+      return mapToBytes(dataMap, DataMapConverter.getContentType(headers).getCodec());
+    }
+    catch (MimeTypeParseException e)
+    {
+      throw new RestLiInternalException(e);
+    }
+  }
+
+  /**
+   * Encode {@link DataMap} as a JSON ByteString.
+   *
+   * @param dataMap input {@link DataMap}
+   * @return ByteString
+   *
+   * @deprecated use {@link #mapToByteString(DataMap, Map)} instead.
+   */
+  @Deprecated
+  public static ByteString mapToByteString(final DataMap dataMap)
+  {
+    try
+    {
+      return CODEC.mapToByteString(dataMap);
+    }
+    catch (IOException e)
+    {
+      throw new RestLiInternalException(e);
+    }
+  }
+
+  /**
+   * Encode {@link DataMap} as a ByteString.
+   *
+   * @param dataMap input {@link DataMap}
+   * @param headers Request or response headers. This is used to determine the codec to use to encode.
+   * @return ByteString
+   */
+  public static ByteString mapToByteString(final DataMap dataMap, final Map<String, String> headers)
+  {
+    try
+    {
+      return DataMapConverter.getContentType(headers).getCodec().mapToByteString(dataMap);
+    }
+    catch (IOException | MimeTypeParseException e)
+    {
+      throw new RestLiInternalException(e);
+    }
+  }
+
+  @Deprecated
   public static byte[] listToBytes(final DataList dataList)
   {
     try
@@ -331,6 +474,7 @@ public class DataMapUtils
     }
   }
 
+  @Deprecated
   public static byte[] dataComplexToBytes(DataComplex value)
   {
     if (value instanceof DataMap)
@@ -362,6 +506,105 @@ public class DataMapUtils
     catch (IOException e)
     {
       throw new RestLiInternalException(e);
+    }
+  }
+
+  /**
+   * Encode the {@link DataMap} as a ByteString.
+   *
+   * @param dataMap input {@link DataMap}
+   * @return ByteString
+   */
+  public static ByteString mapToPsonByteString(final DataMap dataMap)
+  {
+    try
+    {
+      return PSON_DATA_CODEC.mapToByteString(dataMap);
+    }
+    catch (IOException e)
+    {
+      throw new RestLiInternalException(e);
+    }
+  }
+
+  /**
+   * Encode {@link DataMap} as a byte array using the provided codec.
+   *
+   * @param dataMap input {@link DataMap}
+   * @param customCodec custom CODEC to use for encoding.
+   * @return byte array
+   */
+  public static byte[] mapToBytes(final DataMap dataMap, DataCodec customCodec)
+  {
+    try
+    {
+      return customCodec.mapToBytes(dataMap);
+    }
+    catch (IOException e)
+    {
+      throw new RestLiInternalException(e);
+    }
+  }
+
+  /**
+   * Encode {@link DataMap} as a {@link ByteString} using the provided codec.
+   *
+   * @param dataMap input {@link DataMap}
+   * @param customCodec custom CODEC to use for encoding.
+   * @return encoded {@link ByteString}
+   */
+  public static ByteString mapToByteString(final DataMap dataMap, DataCodec customCodec)
+  {
+    try
+    {
+      return customCodec.mapToByteString(dataMap);
+    }
+    catch (IOException e)
+    {
+      throw new RestLiInternalException(e);
+    }
+  }
+
+  /**
+   * Remove {@link Data#NULL} from the input DataMap.
+   * @param dataMap input data map which may contain {@link Data#NULL} values.
+   */
+  public static void removeNulls(DataMap dataMap)
+  {
+    try
+    {
+      Data.traverse(dataMap, new NullRemover());
+    }
+    catch (IOException ioe)
+    {
+      throw new RuntimeException(ioe);
+    }
+  }
+
+  /**
+   * Data TraverseCallback to remove Data.NULL from data map.
+   */
+  static class NullRemover implements Data.TraverseCallback
+  {
+    @Override
+    public void startMap(DataMap dataMap)
+    {
+      // DataMap.values() and DataMap.entrySet() are Unmodifiable collections and hence,
+      // we need to add to a list to delete
+      List<String> emptyKeys = new ArrayList<>();
+      dataMap.forEach((key, value) -> {
+        if (value == Data.NULL)
+        {
+          emptyKeys.add(key);
+        }
+      });
+      emptyKeys.forEach(dataMap::remove);
+    }
+
+    @Override
+    public void startList(DataList dataList)
+    {
+      dataList.removeIf(value -> value.equals(Data.NULL));
     }
   }
 }

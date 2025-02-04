@@ -21,9 +21,9 @@ package com.linkedin.d2.balancer.properties;
  */
 public interface PartitionProperties
 {
-  static enum PartitionType
+  enum PartitionType
   {
-    RANGE, HASH, NONE
+    RANGE, HASH, CUSTOM, NONE
   }
 
   PartitionType getPartitionType();

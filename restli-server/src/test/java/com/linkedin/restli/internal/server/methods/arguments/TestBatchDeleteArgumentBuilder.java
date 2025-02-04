@@ -16,22 +16,25 @@
 
 package com.linkedin.restli.internal.server.methods.arguments;
 
+
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.internal.server.RoutingResult;
+import com.linkedin.restli.internal.server.ServerResourceContext;
 import com.linkedin.restli.internal.server.model.AnnotationSet;
 import com.linkedin.restli.internal.server.model.Parameter;
 import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
 import com.linkedin.restli.server.BatchDeleteRequest;
-import com.linkedin.restli.server.ResourceContext;
 import com.linkedin.restli.server.RestLiRequestData;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
 
+import java.io.IOException;
 import java.lang.annotation.Annotation;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
+
+import org.testng.annotations.DataProvider;
+import org.testng.annotations.Test;
 
 import static org.easymock.EasyMock.verify;
 import static org.testng.Assert.assertEquals;
@@ -48,32 +51,32 @@ public class TestBatchDeleteArgumentBuilder
     return new Object[][]
         {
             {
-                new HashSet<Object>(Arrays.asList(new Object[]{1, 2, 3}))
+                new HashSet<>(Arrays.asList(1, 2, 3))
             },
             {
-                new HashSet<Object>(Arrays.asList(new Object[]{
+                new HashSet<>(Arrays.asList(
                     new CompoundKey().append("string1", "a").append("string2", "b"),
-                    new CompoundKey().append("string1", "x").append("string2", "y")
-                }))
+                    new CompoundKey().append("string1", "x").append("string2", "y")))
             },
             {
-                new HashSet<Object>()
+                new HashSet<>()
             }
         };
   }
 
   @Test(dataProvider = "argumentData")
   public void testArgumentBuilderSuccess(Set<Object> batchKeys)
+      throws IOException
   {
     @SuppressWarnings("rawtypes")
-    Parameter<Set> param = new Parameter<Set>("", Set.class, null, false, null, Parameter.ParamType.BATCH, false, new AnnotationSet(new Annotation[]{}));
+    Parameter<Set> param = new Parameter<>("", Set.class, null, false, null, Parameter.ParamType.BATCH, false, new AnnotationSet(new Annotation[]{}));
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, param);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(null, null, batchKeys);
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(null, null, batchKeys, true);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 1, context, 2);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new BatchDeleteArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
 
     assertEquals(args.length, 1);

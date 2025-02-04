@@ -16,13 +16,20 @@
 
 package com.linkedin.d2.balancer.strategies.degrader;
 
+import com.linkedin.d2.balancer.event.EventEmitter;
+import com.linkedin.d2.balancer.event.NoopEventEmitter;
 import com.linkedin.d2.balancer.properties.PropertyKeys;
+import com.linkedin.d2.balancer.util.hashing.MPConsistentHashRing;
+import com.linkedin.d2.balancer.util.healthcheck.HealthCheckOperations;
+import com.linkedin.r2.message.rest.RestMethod;
+import com.linkedin.util.degrader.DegraderImpl;
 import java.util.Collections;
 import java.util.Map;
 
 import com.linkedin.common.util.MapUtil;
 import com.linkedin.util.clock.Clock;
 import com.linkedin.util.clock.SystemClock;
+import java.util.concurrent.ScheduledExecutorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,6 +44,7 @@ public class DegraderLoadBalancerStrategyConfig
   private final Map<String,Object> _hashConfig;
   private final Clock _clock;
   private static final Logger _log = LoggerFactory.getLogger(DegraderLoadBalancerStrategyConfig.class);
+  private final String _clusterName;
 
   // this initialRecoveryLevel is the minimum proportion of hash ring points that a Tracker Client
   // can have, and is a number from 0-1. A value of zero will remove the TC completely forever from
@@ -62,16 +70,44 @@ public class DegraderLoadBalancerStrategyConfig
   private final long _minClusterCallCountHighWaterMark;
   private final long _minClusterCallCountLowWaterMark;
 
+  private final double _hashRingPointCleanUpRate;
+
+  private final String _consistentHashAlgorithm;
+  private final int _numProbes;
+  private final int _pointsPerHost;
+
+  private final double _boundedLoadBalancingFactor;
+
+  // The servicePath that is used to construct the URI for quarantine probing
+  private final String _servicePath;
+
+  // The configs for quarantine
+  private final double _quarantineMaxPercent;
+  private final ScheduledExecutorService _executorService;
+  private final HealthCheckOperations _healthCheckOperations;
+  private final String _healthCheckMethod;
+  private final String _healthCheckPath;
+  private final long _quarantineLatency;           // in Milliseconds
+
+  private final EventEmitter _eventEmitter;
+  // lowEventEmittingInterval and highEventEmittingInterval control the interval for d2monitor
+  // to emit events. lowEventEmittingInterval is used when there are abnormal events that need
+  // to emit at a higher frequency. highEventEmittingInterval is used when all the hosts are in
+  // healthy state. 'lowEventEmittingInterval == 0 && highEventEmittingInterval = 0' disables
+  // d2monitor emitting.
+  //
+  // The settings might need to tuned depending on the number of clients and QPS.
+  private final long _lowEventEmittingInterval;
+  private final long _highEventEmittingInterval;
+
   public static final Clock DEFAULT_CLOCK = SystemClock.instance();
   public static final double DEFAULT_INITIAL_RECOVERY_LEVEL = 0.01;
-  public static final double DEFAULT_RAMP_FACTOR = 1.0;
+  public static final double DEFAULT_RAMP_FACTOR = 2.0;
   public static final long DEFAULT_UPDATE_INTERVAL_MS = 5000L;
   public static final boolean DEFAULT_UPDATE_ONLY_AT_INTERVAL = false;
   public static final int DEFAULT_POINTS_PER_WEIGHT = 100;
-  // I think that these two will require tuning, based upon the service SLA.
-  // Using degrader's defaults.
-  public static final double DEFAULT_HIGH_WATER_MARK = 3000;
-  public static final double DEFAULT_LOW_WATER_MARK = 500;
+  public static final double DEFAULT_HIGH_WATER_MARK = 600;
+  public static final double DEFAULT_LOW_WATER_MARK = 200;
 
   // even though the degrader has it's own stepUp and stepDown, we need new knobs to turn for
   // the globalStepUp and globalStepDown drop rates.
@@ -80,13 +116,40 @@ public class DegraderLoadBalancerStrategyConfig
   public static final long DEFAULT_CLUSTER_MIN_CALL_COUNT_HIGH_WATER_MARK = 10;
   public static final long DEFAULT_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK = 5;
 
+  public static final double DEFAULT_HASHRING_POINT_CLEANUP_RATE = 0.20;
+
+  public static final int DEFAULT_NUM_PROBES = MPConsistentHashRing.DEFAULT_NUM_PROBES;
+  public static final int DEFAULT_POINTS_PER_HOST = MPConsistentHashRing.DEFAULT_POINTS_PER_HOST;
+
+  public static final double DEFAULT_BOUNDED_LOAD_BALANCING_FACTOR = -1;
+  public static final double MIN_BOUNDED_LOAD_BALANCING_FACTOR = 1.0;
+  public static final double MAX_BOUNDED_LOAD_BALANCING_FACTOR = 5.0;
+
+  public static final double DEFAULT_QUARANTINE_MAXPERCENT = 0.0;  // 0 means disable quarantine
+  public static final int DEFAULT_QUARANTINE_CHECKNUM = 5;
+  public static final long DEFAULT_QUARANTINE_CHECK_INTERVAL = 1000; // Milliseconds
+  public static final long MAX_QUARANTINE_LATENCY = 1000;         // Milliseconds
+  public static final String DEFAULT_QUARANTINE_METHOD = RestMethod.OPTIONS;
+  private static final double QUARANTINE_MAXPERCENT_CAP = 0.5;
+
+  public static final long DEFAULT_LOW_EVENT_EMITTING_INTERVAL = 0;  // Milliseconds. 0 means disable low interval emitting
+  public static final long DEFAULT_HIGH_EVENT_EMITTING_INTERVAL = 0; // Milliseconds. 0 means disable high interval emitting
+
+  public static final String DEFAULT_CLUSTER_NAME = "UNDEFINED_CLUSTER";
+
+  // For testing only
   public DegraderLoadBalancerStrategyConfig(long updateIntervalMs)
   {
     this(updateIntervalMs, DEFAULT_UPDATE_ONLY_AT_INTERVAL, 100, null, Collections.<String, Object>emptyMap(),
          DEFAULT_CLOCK, DEFAULT_INITIAL_RECOVERY_LEVEL, DEFAULT_RAMP_FACTOR, DEFAULT_HIGH_WATER_MARK, DEFAULT_LOW_WATER_MARK,
          DEFAULT_GLOBAL_STEP_UP, DEFAULT_GLOBAL_STEP_DOWN,
          DEFAULT_CLUSTER_MIN_CALL_COUNT_HIGH_WATER_MARK,
-         DEFAULT_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK);
+         DEFAULT_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK,
+         DEFAULT_HASHRING_POINT_CLEANUP_RATE, "pointBased",
+         DEFAULT_NUM_PROBES, DEFAULT_POINTS_PER_HOST, DEFAULT_BOUNDED_LOAD_BALANCING_FACTOR, null,
+         DEFAULT_QUARANTINE_MAXPERCENT,
+         null, null, DEFAULT_QUARANTINE_METHOD, null, DegraderImpl.DEFAULT_LOW_LATENCY,
+         null, DEFAULT_LOW_EVENT_EMITTING_INTERVAL, DEFAULT_HIGH_EVENT_EMITTING_INTERVAL, DEFAULT_CLUSTER_NAME);
   }
 
   public DegraderLoadBalancerStrategyConfig(DegraderLoadBalancerStrategyConfig config)
@@ -104,7 +167,23 @@ public class DegraderLoadBalancerStrategyConfig
          config.getGlobalStepUp(),
          config.getGlobalStepDown(),
          config.getMinClusterCallCountHighWaterMark(),
-         config.getMinClusterCallCountLowWaterMark());
+         config.getMinClusterCallCountLowWaterMark(),
+         config.getHashRingPointCleanUpRate(),
+         config.getConsistentHashAlgorithm(),
+         config.getNumProbes(),
+         config.getPointsPerHost(),
+         config.getBoundedLoadBalancingFactor(),
+         config.getServicePath(),
+         config.getQuarantineMaxPercent(),
+         config.getExecutorService(),
+         config.getHealthCheckOperations(),
+         config.getHealthCheckMethod(),
+         config.getHealthCheckPath(),
+         config.getQuarantineLatency(),
+         config.getEventEmitter(),
+         config.getLowEventEmittingInterval(),
+         config.getHighEventEmittingInterval(),
+         config.getClusterName());
   }
 
   public DegraderLoadBalancerStrategyConfig(long updateIntervalMs,
@@ -120,7 +199,23 @@ public class DegraderLoadBalancerStrategyConfig
                                             double globalStepUp,
                                             double globalStepDown,
                                             long minCallCountHighWaterMark,
-                                            long minCallCountLowWaterMark)
+                                            long minCallCountLowWaterMark,
+                                            double hashRingPointCleanUpRate,
+                                            String consistentHashAlgorithm,
+                                            int numProbes,
+                                            int pointsPerHost,
+                                            double boundedLoadBalancingFactor,
+                                            String path,
+                                            double quarantineMaxPercent,
+                                            ScheduledExecutorService executorService,
+                                            HealthCheckOperations healthCheckOperations,
+                                            String healthCheckMethod,
+                                            String healthCheckPath,
+                                            long quarantineLatency,
+                                            EventEmitter emitter,
+                                            long lowEventEmittingInterval,
+                                            long highEventEmittingInterval,
+                                            String clusterName)
   {
     _updateIntervalMs = updateIntervalMs;
     _updateOnlyAtInterval = updateOnlyAtInterval;
@@ -136,6 +231,22 @@ public class DegraderLoadBalancerStrategyConfig
     _globalStepDown = globalStepDown;
     _minClusterCallCountHighWaterMark = minCallCountHighWaterMark;
     _minClusterCallCountLowWaterMark = minCallCountLowWaterMark;
+    _hashRingPointCleanUpRate = hashRingPointCleanUpRate;
+    _consistentHashAlgorithm = consistentHashAlgorithm;
+    _numProbes = numProbes;
+    _pointsPerHost = pointsPerHost;
+    _boundedLoadBalancingFactor = boundedLoadBalancingFactor;
+    _servicePath = path;
+    _quarantineMaxPercent = quarantineMaxPercent;
+    _executorService = executorService;
+    _healthCheckOperations = healthCheckOperations;
+    _healthCheckMethod = healthCheckMethod;
+    _healthCheckPath = healthCheckPath;
+    _quarantineLatency = quarantineLatency;
+    _eventEmitter = emitter == null ? new NoopEventEmitter() : emitter;
+    _lowEventEmittingInterval = lowEventEmittingInterval;
+    _highEventEmittingInterval = highEventEmittingInterval;
+    _clusterName = clusterName;
   }
 
   /**
@@ -156,7 +267,15 @@ public class DegraderLoadBalancerStrategyConfig
    * create the strategy. However if we can't find http.loadBalancer.ringRampFactor in the config, we'll use
    * the value in ringRampFactor.
    */
-  public static DegraderLoadBalancerStrategyConfig createHttpConfigFromMap(Map<String,Object> map)
+  // @Deprecated -- could not be enforced since -Werror option.
+  static DegraderLoadBalancerStrategyConfig createHttpConfigFromMap(Map<String,Object> map)
+  {
+    return createHttpConfigFromMap(map, null, null, null, null);
+  }
+
+  static DegraderLoadBalancerStrategyConfig createHttpConfigFromMap(Map<String,Object> map,
+      HealthCheckOperations healthCheckOperations, ScheduledExecutorService overrideExecutorService,
+      Map<String, String> degraderProperties, EventEmitter emitter)
   {
     Clock clock = MapUtil.getWithDefault(map, PropertyKeys.CLOCK,
                                          DEFAULT_CLOCK, Clock.class);
@@ -203,11 +322,86 @@ public class DegraderLoadBalancerStrategyConfig
     @SuppressWarnings("unchecked") // // to appease java 7, which appears to have compilation bugs that cause it to ignore some suppressions, needed to first assign to obj, then assign to the map
     Map<String,Object> hashConfig = (Map<String,Object>)obj;
 
+    Double hashRingPointCleanUpRate = MapUtil.getWithDefault(map, PropertyKeys.HTTP_LB_HASHRING_POINT_CLEANUP_RATE,
+        DEFAULT_HASHRING_POINT_CLEANUP_RATE, Double.class);
+
+    String consistentHashAlgorithm = MapUtil.getWithDefault(map, PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM,
+        null, String.class);
+
+    Integer numProbes = MapUtil.getWithDefault(map, PropertyKeys.HTTP_LB_CONSISTENT_HASH_NUM_PROBES,
+        DEFAULT_NUM_PROBES);
+
+    Integer pointsPerHost =
+        MapUtil.getWithDefault(map, PropertyKeys.HTTP_LB_CONSISTENT_HASH_POINTS_PER_HOST, DEFAULT_POINTS_PER_HOST);
+
+    Double boundedLoadBalancingFactor = MapUtil.getWithDefault(map, PropertyKeys.HTTP_LB_CONSISTENT_HASH_BOUNDED_LOAD_BALANCING_FACTOR,
+        DEFAULT_BOUNDED_LOAD_BALANCING_FACTOR, Double.class);
+
+    String servicePath = MapUtil.getWithDefault(map, PropertyKeys.PATH, null, String.class);
+
+    Double quarantineMaxPercent = MapUtil.getWithDefault(map, PropertyKeys.HTTP_LB_QUARANTINE_MAX_PERCENT,
+        DEFAULT_QUARANTINE_MAXPERCENT, Double.class);
+    if (quarantineMaxPercent > QUARANTINE_MAXPERCENT_CAP)
+    {
+      // if the user configures the max percent to a very high value, it can dramatically limit the capacity of the
+      // cluster when something goes wrong. So impose a cap to max percent.
+      quarantineMaxPercent = QUARANTINE_MAXPERCENT_CAP;
+      _log.warn("MaxPercent value {} is too high. Changed it to {}", quarantineMaxPercent, QUARANTINE_MAXPERCENT_CAP);
+    }
+    ScheduledExecutorService executorService = MapUtil.getWithDefault(map,
+        PropertyKeys.HTTP_LB_QUARANTINE_EXECUTOR_SERVICE, null, ScheduledExecutorService.class);
+    String method = MapUtil.getWithDefault(map, PropertyKeys.HTTP_LB_QUARANTINE_METHOD, DEFAULT_QUARANTINE_METHOD, String.class);
+
+    // lowLatency reflects the expected health threshold for the service so we can use this value as the
+    // quarantine health checking latency.
+    Long quarantineLatency = (degraderProperties == null) ? DegraderImpl.DEFAULT_LOW_LATENCY
+        : MapUtil.getWithDefault(degraderProperties, PropertyKeys.DEGRADER_LOW_LATENCY, DegraderImpl.DEFAULT_LOW_LATENCY, Long.class);
+
+    // However we'd cap the latency value if degrader.LowLatency is too high: health checking does not involve complicated
+    // operations of the service therefore should not take that long
+    if (quarantineLatency > MAX_QUARANTINE_LATENCY)
+    {
+      quarantineLatency = MAX_QUARANTINE_LATENCY;
+    }
+
+    // health checking method can be customized from d2config.
+    // The supported format is "<Restli Method>:<URI path>". Both part are optional.
+    // If <Restli method> is missing, the default method is 'OPTIONS'. If the <URI path>
+    // is missing, the service path will be used. For example, "OPTIONS:" and
+    // "GET:/contextPath/service/resources/1234" are all valid settings. Specifically,
+    // "GET:/<contextPath>/admin" can be used for admin node health checking, where
+    // <contextPath> has to match the product-spec.json topology configuration.
+    String healthCheckMethod = method;
+    String healthCheckPath = null;
+    int idx = method.indexOf(':');
+    if (idx != -1)
+    {
+      // Currently allows user to specify any method for health checking (including non-idempotent one)
+      healthCheckMethod = method.substring(0, idx);
+      healthCheckPath = method.substring(idx + 1);
+    }
+    if (healthCheckMethod.isEmpty())
+    {
+      healthCheckMethod = DEFAULT_QUARANTINE_METHOD;
+    }
+
+    Long lowEmittingInterval = MapUtil.getWithDefault(map, PropertyKeys.HTTP_LB_LOW_EVENT_EMITTING_INTERVAL,
+        DEFAULT_LOW_EVENT_EMITTING_INTERVAL, Long.class);
+    Long highEmittingInterval = MapUtil.getWithDefault(map, PropertyKeys.HTTP_LB_HIGH_EVENT_EMITTING_INTERVAL,
+        DEFAULT_HIGH_EVENT_EMITTING_INTERVAL, Long.class);
+
+    final String clusterName = MapUtil.getWithDefault(map, PropertyKeys.CLUSTER_NAME, DEFAULT_CLUSTER_NAME, String.class);
+
     return new DegraderLoadBalancerStrategyConfig(
         updateIntervalMs, updateOnlyAtInterval, pointsPerWeight, hashMethod, hashConfig,
         clock, initialRecoveryLevel, ringRampFactor, highWaterMark, lowWaterMark,
         globalStepUp, globalStepDown, minClusterCallCountHighWaterMark,
-        minClusterCallCountLowWaterMark);
+        minClusterCallCountLowWaterMark, hashRingPointCleanUpRate,
+        consistentHashAlgorithm, numProbes, pointsPerHost, boundedLoadBalancingFactor,
+        servicePath, quarantineMaxPercent,
+        overrideExecutorService != null ? overrideExecutorService : executorService,
+        healthCheckOperations, healthCheckMethod, healthCheckPath, quarantineLatency,
+        emitter, lowEmittingInterval, highEmittingInterval, clusterName);
   }
 
   /**
@@ -286,12 +480,93 @@ public class DegraderLoadBalancerStrategyConfig
     return _updateOnlyAtInterval;
   }
 
+  public double getHashRingPointCleanUpRate()
+  {
+    return _hashRingPointCleanUpRate;
+  }
+
+  public String getConsistentHashAlgorithm()
+  {
+    return _consistentHashAlgorithm;
+  }
+
+  public int getNumProbes()
+  {
+    return _numProbes;
+  }
+
+  public int getPointsPerHost()
+  {
+    return _pointsPerHost;
+  }
+
+  public double getBoundedLoadBalancingFactor()
+  {
+    return _boundedLoadBalancingFactor;
+  }
+
+  public String getServicePath()
+  {
+    return _servicePath;
+  }
+
+  public double getQuarantineMaxPercent()
+  {
+    return _quarantineMaxPercent;
+  }
+
+  public ScheduledExecutorService getExecutorService()
+  {
+    return _executorService;
+  }
+
+  public HealthCheckOperations getHealthCheckOperations()
+  {
+    return _healthCheckOperations;
+  }
+
+  public String getHealthCheckMethod()
+  {
+    return _healthCheckMethod;
+  }
+
+  public String getHealthCheckPath()
+  {
+    return _healthCheckPath;
+  }
+
+  public long getQuarantineLatency()
+  {
+    return _quarantineLatency;
+  }
+
+  public EventEmitter getEventEmitter()
+  {
+    return _eventEmitter;
+  }
+
+  public long getLowEventEmittingInterval()
+  {
+    return _lowEventEmittingInterval;
+  }
+
+  public long getHighEventEmittingInterval()
+  {
+    return _highEventEmittingInterval;
+  }
+
+  public String getClusterName()
+  {
+    return _clusterName;
+  }
+
   @Override
   public String toString()
   {
     return "DegraderLoadBalancerStrategyConfig [_highWaterMark=" + _highWaterMark
             + ", _lowWaterMark=" + _lowWaterMark + ", _initialRecoveryLevel=" + _initialRecoveryLevel
             + ", _ringRampFactor=" + _ringRampFactor + ", _globalStepUp=" + _globalStepUp
-            + ", _globalStepDown=" + _globalStepDown + ", _pointsPerWeight=" + _pointsPerWeight + "]";
+            + ", _globalStepDown=" + _globalStepDown + ", _pointsPerWeight=" + _pointsPerWeight
+            + ", _boundedLoadBalancingFactor=" + _boundedLoadBalancingFactor + "]";
   }
 }

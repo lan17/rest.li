@@ -199,7 +199,6 @@ public final class MultiPartMIMEInputStream implements MultiPartMIMEDataSourceWr
                 {
                   _writeHandle.write(inputStreamReader._result);
                 }
-                _writeHandle.done();
                 //Close the stream since we won't be invoked again
                 try
                 {
@@ -211,6 +210,7 @@ public final class MultiPartMIMEInputStream implements MultiPartMIMEDataSourceWr
                   //An exception thrown when we try to close the InputStream should not really
                   //make its way down as an error...
                 }
+                _writeHandle.done();
                 //Break here, even though there may be more writes on the writeHandle.
                 //We cannot continue writing if our data source has finished.
                 break;
@@ -299,20 +299,13 @@ public final class MultiPartMIMEInputStream implements MultiPartMIMEDataSourceWr
         //The number of bytes 'N' here could be the following:
         if (bytesRead == -1)
         {
-          //1. N==-1. This signifies the stream is complete in the case that we coincidentally read to completion on the
-          //last read from the InputStream.
+          // N==-1. This signifies the stream is complete.
           _dataSourceFinished = true;
           _result = ByteString.empty();
         }
-        else if (bytesRead == _writeChunkSize)
-        {
-          //2. N==Capacity. This signifies the most common case which is that we read as many bytes as we originally desired.
-          _result = ByteString.copy(bytes);
-        }
         else
         {
-          //3. Capacity > N >= 0. This signifies that the input stream is wrapping up and we just got the last few bytes.
-          _dataSourceFinished = true;
+          // Still reading data from the stream, copy the bytes read so far.
           _result = ByteString.copy(bytes, 0, bytesRead);
         }
       }
@@ -415,7 +408,7 @@ public final class MultiPartMIMEInputStream implements MultiPartMIMEDataSourceWr
   {
     _inputStream = inputStream;
     _executorService = executorService;
-    _headers = new HashMap<String, String>(headers); //defensive copy
+    _headers = new HashMap<>(headers); //defensive copy
     _maximumBlockingTime = maximumBlockingTime;
     _writeChunkSize = writeChunkSize;
     _abortTimeout = abortTimeout;

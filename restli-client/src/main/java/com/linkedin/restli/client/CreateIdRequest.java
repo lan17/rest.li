@@ -35,7 +35,7 @@ import java.util.Map;
  */
 public class CreateIdRequest<K, T extends RecordTemplate> extends Request<IdResponse<K>>
 {
-  CreateIdRequest(T input,
+  public CreateIdRequest(T input,
                   Map<String, String> headers,
                   List<HttpCookie> cookies,
                   RestResponseDecoder<IdResponse<K>> decoder,
@@ -44,7 +44,8 @@ public class CreateIdRequest<K, T extends RecordTemplate> extends Request<IdResp
                   Map<String, Class<?>> queryParamClasses,
                   String baseUriTemplate,
                   Map<String, Object> pathKeys,
-                  RestliRequestOptions requestOptions)
+                  RestliRequestOptions requestOptions,
+                  List<Object> streamingAttachments)
   {
     super(ResourceMethod.CREATE,
           input,
@@ -57,7 +58,8 @@ public class CreateIdRequest<K, T extends RecordTemplate> extends Request<IdResp
           null,
           baseUriTemplate,
           pathKeys,
-          requestOptions);
+          requestOptions,
+          streamingAttachments);
 
   }
 }

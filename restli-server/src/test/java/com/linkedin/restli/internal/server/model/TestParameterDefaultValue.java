@@ -16,13 +16,16 @@
 
 package com.linkedin.restli.internal.server.model;
 
-
 import com.linkedin.data.ByteString;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.schema.ArrayDataSchema;
+import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.template.BooleanArray;
 import com.linkedin.data.template.BooleanMap;
 import com.linkedin.data.template.BytesArray;
 import com.linkedin.data.template.BytesMap;
+import com.linkedin.data.template.Custom;
+import com.linkedin.data.template.DataTemplateUtil;
 import com.linkedin.data.template.DoubleArray;
 import com.linkedin.data.template.DoubleMap;
 import com.linkedin.data.template.FloatArray;
@@ -42,7 +45,11 @@ import com.linkedin.pegasus.generator.test.RecordBar;
 import com.linkedin.pegasus.generator.test.RecordBarArray;
 import com.linkedin.pegasus.generator.test.RecordBarMap;
 import com.linkedin.pegasus.generator.test.Union;
+import com.linkedin.restli.server.CustomLongRef;
+import com.linkedin.restli.server.CustomStringRef;
 import com.linkedin.restli.server.ResourceConfigException;
+import com.linkedin.restli.server.custom.types.CustomLong;
+import com.linkedin.restli.server.custom.types.CustomString;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -83,11 +90,11 @@ public class TestParameterDefaultValue
     Object result;
 
     result = test("[\"Hello\", \"World\"]", StringArray.class);
-    Assert.assertEquals(result, new StringArray(Arrays.asList("Hello", "World")));
+    Assert.assertEquals(result, new StringArray("Hello", "World"));
     Assert.assertSame(result.getClass(), StringArray.class);
 
     result = test("[false, true]", BooleanArray.class);
-    Assert.assertEquals(result, new BooleanArray(Arrays.asList(false, true)));
+    Assert.assertEquals(result, new BooleanArray(false, true));
     Assert.assertSame(result.getClass(), BooleanArray.class);
 
     result = test("[1, 2, 3]", IntegerArray.class);
@@ -99,35 +106,33 @@ public class TestParameterDefaultValue
     Assert.assertSame(result.getClass(), IntegerArray.class);
 
     result = test("[2, 3, 4]", LongArray.class);
-    Assert.assertEquals(result, new LongArray(Arrays.asList(2L, 3L, 4L)));
+    Assert.assertEquals(result, new LongArray(2L, 3L, 4L));
     Assert.assertSame(result.getClass(), LongArray.class);
 
     result = test("[1.1, 2.2, 3.3]", FloatArray.class);
-    Assert.assertEquals(result, new FloatArray(Arrays.asList(1.1F, 2.2F, 3.3F)));
+    Assert.assertEquals(result, new FloatArray(1.1F, 2.2F, 3.3F));
     Assert.assertSame(result.getClass(), FloatArray.class);
 
     result = test("[2.2, 3.3, 4.4]", DoubleArray.class);
-    Assert.assertEquals(result, new DoubleArray(Arrays.asList(2.2D, 3.3D, 4.4D)));
+    Assert.assertEquals(result, new DoubleArray(2.2D, 3.3D, 4.4D));
     Assert.assertSame(result.getClass(), DoubleArray.class);
 
     result = test("[\"APPLE\", \"BANANA\"]", EnumFruitsArray.class);
-    Assert.assertEquals(result, new EnumFruitsArray(Arrays.asList(EnumFruits.APPLE, EnumFruits.BANANA)));
+    Assert.assertEquals(result, new EnumFruitsArray(EnumFruits.APPLE, EnumFruits.BANANA));
     Assert.assertSame(result.getClass(), EnumFruitsArray.class);
 
     result = test("[" + _bytes16Quoted + ", " + _bytes16Quoted + "]", BytesArray.class);
-    Assert.assertEquals(result, new BytesArray(Arrays.asList(ByteString.copyAvroString(_bytes16, true), ByteString.copyAvroString(_bytes16, true))));
+    Assert.assertEquals(result, new BytesArray(ByteString.copyAvroString(_bytes16, true), ByteString.copyAvroString(_bytes16, true)));
     Assert.assertSame(result.getClass(), BytesArray.class);
 
     result = test("[" + _bytes16Quoted + ", " + _bytes16Quoted + "]", FixedMD5Array.class);
-    Assert.assertEquals(result, new FixedMD5Array(Arrays.asList(new FixedMD5(_bytes16), new FixedMD5(_bytes16))));
+    Assert.assertEquals(result, new FixedMD5Array(new FixedMD5(_bytes16), new FixedMD5(_bytes16)));
     Assert.assertSame(result.getClass(), FixedMD5Array.class);
 
     result = test("[{\"string\": \"String in union\"}, {\"int\": 1}]", ArrayTest.UnionArrayArray.class);
-    final ArrayTest.UnionArray fixture1 = new ArrayTest.UnionArray();
-    fixture1.setString("String in union");
-    final ArrayTest.UnionArray fixture2 = new ArrayTest.UnionArray();
-    fixture2.setInt(1);
-    Assert.assertEquals(result, new ArrayTest.UnionArrayArray(Arrays.asList(fixture1, fixture2)));
+    final ArrayTest.UnionArray fixture1 = ArrayTest.UnionArray.create("String in union");
+    final ArrayTest.UnionArray fixture2 = ArrayTest.UnionArray.create(1);
+    Assert.assertEquals(result, new ArrayTest.UnionArrayArray(fixture1, fixture2));
     Assert.assertSame(result.getClass(), ArrayTest.UnionArrayArray.class);
 
     result = test("[{\"location\": \"Sunnyvale\"}, {\"location\": \"Mountain View\"}]", RecordBarArray.class);
@@ -135,7 +140,7 @@ public class TestParameterDefaultValue
     final DataMap dataFixture2 = new DataMap();
     dataFixture1.put("location", "Sunnyvale");
     dataFixture2.put("location", "Mountain View");
-    Assert.assertEquals(result, new RecordBarArray(Arrays.asList(new RecordBar(dataFixture1), new RecordBar(dataFixture2))));
+    Assert.assertEquals(result, new RecordBarArray(new RecordBar(dataFixture1), new RecordBar(dataFixture2)));
     Assert.assertSame(result.getClass(), RecordBarArray.class);
   }
 
@@ -152,49 +157,49 @@ public class TestParameterDefaultValue
     Object result;
 
     result = test("{\"key1\": \"Hello\", \"key2\": \"World\"}", StringMap.class);
-    final Map<String, String> stringFixture = new HashMap<String, String>();
+    final Map<String, String> stringFixture = new HashMap<>();
     stringFixture.put("key1", "Hello");
     stringFixture.put("key2", "World");
     Assert.assertEquals(result, new StringMap(stringFixture));
     Assert.assertSame(result.getClass(), StringMap.class);
 
     result = test("{\"key1\": true, \"key2\": false}", BooleanMap.class);
-    final Map<String, Boolean> booleanFixture = new HashMap<String, Boolean>();
+    final Map<String, Boolean> booleanFixture = new HashMap<>();
     booleanFixture.put("key1", true);
     booleanFixture.put("key2", false);
     Assert.assertEquals(result, new BooleanMap(booleanFixture));
     Assert.assertSame(result.getClass(), BooleanMap.class);
 
     result = test("{\"key1\": 1, \"key2\": 2}", IntegerMap.class);
-    final Map<String, Integer> integerFixture = new HashMap<String, Integer>();
+    final Map<String, Integer> integerFixture = new HashMap<>();
     integerFixture.put("key1", 1);
     integerFixture.put("key2", 2);
     Assert.assertEquals(result, new IntegerMap(integerFixture));
     Assert.assertSame(result.getClass(), IntegerMap.class);
 
     result = test("{\"key1\": 2, \"key2\": 3}", LongMap.class);
-    final Map<String, Long> longFixture = new HashMap<String, Long>();
+    final Map<String, Long> longFixture = new HashMap<>();
     longFixture.put("key1", 2L);
     longFixture.put("key2", 3L);
     Assert.assertEquals(result, new LongMap(longFixture));
     Assert.assertSame(result.getClass(), LongMap.class);
 
     result = test("{\"key1\": 1.1, \"key2\": 2.2}", FloatMap.class);
-    final Map<String, Float> floatFixture = new HashMap<String, Float>();
+    final Map<String, Float> floatFixture = new HashMap<>();
     floatFixture.put("key1", 1.1F);
     floatFixture.put("key2", 2.2F);
     Assert.assertEquals(result, new FloatMap(floatFixture));
     Assert.assertSame(result.getClass(), FloatMap.class);
 
     result = test("{\"key1\": 2.2, \"key2\": 3.3}", DoubleMap.class);
-    final Map<String, Double> doubleFixture = new HashMap<String, Double>();
+    final Map<String, Double> doubleFixture = new HashMap<>();
     doubleFixture.put("key1", 2.2D);
     doubleFixture.put("key2", 3.3D);
     Assert.assertEquals(result, new DoubleMap(doubleFixture));
     Assert.assertSame(result.getClass(), DoubleMap.class);
 
     result = test("{\"key1\": " + _bytes16Quoted + ", \"key2\": " + _bytes16Quoted + "}", BytesMap.class);
-    final Map<String, ByteString> bytesFixture = new HashMap<String, ByteString>();
+    final Map<String, ByteString> bytesFixture = new HashMap<>();
     bytesFixture.put("key1", ByteString.copyAvroString(_bytes16, true));
     bytesFixture.put("key2", ByteString.copyAvroString(_bytes16, true));
     Assert.assertEquals(result, new BytesMap(new DataMap(bytesFixture)));
@@ -207,7 +212,7 @@ public class TestParameterDefaultValue
     dataFixture2.put("location", "MTV");
     final RecordBar record1 = new RecordBar(dataFixture1);
     final RecordBar record2 = new RecordBar(dataFixture2);
-    final Map<String, RecordBar> recordFixture = new HashMap<String, RecordBar>();
+    final Map<String, RecordBar> recordFixture = new HashMap<>();
     recordFixture.put("key1", record1);
     recordFixture.put("key2", record2);
     Assert.assertEquals(result, new RecordBarMap(recordFixture));
@@ -225,7 +230,7 @@ public class TestParameterDefaultValue
   {
     final Map<String, Object> fixture;
 
-    fixture = new HashMap<String, Object>();
+    fixture = new HashMap<>();
     fixture.put("location", "LinkedIn");
     Assert.assertEquals(test("{\"location\": \"LinkedIn\"}", RecordBar.class), new RecordBar(new DataMap(fixture)));
   }
@@ -248,9 +253,44 @@ public class TestParameterDefaultValue
     Assert.assertSame(result.getClass(), Union.class);
   }
 
+  @Test
+  public void testCustomParams()
+  {
+    // Initialize the custom class to ensure the coercer is registered.
+    Custom.initializeCustomClass(CustomString.class);
+
+    Object result = test("custom string ref", CustomString.class, new CustomStringRef().getSchema());
+    final CustomString expectedCustomString = new CustomString("custom string ref");
+    Assert.assertEquals(result, expectedCustomString);
+    Assert.assertSame(result.getClass(), CustomString.class);
+
+    result = test("12345", CustomLong.class, new CustomLongRef().getSchema());
+    final CustomLong expectedCustomLong = new CustomLong(12345L);
+    Assert.assertEquals(result, expectedCustomLong);
+    Assert.assertSame(result.getClass(), CustomLong.class);
+  }
+
+  @Test
+  public void testCustomParamArray()
+  {
+    // Initialize the custom class to ensure the coercer is registered.
+    Custom.initializeCustomClass(CustomLong.class);
+
+    final ArrayDataSchema customLongRefArraySchema = ((ArrayDataSchema) DataTemplateUtil.parseSchema("{\"type\":\"array\",\"items\":{\"type\":\"typeref\",\"name\":\"CustomLongRef\",\"namespace\":\"com.linkedin.restli.examples.typeref.api\",\"ref\":\"long\",\"java\":{\"class\":\"com.linkedin.restli.examples.custom.types.CustomLong\"}}}"));
+    Object result = test("[12345, 6789]", CustomLong[].class, customLongRefArraySchema);
+    final CustomLong[] expectedCustomLongs = { new CustomLong(12345L), new CustomLong(6789L)};
+    Assert.assertEquals(result, expectedCustomLongs);
+    Assert.assertSame(result.getClass(), CustomLong[].class);
+  }
+
   private static <T> Object test(String value, Class<T> type)
   {
-    return new Parameter<T>("", type, null, true, value, null, false, AnnotationSet.EMPTY).getDefaultValue();
+    return new Parameter<>("", type, null, true, value, null, false, AnnotationSet.EMPTY).getDefaultValue();
+  }
+
+  private static <T> Object test(String value, Class<T> type, DataSchema typrefSchema)
+  {
+    return new Parameter<>("", type, typrefSchema, true, value, null, false, AnnotationSet.EMPTY).getDefaultValue();
   }
 
   private final String _bytes16 = "\u0001\u0002\u0003\u0004" +

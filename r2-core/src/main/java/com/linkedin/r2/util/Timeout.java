@@ -44,7 +44,7 @@ public class Timeout<T> implements TimeoutExecutor
 
   private final AtomicReference<T> _item;
   private final ScheduledFuture<?> _future;
-  private final ClosableQueue<Runnable> _queue = new ClosableQueue<Runnable>();
+  private final ClosableQueue<Runnable> _queue = new ClosableQueue<>();
 
   /**
    * Construct a new instance with the specified parameters.
@@ -60,30 +60,25 @@ public class Timeout<T> implements TimeoutExecutor
     {
       throw new NullPointerException();
     }
-    _item = new AtomicReference<T>(item);
-    _future = executor.schedule(new Runnable()
-    {
-      @Override
-      public void run()
+    _item = new AtomicReference<>(item);
+    _future = executor.schedule(() -> {
+      T item1 = _item.getAndSet(null);
+      if (item1 != null)
       {
-        T item = _item.getAndSet(null);
-        if (item != null)
+        List<Runnable> actions = _queue.close();
+        if (actions.isEmpty())
         {
-          List<Runnable> actions = _queue.close();
-          if (actions.isEmpty())
+          LOG.warn("Timeout elapsed but no action was specified");
+        }
+        for (Runnable action : actions)
+        {
+          try
           {
-            LOG.warn("Timeout elapsed but no action was specified");
+            action.run();
           }
-          for (Runnable action : actions)
+          catch (Exception e)
           {
-            try
-            {
-              action.run();
-            }
-            catch (Exception e)
-            {
-              LOG.error("Failed to execute timeout action", e);
-            }
+            LOG.error("Failed to execute timeout action", e);
           }
         }
       }

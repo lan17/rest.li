@@ -29,6 +29,9 @@ import com.linkedin.restli.internal.server.model.Parameter;
 import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
 import com.linkedin.restli.internal.server.model.ResourceModel;
 import com.linkedin.restli.internal.server.model.ResourceType;
+import com.linkedin.restli.restspec.BatchFinderSchema;
+import com.linkedin.restli.restspec.ResourceEntityType;
+import com.linkedin.restli.server.UnstructuredDataWriter;
 import com.linkedin.restli.server.ResourceConfigException;
 import com.linkedin.restli.server.ResourceLevel;
 import com.linkedin.restli.server.combined.CombinedResources;
@@ -36,6 +39,7 @@ import com.linkedin.restli.server.combined.CombinedResources.CombinedAssociation
 import com.linkedin.restli.server.combined.CombinedResources.CombinedCollectionResource;
 import com.linkedin.restli.server.combined.CombinedResources.CombinedCollectionWithSubresources;
 import com.linkedin.restli.server.combined.CombinedResources.SubCollectionResource;
+import com.linkedin.restli.server.combined.CombinedTestDataModels;
 import com.linkedin.restli.server.combined.CombinedTestDataModels.Foo;
 import com.linkedin.restli.server.invalid.InvalidActions;
 import com.linkedin.restli.server.invalid.InvalidResources;
@@ -43,7 +47,9 @@ import com.linkedin.restli.server.twitter.AsyncDiscoveredItemsResource;
 import com.linkedin.restli.server.twitter.AsyncFollowsAssociativeResource;
 import com.linkedin.restli.server.twitter.AsyncStatusCollectionResource;
 import com.linkedin.restli.server.twitter.ExceptionsResource;
+import com.linkedin.restli.server.twitter.FeedDownloadResource;
 import com.linkedin.restli.server.twitter.FollowsAssociativeResource;
+import com.linkedin.restli.server.twitter.SingleFeedDownloadResource;
 import com.linkedin.restli.server.twitter.StatusCollectionResource;
 import com.linkedin.restli.server.twitter.TwitterAccountsResource;
 import com.linkedin.restli.server.twitter.TwitterTestDataModels.DiscoveredItem;
@@ -219,6 +225,14 @@ public class TestRestLiResourceModels
     expectConfigException(InvalidResources.FinderTwoNamedInOneClass.class, "duplicate @Finder");
     expectConfigException(InvalidResources.FinderNonExistingAssocKey.class, "Non-existing assocKey");
     expectConfigException(InvalidResources.GetAllNonExistingAssocKey.class, "Non-existing assocKey");
+    expectConfigException(InvalidResources.MissingLinkedBatchFinder.class, "Did not find any Linked @BatchFinder method named");
+    expectConfigException(InvalidResources.LinkedBatchFinderMissingFieldInCriteria.class, "There is no field in the criteria object");
+    expectConfigException(InvalidResources.LinkedBatchFinderAssocKeyFieldInCriteria.class, "There is no field in the criteria object");
+    expectConfigException(InvalidResources.LinkedBatchFinderMismatchedFieldTypeInCriteria.class, "The type doesn't match in the criteria object");
+    expectConfigException(InvalidResources.LinkedBatchFinderMismatchedFieldOptionalityInCriteria.class, "The optionality doesn't match in the criteria object");
+    expectConfigException(InvalidResources.LinkedBatchFinderExtraFieldsInCriteria.class, "has an invalid criteria type with extra fields");
+    expectConfigException(InvalidResources.LinkedBatchFinderMetadataMismatch.class, "does not have the same metadata type");
+    expectConfigException(InvalidResources.LinkedBatchFinderUnsupportedPaging.class, "does not support paging while the finder does");
   }
 
   @Test
@@ -267,7 +281,7 @@ public class TestRestLiResourceModels
     ResourceModel resourceModel = buildResourceModel(TwitterAccountsResource.class);
     assertEquals(resourceModel.getResourceType(), ResourceType.ACTIONS);
 
-    assertEquals(resourceModel.getResourceMethodDescriptors().size(), 5);
+    assertEquals(resourceModel.getResourceMethodDescriptors().size(), 6);
 
     ResourceMethodDescriptor methodDescriptor = resourceModel.findActionMethod("register", ResourceLevel.COLLECTION);
     assertNotNull(methodDescriptor);
@@ -293,6 +307,64 @@ public class TestRestLiResourceModels
     assertTrue(optionsParam.isOptional());
     assertFalse(optionsParam.hasDefaultValue());
     assertNull(optionsParam.getDefaultValue());
+
+    assertEquals(resourceModel.getResourceEntityType(), ResourceEntityType.STRUCTURED_DATA);
+  }
+
+  @Test
+  public void testCollectionUnstructuredDataResource() throws Exception
+  {
+    ResourceModel resourceModel = buildResourceModel(FeedDownloadResource.class);
+
+    assertEquals(resourceModel.getResourceType(), ResourceType.COLLECTION);
+    assertEquals(resourceModel.getResourceMethodDescriptors().size(), 1);
+
+    final ResourceMethodDescriptor getMethod = resourceModel.findMethod(ResourceMethod.GET);
+    assertNotNull(getMethod);
+
+    List<Parameter<?>> parameters = getMethod.getParameters();
+
+    Parameter<?> firstParam = parameters.get(0);
+    assertNotNull(firstParam);
+    assertEquals(firstParam.getName(), "feedId");
+    assertEquals(firstParam.getType(), Long.class);
+    assertFalse(firstParam.isOptional());
+    assertFalse(firstParam.hasDefaultValue());
+    assertNull(firstParam.getDefaultValue());
+
+    Parameter<?> secondParam = parameters.get(1);
+    assertNotNull(secondParam);
+    assertEquals(secondParam.getName(), "RestLi Unstructured Data Writer");
+    assertEquals(secondParam.getType(), UnstructuredDataWriter.class);
+    assertFalse(secondParam.isOptional());
+    assertFalse(secondParam.hasDefaultValue());
+    assertNull(secondParam.getDefaultValue());
+
+    assertEquals(resourceModel.getResourceEntityType(), ResourceEntityType.UNSTRUCTURED_DATA);
+  }
+
+  @Test
+  public void testSimpleUnstructuredDataResource() throws Exception
+  {
+    ResourceModel resourceModel = buildResourceModel(SingleFeedDownloadResource.class);
+
+    assertEquals(resourceModel.getResourceType(), ResourceType.SIMPLE);
+    assertEquals(resourceModel.getResourceMethodDescriptors().size(), 1);
+
+    final ResourceMethodDescriptor getMethod = resourceModel.findMethod(ResourceMethod.GET);
+    assertNotNull(getMethod);
+
+    List<Parameter<?>> parameters = getMethod.getParameters();
+
+    Parameter<?> firstParam = parameters.get(0);
+    assertNotNull(firstParam);
+    assertEquals(firstParam.getName(), "RestLi Unstructured Data Writer");
+    assertEquals(firstParam.getType(), UnstructuredDataWriter.class);
+    assertFalse(firstParam.isOptional());
+    assertFalse(firstParam.hasDefaultValue());
+    assertNull(firstParam.getDefaultValue());
+
+    assertEquals(resourceModel.getResourceEntityType(), ResourceEntityType.UNSTRUCTURED_DATA);
   }
 
   @Test
@@ -301,7 +373,7 @@ public class TestRestLiResourceModels
     ResourceModel collectionModel = buildResourceModel(StatusCollectionResource.class);
     assertEquals(collectionModel.getResourceType(), ResourceType.COLLECTION);
 
-    assertEquals(0, countActions(collectionModel, ResourceLevel.COLLECTION));
+    assertEquals(1, countActions(collectionModel, ResourceLevel.COLLECTION));
     assertEquals(1, countActions(collectionModel, ResourceLevel.ENTITY));
     assertNotNull(collectionModel.findActionMethod("forward", ResourceLevel.ENTITY));
   }
@@ -602,6 +674,15 @@ public class TestRestLiResourceModels
     expectConfigException(InvalidResources.RedundantDataAnnotation4.class, "mapA/*/doubleField is marked as ReadOnly, but is contained in a CreateOnly field mapA");
   }
 
+  @Test
+  public void testBatchFinderWithMetadata()
+  {
+    ResourceModel resourceModel = buildResourceModel(CombinedResources.CollectionResourceWithBatchFinder.class);
+    ResourceMethodDescriptor batchFinderSchema = resourceModel.getResourceMethodDescriptors().get(0);
+    Assert.assertEquals(batchFinderSchema.getBatchFinderName(), "testBatchFinder");
+    Assert.assertEquals(batchFinderSchema.getCollectionCustomMetadataType(), CombinedTestDataModels.FooMetaData.class);
+  }
+
   // ************************
   // Helper methods
   // ************************
@@ -735,7 +816,7 @@ public class TestRestLiResourceModels
                                            String finderName,
                                            int numParameters)
   {
-    ResourceMethodDescriptor methodDescriptor = model.findNamedMethod(finderName);
+    ResourceMethodDescriptor methodDescriptor = model.findFinderMethod(finderName);
     assertNotNull(methodDescriptor);
     assertNull(methodDescriptor.getActionName());
     assertEquals(finderName, methodDescriptor.getFinderName());

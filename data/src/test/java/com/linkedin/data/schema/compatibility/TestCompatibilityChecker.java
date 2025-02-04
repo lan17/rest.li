@@ -19,9 +19,6 @@ package com.linkedin.data.schema.compatibility;
 
 import com.linkedin.data.TestUtil;
 import com.linkedin.data.schema.DataSchema;
-import com.linkedin.data.schema.compatibility.CompatibilityChecker;
-import com.linkedin.data.schema.compatibility.CompatibilityOptions;
-import com.linkedin.data.schema.compatibility.CompatibilityResult;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -35,6 +32,12 @@ import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
+
+/**
+ * Tests for {@link CompatibilityChecker}.
+ *
+ * TODO: Refactor this test to employ a data provider-based approach. Also consider moving static data to resource files.
+ */
 public class TestCompatibilityChecker
 {
   private boolean _debug = false;
@@ -110,13 +113,13 @@ public class TestCompatibilityChecker
     _floatSchemaText,
     _doubleSchemaText
   );
-  
+
   private static final List<String> _nonNumericPrimitiveText = list(
     _booleanSchemaText,
     _stringSchemaText,
     _bytesSchemaText
   );
-  
+
   private static final List<String> _primitiveSchemaText = union(
     _numericSchemaText,
     _nonNumericPrimitiveText
@@ -138,12 +141,12 @@ public class TestCompatibilityChecker
   @SuppressWarnings("unchecked")
   private static final <T> List<T> list(T...args)
   {
-    return new ArrayList<T>(Arrays.asList(args));
+    return new ArrayList<>(Arrays.asList(args));
   }
 
   private static final <T> List<T> union(List<T> arg1, List<T> arg2)
   {
-    ArrayList<T> result = new ArrayList<T>(arg1);
+    ArrayList<T> result = new ArrayList<>(arg1);
     result.addAll(arg2);
     return result;
   }
@@ -152,7 +155,7 @@ public class TestCompatibilityChecker
   @SuppressWarnings("unchecked")
   private static final <T> List<T> add(List<T> arg, T... args)
   {
-    ArrayList<T> result = new ArrayList<T>(arg);
+    ArrayList<T> result = new ArrayList<>(arg);
     result.addAll(Arrays.asList(args));
     return result;
   }
@@ -161,7 +164,7 @@ public class TestCompatibilityChecker
   @SuppressWarnings("unchecked")
   private static final <T> List<T> subtract(List<T> arg, T... args)
   {
-    ArrayList<T> result = new ArrayList<T>(arg);
+    ArrayList<T> result = new ArrayList<>(arg);
     result.removeAll(Arrays.asList(args));
     return result;
   }
@@ -261,12 +264,55 @@ public class TestCompatibilityChecker
           "ERROR :: BREAKS_OLD_READER :: /a.b.Record :: new record changed required fields to optional fields f1"
         },
         {
+          // field changed from required with default to optional
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\", \"default\": 1 } ] }",
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\", \"optional\" : true } ] }",
+          _dataAndSchema,
+          true,
+          "ERROR :: BREAKS_NEW_AND_OLD_READERS :: /a.b.Record :: new record changed required fields with defaults to optional fields f1. This change is compatible for "
+          + "Pegasus but incompatible for Avro, if this record schema is never converted to Avro, this error may "
+          + "safely be ignored."
+        },
+        {
           // added required fields
           "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ ] }",
           "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\" }, { \"name\" : \"f2\", \"type\" : \"string\" } ] }",
           _dataAndSchema,
           true,
           "ERROR :: BREAKS_NEW_READER :: /a.b.Record :: new record added required fields f1, f2"
+        },
+        {
+          // added required field with default
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ ] }",
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\", \"default\": 1 } ] }",
+          _dataAndSchema,
+          false
+        },
+        {
+          // modified required field to have a default
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\" } ] }",
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\", \"default\": 1 } ] }",
+          _dataAndSchema,
+          true,
+          "ERROR :: BREAKS_OLD_READER :: /a.b.Record :: new record added default to required fields f1"
+        },
+        {
+          // modified required field to no longer have a default
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\", \"default\": 1 } ] }",
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\" } ] }",
+          _dataAndSchema,
+          true,
+          "ERROR :: BREAKS_NEW_READER :: /a.b.Record :: new record removed default from required fields f1"
+        },
+        {
+          // modified optional field to required field with default
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\", \"optional\": true } ] }",
+          "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\", \"default\": 1 } ] }",
+          _dataAndSchema,
+          true,
+          "ERROR :: BREAKS_NEW_AND_OLD_READERS :: /a.b.Record :: new record changed optional fields to required fields with defaults f1. This change is compatible for "
+          + "Pegasus but incompatible for Avro, if this record schema is never converted to Avro, this error may "
+          + "safely be ignored."
         },
         {
           // removed required fields
@@ -289,8 +335,8 @@ public class TestCompatibilityChecker
           "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"f1\", \"type\" : \"int\", \"optional\" : true }, { \"name\" : \"f2\", \"type\" : \"string\", \"optional\" : true } ] }",
           "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ ] }",
           _dataAndSchema,
-          false,
-          "INFO :: NEW_READER_IGNORES_DATA :: /a.b.Record :: new record removed optional fields f1, f2"
+          true,
+          "ERROR :: BREAKS_NEW_AND_OLD_READERS :: /a.b.Record :: new record removed optional fields f1, f2. This allows a new field to be added with the same name but different type in the future."
         },
         {
           // removed optional fields, added required fields
@@ -299,7 +345,7 @@ public class TestCompatibilityChecker
           _dataAndSchema,
           true,
           "ERROR :: BREAKS_NEW_READER :: /a.b.Record :: new record added required fields f2",
-          "INFO :: NEW_READER_IGNORES_DATA :: /a.b.Record :: new record removed optional fields f1"
+          "ERROR :: BREAKS_NEW_AND_OLD_READERS :: /a.b.Record :: new record removed optional fields f1. This allows a new field to be added with the same name but different type in the future."
         },
         {
           // removed required fields, added optional fields
@@ -317,7 +363,7 @@ public class TestCompatibilityChecker
           _dataAndSchema,
           true,
           "ERROR :: BREAKS_NEW_READER :: /a.b.Record :: new record added required fields f2",
-          "INFO :: NEW_READER_IGNORES_DATA :: /a.b.Record :: new record removed optional fields f1"
+          "ERROR :: BREAKS_NEW_AND_OLD_READERS :: /a.b.Record :: new record removed optional fields f1. This allows a new field to be added with the same name but different type in the future."
         },
         {
           // changed required to optional fields, added optional fields
@@ -409,43 +455,42 @@ public class TestCompatibilityChecker
         "[ \"string\" ]",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_OLD_READER :: /union :: new union removed members int, float"
+        "ERROR :: BREAKS_NEW_READER :: /union :: new union removed members int, float"
       },
       {
         "[ \"string\" ]",
         "[ \"int\", \"string\", \"float\" ]",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_NEW_READER :: /union :: new union added members int, float"
+        "ERROR :: BREAKS_OLD_READER :: /union :: new union added members int, float"
       },
       {
         "[ ]",
         "[ \"int\" ]",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_NEW_READER :: /union :: new union added members int"
+        "ERROR :: BREAKS_OLD_READER :: /union :: new union added members int"
       },
       {
         "[ \"int\" ]",
         "[ ]",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_OLD_READER :: /union :: new union removed members int"
+        "ERROR :: BREAKS_NEW_READER :: /union :: new union removed members int"
       },
       {
         "[ \"string\", \"double\" ]",
         "[ \"int\", \"string\", \"float\" ]",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_OLD_READER :: /union :: new union removed members double",
-        "ERROR :: BREAKS_NEW_READER :: /union :: new union added members int, float"
+        "ERROR :: BREAKS_NEW_READER :: /union :: new union removed members double",
+        "ERROR :: BREAKS_OLD_READER :: /union :: new union added members int, float"
       },
       {
         "[ { \"type\" : \"enum\", \"name\" : \"a.b.Enum\", \"symbols\" : [ \"A\", \"B\", \"C\", \"D\" ] } ]",
         "[ { \"type\" : \"enum\", \"name\" : \"a.b.Enum\", \"symbols\" : [ \"B\", \"D\", \"E\" ] } ]",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_OLD_READER :: /union/a.b.Enum/symbols :: new enum added symbols E",
         "ERROR :: BREAKS_NEW_READER :: /union/a.b.Enum/symbols :: new enum removed symbols A, C"
       },
       {
@@ -453,7 +498,6 @@ public class TestCompatibilityChecker
         "[ \"string\", { \"type\" : \"enum\", \"name\" : \"a.b.Enum\", \"symbols\" : [ \"B\", \"D\", \"E\" ] }, \"int\" ]",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_OLD_READER :: /union/a.b.Enum/symbols :: new enum added symbols E",
         "ERROR :: BREAKS_NEW_READER :: /union/a.b.Enum/symbols :: new enum removed symbols A, C"
       },
       {
@@ -474,15 +518,64 @@ public class TestCompatibilityChecker
         "{ \"type\" : \"typeref\", \"name\" : \"a.b.Union\", \"ref\" : [ \"string\" ] }",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_OLD_READER :: /a.b.Union/ref/union :: new union removed members int, float"
+        "ERROR :: BREAKS_NEW_READER :: /a.b.Union/ref/union :: new union removed members int, float"
       },
       {
         "{ \"type\" : \"typeref\", \"name\" : \"a.b.Union\", \"ref\" : [ \"string\", \"float\" ] }",
         "{ \"type\" : \"typeref\", \"name\" : \"a.b.Union\", \"ref\" : [ \"int\", \"string\", \"float\" ] }",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_NEW_READER :: /a.b.Union/ref/union :: new union added members int"
-      }
+        "ERROR :: BREAKS_OLD_READER :: /a.b.Union/ref/union :: new union added members int"
+      },
+      // Adding aliases to an existing Union
+      {
+        "[ \"int\", \"string\" ]",
+        "[ { \"alias\" : \"count\", \"type\" : \"int\" }, { \"alias\" : \"message\", \"type\" : \"string\" } ]",
+        _dataAndSchema,
+        true,
+        "ERROR :: BREAKS_NEW_AND_OLD_READERS :: /union :: new union added member aliases"
+      },
+      // Removing aliases from an existing Union
+      {
+        "[ { \"alias\" : \"count\", \"type\" : \"int\" }, { \"alias\" : \"message\", \"type\" : \"string\" } ]",
+        "[ \"int\", \"string\" ]",
+        _dataAndSchema,
+        true,
+        "ERROR :: BREAKS_NEW_AND_OLD_READERS :: /union :: new union removed member aliases"
+      },
+      // Adding a new member to an aliased Union
+      {
+        "[ { \"alias\" : \"count\", \"type\" : \"int\" } ]",
+        "[ { \"alias\" : \"count\", \"type\" : \"int\" }, { \"alias\" : \"message\", \"type\" : \"string\" } ]",
+        _dataAndSchema,
+        true,
+        "ERROR :: BREAKS_OLD_READER :: /union :: new union added members message"
+      },
+      // Removing a member from an aliased Union
+      {
+        "[ { \"alias\" : \"count\", \"type\" : \"int\" }, { \"alias\" : \"message\", \"type\" : \"string\" } ]",
+        "[ { \"alias\" : \"count\", \"type\" : \"int\" } ]",
+        _dataAndSchema,
+        true,
+        "ERROR :: BREAKS_NEW_READER :: /union :: new union removed members message"
+      },
+      // Updating the alias for a member in an Union
+      {
+        "[ { \"alias\" : \"count\", \"type\" : \"int\" }, { \"alias\" : \"message\", \"type\" : \"string\" } ]",
+        "[ { \"alias\" : \"count\", \"type\" : \"int\" }, { \"alias\" : \"text\", \"type\" : \"string\" } ]",
+        _dataAndSchema,
+        true,
+        "ERROR :: BREAKS_NEW_READER :: /union :: new union removed members message",
+        "ERROR :: BREAKS_OLD_READER :: /union :: new union added members text"
+      },
+      // Updating the type of an aliased member in an Union
+      {
+        "[ { \"alias\" : \"count\", \"type\" : \"int\" }, { \"alias\" : \"message\", \"type\" : \"string\" } ]",
+        "[ { \"alias\" : \"count\", \"type\" : \"long\" }, { \"alias\" : \"message\", \"type\" : \"string\" } ]",
+        _dataAndSchema,
+        true,
+        "ERROR :: BREAKS_NEW_AND_OLD_READERS :: /union/count/long :: schema type changed from int to long"
+      },
     };
 
     testCompatibility(inputs);
@@ -692,7 +785,6 @@ public class TestCompatibilityChecker
         "{ \"type\" : \"enum\", \"name\" : \"a.b.Enum\", \"symbols\" : [ \"B\", \"D\", \"E\" ] }",
         _dataAndSchema,
         true,
-        "ERROR :: BREAKS_OLD_READER :: /a.b.Enum/symbols :: new enum added symbols E",
         "ERROR :: BREAKS_NEW_READER :: /a.b.Enum/symbols :: new enum removed symbols A, C"
       },
       {
@@ -707,6 +799,13 @@ public class TestCompatibilityChecker
         "{ \"type\" : \"enum\", \"name\" : \"a.b.Enum2\", \"symbols\" : [ \"A\", \"B\" ] }",
         _noCheckNamesOnly,
         false
+      },
+      {
+        "{ \"type\" : \"enum\", \"name\" : \"a.b.Enum\", \"symbols\" : [ \"A\", \"B\" ] }",
+        "{ \"type\" : \"enum\", \"name\" : \"a.b.Enum\", \"symbols\" : [ \"B\", \"A\" ] }",
+        _dataAndSchema,
+        false,
+        "INFO :: ENUM_SYMBOLS_ORDER_CHANGE :: /a.b.Enum/symbols :: enum symbols order changed at symbol B"
       },
     };
 
@@ -813,6 +912,43 @@ public class TestCompatibilityChecker
     testCompatibility(inputs);
   }
 
+  /**
+   * Ensures that validation rules are properly validated when either removed or added.
+   */
+  @Test
+  public void testValidationRules() throws IOException
+  {
+    Object[][] inputs = {
+        // Test removing a validation rule
+        {
+            "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"id\", \"type\" : \"long\", \"validate\" : { \"v1\": {} } } ] }",
+            "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"id\", \"type\" : \"long\" } ] }",
+            _dataAndSchema,
+            true,
+            "ERROR :: BREAKS_OLD_READER :: /a.b.Record :: removed old validation rule \"v1\""
+        },
+        // Test adding a new validation rule
+        {
+            "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"id\", \"type\" : \"long\" } ] }",
+            "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"id\", \"type\" : \"long\", \"validate\" : { \"v2\": {} } } ] }",
+            _dataAndSchema,
+            true,
+            "ERROR :: BREAKS_NEW_READER :: /a.b.Record :: added new validation rule \"v2\""
+        },
+        // Test adding and removing a validation rule
+        {
+            "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"id\", \"type\" : \"long\", \"validate\" : { \"v1\": {} } } ] }",
+            "{ \"name\" : \"a.b.Record\", \"type\" : \"record\", \"fields\" : [ { \"name\" : \"id\", \"type\" : \"long\", \"validate\" : { \"v2\": {} } } ] }",
+            _dataAndSchema,
+            true,
+            "ERROR :: BREAKS_OLD_READER :: /a.b.Record :: removed old validation rule \"v1\"",
+            "ERROR :: BREAKS_NEW_READER :: /a.b.Record :: added new validation rule \"v2\""
+        }
+    };
+
+    testCompatibility(inputs);
+  }
+
   private void testCompatibility(Object[][] inputs) throws IOException
   {
     for (Object[] row : inputs)
@@ -832,7 +968,7 @@ public class TestCompatibilityChecker
       @SuppressWarnings("unchecked")
       List<CompatibilityOptions> compatibilityOptions =
         row[i] instanceof CompatibilityOptions ?
-          new ArrayList<CompatibilityOptions>(Arrays.asList((CompatibilityOptions) row[i++])) :
+          new ArrayList<>(Arrays.asList((CompatibilityOptions) row[i++])) :
           (List<CompatibilityOptions>) row[i++];
       boolean hasError = i < row.length ? (Boolean) row[i++] : false;
 

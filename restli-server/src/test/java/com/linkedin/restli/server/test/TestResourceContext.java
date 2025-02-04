@@ -14,28 +14,32 @@
    limitations under the License.
 */
 
-
 package com.linkedin.restli.server.test;
+
 
 import com.linkedin.data.ByteString;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.transform.filter.FilterConstants;
 import com.linkedin.data.transform.filter.request.MaskTree;
+import com.linkedin.r2.filter.R2Constants;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestRequestBuilder;
 import com.linkedin.restli.common.ProtocolVersion;
 import com.linkedin.restli.common.RestConstants;
+import com.linkedin.restli.common.attachments.RestLiAttachmentReader;
 import com.linkedin.restli.internal.common.AllProtocolVersions;
 import com.linkedin.restli.internal.common.TestConstants;
 import com.linkedin.restli.internal.server.PathKeysImpl;
 import com.linkedin.restli.internal.server.ResourceContextImpl;
 import com.linkedin.restli.internal.server.ServerResourceContext;
 import com.linkedin.restli.server.ResourceContext;
+import com.linkedin.restli.server.RestLiResponseAttachments;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -50,7 +54,6 @@ import org.testng.annotations.Test;
  * @author Josh Walker
  * @version $Revision: $
  */
-
 public class TestResourceContext
 {
   @DataProvider(name = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "projectionMask")
@@ -71,7 +74,7 @@ public class TestResourceContext
   public void testResourceContextGetProjectionMask(ProtocolVersion version, String stringUri) throws Exception
   {
     URI uri = URI.create(stringUri);
-    Map<String, String> headers = new HashMap<String, String>(1);
+    Map<String, String> headers = new HashMap<>(1);
     headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, version.toString());
 
     ResourceContext context = new ResourceContextImpl(new PathKeysImpl(),
@@ -117,7 +120,7 @@ public class TestResourceContext
   public void testResourceContextWithQueryParamsGetProjectionMaskWithMaskSyntax(ProtocolVersion version, String stringUri) throws Exception
   {
     URI uri = URI.create(stringUri);
-    Map<String, String> headers = new HashMap<String, String>(1);
+    Map<String, String> headers = new HashMap<>(1);
     headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, version.toString());
 
     ResourceContext context = new ResourceContextImpl(new PathKeysImpl(),
@@ -171,7 +174,7 @@ public class TestResourceContext
   public void testResourceContextGetProjectionMaskWithSyntax(ProtocolVersion version, String stringUri) throws Exception
   {
     URI uri = URI.create(stringUri);
-    Map<String, String> headers = new HashMap<String, String>(1);
+    Map<String, String> headers = new HashMap<>(1);
     headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, version.toString());
 
     ResourceContext context = new ResourceContextImpl(new PathKeysImpl(),
@@ -248,7 +251,7 @@ public class TestResourceContext
   public void testResourceContextURIDecoding(ProtocolVersion version, String stringUri) throws Exception
   {
     URI uri = URI.create(stringUri);
-    Map<String, String> headers = new HashMap<String, String>(1);
+    Map<String, String> headers = new HashMap<>(1);
     headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, version.toString());
 
     ServerResourceContext context = new ResourceContextImpl(new PathKeysImpl(),
@@ -293,6 +296,48 @@ public class TestResourceContext
     Assert.assertEquals(parameters, expectedParameters);
   }
 
+  @Test
+  public void testStreamingDataResourceContext() throws Exception
+  {
+    RestRequest request = new RestRequestBuilder(URI.create("foobar")).addHeaderValue(RestConstants.HEADER_ACCEPT, RestConstants.HEADER_VALUE_MULTIPART_RELATED).build();
+    ServerResourceContext fullyStreamingResourceContext = new ResourceContextImpl(new PathKeysImpl(),
+                                                                   request,
+                                                                   new RequestContext());
+    fullyStreamingResourceContext.setRequestAttachmentReader(new RestLiAttachmentReader(null));
+    Assert.assertTrue(fullyStreamingResourceContext.responseAttachmentsSupported());
+    Assert.assertNotNull(fullyStreamingResourceContext.getRequestAttachmentReader());
+    //Now set and get response attachments
+    final RestLiResponseAttachments restLiResponseAttachments = new RestLiResponseAttachments.Builder().build();
+    fullyStreamingResourceContext.setResponseAttachments(restLiResponseAttachments);
+    Assert.assertEquals(fullyStreamingResourceContext.getResponseAttachments(), restLiResponseAttachments);
+
+    ServerResourceContext responseAllowedNoRequestAttachmentsPresent = new ResourceContextImpl(new PathKeysImpl(),
+                                                                                        request,
+                                                                                        new RequestContext());
+    Assert.assertTrue(responseAllowedNoRequestAttachmentsPresent.responseAttachmentsSupported());
+    Assert.assertNull(responseAllowedNoRequestAttachmentsPresent.getRequestAttachmentReader());
+    //Now set and get response attachments
+    responseAllowedNoRequestAttachmentsPresent.setResponseAttachments(restLiResponseAttachments);
+    Assert.assertEquals(responseAllowedNoRequestAttachmentsPresent.getResponseAttachments(), restLiResponseAttachments);
+
+    ServerResourceContext noResponseAllowedRequestAttachmentsPresent = new ResourceContextImpl(new PathKeysImpl(),
+                                                                                               new MockRequest(URI.create("foobar"), Collections.emptyMap()),
+                                                                                               new RequestContext());
+    noResponseAllowedRequestAttachmentsPresent.setRequestAttachmentReader(new RestLiAttachmentReader(null));
+    Assert.assertFalse(noResponseAllowedRequestAttachmentsPresent.responseAttachmentsSupported());
+    Assert.assertNotNull(noResponseAllowedRequestAttachmentsPresent.getRequestAttachmentReader());
+    //Now try to set and make sure we fail
+    try
+    {
+      noResponseAllowedRequestAttachmentsPresent.setResponseAttachments(restLiResponseAttachments);
+      Assert.fail();
+    }
+    catch (IllegalStateException illegalStateException)
+    {
+      //pass
+    }
+  }
+
   public static class MockRequest implements RestRequest
   {
     private final URI _uri;
@@ -302,15 +347,15 @@ public class TestResourceContext
     public MockRequest(URI uri)
     {
       _uri = uri;
-      _headers = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
-      _cookies = new ArrayList<String>();
+      _headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+      _cookies = new ArrayList<>();
     }
 
     public MockRequest(URI uri, Map<String, String> headers)
     {
       _uri = uri;
       _headers = headers;
-      _cookies = new ArrayList<String>();
+      _cookies = new ArrayList<>();
     }
 
     @Override
@@ -361,5 +406,4 @@ public class TestResourceContext
       return _uri;
     }
   }
-
 }

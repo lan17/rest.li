@@ -17,7 +17,6 @@
 package com.linkedin.restli.examples;
 
 
-import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.parseq.Engine;
 import com.linkedin.parseq.EngineBuilder;
 import com.linkedin.parseq.Task;
@@ -52,6 +51,7 @@ public class TestParSeqRestClient extends RestLiIntegrationTest
   private ScheduledExecutorService      _scheduler;
   private ParSeqRestClient              _restClient;
 
+  @SuppressWarnings("deprecation")
   @BeforeClass
   public void setUp() throws Exception
   {
@@ -82,10 +82,11 @@ public class TestParSeqRestClient extends RestLiIntegrationTest
   {
     final Request<String> req =
         builders.<String>action("Parseq").setActionParam("A", 5).setActionParam("B", "yay").setActionParam("C", false).build();
-    final Promise<Response<String>> promise = _restClient.sendRequest(req);
-    promise.await();
-    Assert.assertFalse(promise.isFailed());
-    final Response<String> response = promise.get();
+    final Task<Response<String>> task = _restClient.createTask(req);
+    _engine.run(task);
+    task.await();
+    Assert.assertFalse(task.isFailed());
+    final Response<String> response = task.get();
     Assert.assertEquals("101 YAY false", response.getEntity());
   }
 
@@ -123,6 +124,7 @@ public class TestParSeqRestClient extends RestLiIntegrationTest
         builders.<String>action("Parseq").setActionParam("A", 7).setActionParam("B", "rawr").setActionParam("C", false).build();
     final Task<Response<String>> task3 = _restClient.createTask(req3);
 
+    @SuppressWarnings("deprecation")
     final Task<?> master = Tasks.par(task1, task2, task3);
     _engine.run(master);
     master.await();
@@ -140,10 +142,11 @@ public class TestParSeqRestClient extends RestLiIntegrationTest
   public void testFailPromise(RootBuilderWrapper<?, ?> builders) throws InterruptedException
   {
     final Request<Void> req = builders.<Void>action("FailPromiseCall").build();
-    final Promise<Response<Void>> promise = _restClient.sendRequest(req);
-    promise.await();
-    Assert.assertTrue(promise.isFailed());
-    final Throwable t = promise.getError();
+    final Task<Response<Void>> task = _restClient.createTask(req);
+    _engine.run(task);
+    task.await();
+    Assert.assertTrue(task.isFailed());
+    final Throwable t = task.getError();
     Assert.assertTrue(t instanceof RestLiResponseException);
   }
 
@@ -169,10 +172,10 @@ public class TestParSeqRestClient extends RestLiIntegrationTest
   {
     return new Object[][]
       {
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders()) },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)) },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders()) },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)) }
+        { new RootBuilderWrapper<>(new ActionsBuilders()) },
+        { new RootBuilderWrapper<>(new ActionsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)) },
+        { new RootBuilderWrapper<>(new ActionsRequestBuilders()) },
+        { new RootBuilderWrapper<>(new ActionsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)) }
       };
   }
 }

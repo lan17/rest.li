@@ -25,8 +25,11 @@ import java.util.regex.Pattern;
 
 public class DataSchemaConstants
 {
+  public static final String ALIAS_KEY = "alias";
   public static final String ALIASES_KEY = "aliases";
   public static final String DEFAULT_KEY = "default";
+  public static final String DEPRECATED_KEY = "deprecated";
+  public static final String DEPRECATED_SYMBOLS_KEY = "deprecatedSymbols";
   public static final String DOC_KEY = "doc";
   public static final String FIELDS_KEY = "fields";
   public static final String INCLUDE_KEY = "include";
@@ -35,12 +38,16 @@ public class DataSchemaConstants
   public static final String NAMESPACE_KEY = "namespace";
   public static final String OPTIONAL_KEY = "optional";
   public static final String ORDER_KEY = "order";
+  public static final String PACKAGE_KEY = "package";
   public static final String REF_KEY = "ref";
   public static final String SIZE_KEY = "size";
-  public static final String SYMBOLS_KEY = "symbols";
   public static final String SYMBOL_DOCS_KEY = "symbolDocs";
+  public static final String SYMBOL_PROPERTIES_KEY = "symbolProperties";
+  public static final String SYMBOLS_KEY = "symbols";
   public static final String TYPE_KEY = "type";
   public static final String VALUES_KEY = "values";
+  public static final String MAP_KEY_REF= "$key";
+  public static final String TYPEREF_REF = "$typeref";
 
   public static final String NULL_TYPE = "null";
   public static final String BOOLEAN_TYPE = "boolean";
@@ -60,6 +67,8 @@ public class DataSchemaConstants
 
   public static final String TYPEREF_TYPE = "typeref";
 
+  public static final String DISCRIMINATOR_FIELD = "fieldDiscriminator";
+
   public static final NullDataSchema NULL_DATA_SCHEMA = new NullDataSchema();
   public static final BooleanDataSchema BOOLEAN_DATA_SCHEMA = new BooleanDataSchema();
   public static final IntegerDataSchema INTEGER_DATA_SCHEMA = new IntegerDataSchema();
@@ -72,9 +81,12 @@ public class DataSchemaConstants
   public static final Set<DataSchema.Type> NAMED_DATA_SCHEMA_TYPE_SET;
   public static final Set<String> SCHEMA_KEYS;
   public static final Set<String> FIELD_KEYS;
+  public static final Set<String> MEMBER_KEYS;
+  public static final Set<String> RESTRICTED_UNION_ALIASES;
 
   public static final Pattern NAME_PATTERN = Pattern.compile("[A-Za-z_][0-9A-Za-z_]*(\\.[A-Za-z_][0-9A-Za-z_]*)*");
   public static final Pattern NAMESPACE_PATTERN = Pattern.compile("([A-Za-z_][0-9A-Za-z_]*(\\.[A-Za-z_][0-9A-Za-z_]*)*)?");
+  public static final Pattern PACKAGE_PATTERN = Pattern.compile("([A-Za-z_][0-9A-Za-z_]*(\\.[A-Za-z_][0-9A-Za-z_]*)*)?");
   public static final Pattern UNQUALIFIED_NAME_PATTERN = Pattern.compile("[A-Za-z_][0-9A-Za-z_]*");
   public static final Pattern ENUM_SYMBOL_PATTERN = Pattern.compile("[A-Za-z_][0-9A-Za-z_]*");
   public static final Pattern FIELD_NAME_PATTERN = Pattern.compile("[A-Za-z_][0-9A-Za-z_]*");
@@ -87,13 +99,19 @@ public class DataSchemaConstants
                                                DataSchema.Type.TYPEREF);
     NAMED_DATA_SCHEMA_TYPE_SET = Collections.unmodifiableSet(namedSet);
 
-    Set<String> schemaKeys = new HashSet<String>(Arrays.asList(ALIASES_KEY, DOC_KEY, FIELDS_KEY, INCLUDE_KEY, ITEMS_KEY, NAME_KEY,
-                                                               NAMESPACE_KEY, REF_KEY,
+    Set<String> schemaKeys = new HashSet<>(Arrays.asList(ALIASES_KEY, DOC_KEY, FIELDS_KEY, INCLUDE_KEY, ITEMS_KEY, NAME_KEY,
+                                                               NAMESPACE_KEY, PACKAGE_KEY, REF_KEY,
                                                                SIZE_KEY, SYMBOLS_KEY, SYMBOL_DOCS_KEY, TYPE_KEY, VALUES_KEY));
     SCHEMA_KEYS = Collections.unmodifiableSet(schemaKeys);
 
-    Set<String> fieldKeys = new HashSet<String>(Arrays.asList(ALIASES_KEY, DEFAULT_KEY, DOC_KEY, NAME_KEY, OPTIONAL_KEY, ORDER_KEY, TYPE_KEY));
+    Set<String> fieldKeys = new HashSet<>(Arrays.asList(ALIASES_KEY, DEFAULT_KEY, DOC_KEY, NAME_KEY, OPTIONAL_KEY, ORDER_KEY, TYPE_KEY));
     FIELD_KEYS = Collections.unmodifiableSet(fieldKeys);
+
+    Set<String> memberKeys = new HashSet<>(Arrays.asList(DOC_KEY, ALIAS_KEY, TYPE_KEY));
+    MEMBER_KEYS = Collections.unmodifiableSet(memberKeys);
+
+    Set<String> restrictedUnionAliases = new HashSet<>(Arrays.asList(DISCRIMINATOR_FIELD));
+    RESTRICTED_UNION_ALIASES = Collections.unmodifiableSet(restrictedUnionAliases);
   }
 
   private DataSchemaConstants()

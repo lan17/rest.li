@@ -16,7 +16,6 @@
 
 package com.linkedin.d2.quorum;
 
-import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Collections;
 import java.util.HashMap;
@@ -51,10 +50,10 @@ public class ZKQuorum
    * @param n - number of peers in the ensemble ( for test stability, set peer number in a quorum to 7+ (7, 9 or 11) )
    */
 
-  public ZKQuorum(int ttlPeersCount) throws IOException, Exception
+  public ZKQuorum(int ttlPeersCount) throws Exception
   {
-    _peers = new HashMap<Integer, ZKPeer>();
-    _peersView = new HashMap<Long, QuorumServer>();
+    _peers = new HashMap<>();
+    _peersView = new HashMap<>();
     _peerCount = ttlPeersCount;
     _hosts = "";
 
@@ -82,10 +81,7 @@ public class ZKQuorum
     int electionPort = ZKTestUtil.getRandomPort() + 1001;
     ZKPeer zkpeer = new ZKPeer(id, ZKTestUtil.createTempDir("zkdata"+id), ZKTestUtil.createTempDir("zklog"+id), HOST, clientPort, quorumPort, electionPort);
     _peers.put(id, zkpeer);
-    _peersView.put(Long.valueOf(id), new QuorumServer(id,
-                                                     new InetSocketAddress(HOST, quorumPort),
-                                                     new InetSocketAddress(HOST, electionPort),
-                                                     LearnerType.PARTICIPANT));
+    _peersView.put(Long.valueOf(id), new QuorumServer(id, new InetSocketAddress(HOST, quorumPort), new InetSocketAddress(HOST, electionPort), new InetSocketAddress(HOST, clientPort), LearnerType.PARTICIPANT));
 
     _log.info("Created peer #" + id + " with ports:" + clientPort + "/" + quorumPort + "/" + electionPort + "  peer server addr:"+_peersView.get(Long.valueOf(id)).addr+"  peer server electionAddr:"+_peersView.get(Long.valueOf(id)).electionAddr);
   }
@@ -228,7 +224,7 @@ public class ZKQuorum
     return false;
   }
 
-  public void restart(int id) throws IOException, Exception
+  public void restart(int id) throws Exception
   {
     _log.info("Restarting peer #" + getQuorumPeerPortsInfo(id));
     _peers.get(id).shutdown(false);
@@ -251,7 +247,7 @@ public class ZKQuorum
     waitForAllPeersUp();
   }
 
-  public void startAll() throws IOException, Exception
+  public void startAll() throws Exception
   {
     for (int id=1; id <= _peerCount; id++)
     {

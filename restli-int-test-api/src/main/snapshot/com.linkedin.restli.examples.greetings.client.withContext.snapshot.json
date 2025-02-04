@@ -1,10 +1,5 @@
 {
   "models" : [ {
-    "type" : "enum",
-    "name" : "Tone",
-    "namespace" : "com.linkedin.restli.examples.greetings.api",
-    "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
-  }, {
     "type" : "record",
     "name" : "Greeting",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -17,16 +12,29 @@
       "type" : "string"
     }, {
       "name" : "tone",
-      "type" : "Tone",
+      "type" : {
+        "type" : "enum",
+        "name" : "Tone",
+        "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
+      },
       "doc" : "tone"
+    }, {
+      "name" : "senders",
+      "type" : {
+        "type" : "array",
+        "items" : "string"
+      },
+      "doc" : "Sender(s) of the message",
+      "optional" : true
     } ]
-  } ],
+  }, "com.linkedin.restli.examples.greetings.api.Tone" ],
   "schema" : {
     "name" : "withContext",
     "namespace" : "com.linkedin.restli.examples.greetings.client",
     "path" : "/withContext",
     "schema" : "com.linkedin.restli.examples.greetings.api.Greeting",
     "doc" : "generated from: com.linkedin.restli.examples.greetings.server.WithContextResource",
+    "resourceClass" : "com.linkedin.restli.examples.greetings.server.WithContextResource",
     "collection" : {
       "identifier" : {
         "name" : "withContextId",
@@ -34,10 +42,12 @@
       },
       "supports" : [ "get" ],
       "methods" : [ {
-        "method" : "get"
+        "method" : "get",
+        "javaMethodName" : "get"
       } ],
       "finders" : [ {
-        "name" : "finder"
+        "name" : "finder",
+        "javaMethodName" : "finder"
       } ],
       "entity" : {
         "path" : "/withContext/{withContextId}"

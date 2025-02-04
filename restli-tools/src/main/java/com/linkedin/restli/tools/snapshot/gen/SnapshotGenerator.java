@@ -27,11 +27,13 @@ import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.schema.SchemaToJsonEncoder;
 import com.linkedin.data.schema.TyperefDataSchema;
 import com.linkedin.data.schema.UnionDataSchema;
+import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.restspec.ActionSchema;
 import com.linkedin.restli.restspec.ActionsSetSchema;
 import com.linkedin.restli.restspec.AssocKeySchema;
 import com.linkedin.restli.restspec.AssociationSchema;
+import com.linkedin.restli.restspec.BatchFinderSchema;
 import com.linkedin.restli.restspec.CollectionSchema;
 import com.linkedin.restli.restspec.EntitySchema;
 import com.linkedin.restli.restspec.FinderSchema;
@@ -42,13 +44,18 @@ import com.linkedin.restli.restspec.ParameterSchemaArray;
 import com.linkedin.restli.restspec.ResourceSchema;
 import com.linkedin.restli.restspec.RestMethodSchema;
 import com.linkedin.restli.restspec.RestSpecCodec;
+import com.linkedin.restli.restspec.ServiceErrorSchema;
+import com.linkedin.restli.restspec.ServiceErrorSchemaArray;
+import com.linkedin.restli.restspec.ServiceErrorsSchema;
 import com.linkedin.restli.restspec.SimpleSchema;
 import com.linkedin.restli.tools.snapshot.check.Snapshot;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,8 +77,8 @@ public class SnapshotGenerator
 
   public List<NamedDataSchema> generateModelList()
   {
-    List<NamedDataSchema> result = new ArrayList<NamedDataSchema>();
-    Map<String, NamedDataSchema> map = new HashMap<String, NamedDataSchema>();
+    List<NamedDataSchema> result = new ArrayList<>();
+    Map<String, NamedDataSchema> map = new HashMap<>();
     findModelsResource(_topLevelSchema, map, result);
     return result;
   }
@@ -80,38 +87,31 @@ public class SnapshotGenerator
   {
     fileName += RestConstants.SNAPSHOT_FILENAME_EXTENTION;
     final File file = new File(outdirFile, fileName);
-
-    FileOutputStream fileOutputStream = new FileOutputStream(file);
-
-    JsonBuilder jsonBuilder = new JsonBuilder(JsonBuilder.Pretty.INDENTED);
-    SchemaToJsonEncoder encoder = new SchemaToJsonEncoder(jsonBuilder);
-
-    jsonBuilder.writeStartObject();
-    jsonBuilder.writeFieldName(Snapshot.MODELS_KEY);
-    jsonBuilder.writeStartArray();
-
-    List<NamedDataSchema> models = generateModelList();
-
-    for(DataSchema model : models){
-      encoder.encode(model);
-    }
-
-    jsonBuilder.writeEndArray();
-
-    jsonBuilder.writeFieldName(Snapshot.SCHEMA_KEY);
-    jsonBuilder.writeDataTemplate(_topLevelSchema, true);
-
-    jsonBuilder.writeEndObject();
-
-    try
+    try (JsonBuilder jsonBuilder = new JsonBuilder(JsonBuilder.Pretty.INDENTED, new FileWriter(file)))
     {
-      fileOutputStream.write(jsonBuilder.result().getBytes());
+      SchemaToJsonEncoder encoder = new SchemaToJsonEncoder(jsonBuilder);
+
+      jsonBuilder.writeStartObject();
+      jsonBuilder.writeFieldName(Snapshot.MODELS_KEY);
+      jsonBuilder.writeStartArray();
+
+      List<NamedDataSchema> models = generateModelList();
+      models.sort(Comparator.comparing(NamedDataSchema::getFullName));
+
+      for (DataSchema model : models)
+      {
+        encoder.encode(model);
+      }
+
+      jsonBuilder.writeEndArray();
+
+      jsonBuilder.writeFieldName(Snapshot.SCHEMA_KEY);
+      jsonBuilder.writeDataTemplate(_topLevelSchema, true);
+
+      jsonBuilder.writeEndObject();
+      jsonBuilder.flush();
     }
-    finally
-    {
-      fileOutputStream.close();
-      jsonBuilder.close();
-    }
+
     return file;
   }
 
@@ -139,18 +139,29 @@ public class SnapshotGenerator
     {
       IdentifierSchema identifier = collection.getIdentifier();
       findModelsIdentifier(identifier, foundTypes, typeOrder);
+      findErrorDetailTypeModels(collection, foundTypes, typeOrder);
       if (collection.hasFinders())
       {
         for (FinderSchema restMethodSchema: collection.getFinders())
         {
-          findModelsFinder(restMethodSchema, foundTypes, typeOrder);
+          findModels(restMethodSchema.getParameters(), restMethodSchema.getMetadata(), foundTypes, typeOrder);
+          findErrorDetailTypeModels(restMethodSchema, foundTypes, typeOrder);
+        }
+      }
+      if (collection.hasBatchFinders())
+      {
+        for (BatchFinderSchema restMethodSchema: collection.getBatchFinders())
+        {
+          findModels(restMethodSchema.getParameters(), restMethodSchema.getMetadata(), foundTypes, typeOrder);
+          findErrorDetailTypeModels(restMethodSchema, foundTypes, typeOrder);
         }
       }
       if (collection.hasMethods())
       {
         for (RestMethodSchema restMethodSchema : collection.getMethods())
         {
-          findModelsMethod(restMethodSchema, foundTypes, typeOrder);
+          findModels(restMethodSchema.getParameters(), restMethodSchema.getMetadata(), foundTypes, typeOrder);
+          findErrorDetailTypeModels(restMethodSchema, foundTypes, typeOrder);
         }
       }
       if (collection.hasActions())
@@ -158,6 +169,7 @@ public class SnapshotGenerator
         for (ActionSchema actionSchema : collection.getActions())
         {
           findModelsAction(actionSchema, foundTypes, typeOrder);
+          findErrorDetailTypeModels(actionSchema, foundTypes, typeOrder);
         }
       }
       if (collection.hasEntity())
@@ -203,6 +215,7 @@ public class SnapshotGenerator
     AssociationSchema association = resourceSchema.getAssociation();
     if (association != null)
     {
+      findErrorDetailTypeModels(association, foundTypes, typeOrder);
       for (AssocKeySchema assocKeySchema : association.getAssocKeys())
       {
         String type = assocKeySchema.getType();
@@ -212,14 +225,24 @@ public class SnapshotGenerator
       {
         for (FinderSchema restMethodSchema: association.getFinders())
         {
-          findModelsFinder(restMethodSchema, foundTypes, typeOrder);
+          findModels(restMethodSchema.getParameters(),restMethodSchema.getMetadata(), foundTypes, typeOrder);
+          findErrorDetailTypeModels(restMethodSchema, foundTypes, typeOrder);
+        }
+      }
+      if (association.hasBatchFinders())
+      {
+        for (BatchFinderSchema restMethodSchema: association.getBatchFinders())
+        {
+          findModels(restMethodSchema.getParameters(), restMethodSchema.getMetadata(), foundTypes, typeOrder);
+          findErrorDetailTypeModels(restMethodSchema, foundTypes, typeOrder);
         }
       }
       if (association.hasMethods())
       {
         for (RestMethodSchema restMethodSchema: association.getMethods())
         {
-          findModelsMethod(restMethodSchema, foundTypes, typeOrder);
+          findModels(restMethodSchema.getParameters(),restMethodSchema.getMetadata(), foundTypes, typeOrder);
+          findErrorDetailTypeModels(restMethodSchema, foundTypes, typeOrder);
         }
       }
       if (association.hasActions())
@@ -227,6 +250,7 @@ public class SnapshotGenerator
         for (ActionSchema actionSchema : association.getActions())
         {
           findModelsAction(actionSchema, foundTypes, typeOrder);
+          findErrorDetailTypeModels(actionSchema, foundTypes, typeOrder);
         }
       }
       if (association.hasEntity())
@@ -242,11 +266,13 @@ public class SnapshotGenerator
     SimpleSchema simple = resourceSchema.getSimple();
     if (simple != null)
     {
+      findErrorDetailTypeModels(simple, foundTypes, typeOrder);
       if (simple.hasMethods())
       {
         for (RestMethodSchema restMethodSchema : simple.getMethods())
         {
-          findModelsMethod(restMethodSchema, foundTypes, typeOrder);
+          findModels(restMethodSchema.getParameters(), restMethodSchema.getMetadata(), foundTypes, typeOrder);
+          findErrorDetailTypeModels(restMethodSchema, foundTypes, typeOrder);
         }
       }
       if (simple.hasActions())
@@ -254,6 +280,7 @@ public class SnapshotGenerator
         for (ActionSchema actionSchema : simple.getActions())
         {
           findModelsAction(actionSchema, foundTypes, typeOrder);
+          findErrorDetailTypeModels(actionSchema, foundTypes, typeOrder);
         }
       }
       if (simple.hasEntity())
@@ -269,11 +296,13 @@ public class SnapshotGenerator
     ActionsSetSchema actionsSet = resourceSchema.getActionsSet();
     if (actionsSet != null)
     {
+      findErrorDetailTypeModels(actionsSet, foundTypes, typeOrder);
       if (actionsSet.hasActions())
       {
         for(ActionSchema actionSchema : actionsSet.getActions())
         {
           findModelsAction(actionSchema, foundTypes, typeOrder);
+          findErrorDetailTypeModels(actionSchema, foundTypes, typeOrder);
         }
       }
     }
@@ -296,9 +325,8 @@ public class SnapshotGenerator
     }
   }
 
-  private void findModelsFinder(FinderSchema finderSchema, Map<String, NamedDataSchema> foundTypes, List<NamedDataSchema> typeOrder)
+  private void findModels(ParameterSchemaArray parameters ,MetadataSchema metadata , Map<String, NamedDataSchema> foundTypes, List<NamedDataSchema> typeOrder)
   {
-    ParameterSchemaArray parameters = finderSchema.getParameters();
     if (parameters != null)
     {
       for(ParameterSchema parameterSchema : parameters)
@@ -306,23 +334,11 @@ public class SnapshotGenerator
         findModelsParameter(parameterSchema, foundTypes, typeOrder);
       }
     }
-    MetadataSchema metadata = finderSchema.getMetadata();
+
     if (metadata != null)
     {
       String type = metadata.getType();
       recordType(type, foundTypes, typeOrder);
-    }
-  }
-
-  private void findModelsMethod(RestMethodSchema restMethodSchema, Map<String, NamedDataSchema> foundTypes, List<NamedDataSchema> typeOrder)
-  {
-    ParameterSchemaArray parameters = restMethodSchema.getParameters();
-    if (parameters != null)
-    {
-      for(ParameterSchema parameterSchema : parameters)
-      {
-        findModelsParameter(parameterSchema, foundTypes, typeOrder);
-      }
     }
   }
 
@@ -337,6 +353,33 @@ public class SnapshotGenerator
     else
     {
       recordType(type, foundTypes, typeOrder);
+    }
+  }
+
+  /**
+   * For a given record that includes the {@link ServiceErrorsSchema} record, keep track of all referenced
+   * error detail type models.
+   *
+   * @param schema record that includes the {@link ServiceErrorsSchema}
+   * @param foundTypes running mapping of found data schemas
+   * @param typeOrder running, ordered list of found data schemas
+   */
+  private void findErrorDetailTypeModels(RecordTemplate schema, Map<String, NamedDataSchema> foundTypes, List<NamedDataSchema> typeOrder)
+  {
+    // Wrap the underlying data map in the shared schema interface
+    final ServiceErrorsSchema serviceErrorsSchema = new ServiceErrorsSchema(schema.data());
+
+    // For each service error, inspect its error detail type field and keep track of all referenced types
+    final ServiceErrorSchemaArray serviceErrorSchemaArray = serviceErrorsSchema.getServiceErrors();
+    if (serviceErrorSchemaArray != null)
+    {
+      for (ServiceErrorSchema serviceErrorSchema : serviceErrorSchemaArray)
+      {
+        if (serviceErrorSchema.hasErrorDetailType())
+        {
+          recordType(serviceErrorSchema.getErrorDetailType(), foundTypes, typeOrder);
+        }
+      }
     }
   }
 
@@ -392,9 +435,9 @@ public class SnapshotGenerator
     else if (schema instanceof UnionDataSchema)
     {
       UnionDataSchema unionSchema = (UnionDataSchema)schema;
-      for(DataSchema type : unionSchema.getTypes())
+      for(UnionDataSchema.Member member : unionSchema.getMembers())
       {
-        recordType(type, foundTypes, typeOrder);
+        recordType(member.getType(), foundTypes, typeOrder);
       }
     }
   }

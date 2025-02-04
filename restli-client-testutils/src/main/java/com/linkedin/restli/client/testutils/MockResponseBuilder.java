@@ -23,6 +23,7 @@ import com.linkedin.restli.client.response.CreateResponse;
 import com.linkedin.restli.common.IdResponse;
 import com.linkedin.restli.common.ProtocolVersion;
 import com.linkedin.restli.common.RestConstants;
+import com.linkedin.restli.common.attachments.RestLiAttachmentReader;
 import com.linkedin.restli.internal.client.ResponseImpl;
 import com.linkedin.restli.internal.common.AllProtocolVersions;
 import com.linkedin.restli.internal.common.HeaderUtil;
@@ -52,6 +53,7 @@ public class MockResponseBuilder<K, V>
   private List<HttpCookie> _cookies;
   private RestLiResponseException _restLiResponseException;
   private ProtocolVersion _protocolVersion;
+  private RestLiAttachmentReader _restLiAttachmentReader;
 
   private static final int DEFAULT_HTTP_STATUS = 200;
 
@@ -59,7 +61,6 @@ public class MockResponseBuilder<K, V>
    * Set the entity
    *
    * @param entity the entity for the {@link Response}
-   * @return
    */
   public MockResponseBuilder<K, V> setEntity(V entity)
   {
@@ -71,7 +72,6 @@ public class MockResponseBuilder<K, V>
    * Set the HTTP status code for the {@link Response}
    *
    * @param status the status code for the {@link Response}
-   * @return
    */
   public MockResponseBuilder<K, V> setStatus(int status)
   {
@@ -83,7 +83,6 @@ public class MockResponseBuilder<K, V>
    * Set the headers for the {@link Response}
    *
    * @param headers the headers for the {@link Response}
-   * @return
    * @throws IllegalArgumentException when trying to set {@link RestConstants#HEADER_ID} or {@link RestConstants#HEADER_RESTLI_ID}.
    */
   public MockResponseBuilder<K, V> setHeaders(Map<String, String> headers)
@@ -107,7 +106,6 @@ public class MockResponseBuilder<K, V>
    * Set the {@link RestLiResponseException} for the {@link Response}
    *
    * @param restLiResponseException the {@link RestLiResponseException} for the {@link Response}
-   * @return
    */
   public MockResponseBuilder<K, V> setRestLiResponseException(RestLiResponseException restLiResponseException)
   {
@@ -119,11 +117,21 @@ public class MockResponseBuilder<K, V>
    * Set the {@link ProtocolVersion} for the {@link Response}
    *
    * @param protocolVersion the {@link ProtocolVersion} for the {@link Response}
-   * @return
    */
   public MockResponseBuilder<K, V> setProtocolVersion(ProtocolVersion protocolVersion)
   {
     _protocolVersion = protocolVersion;
+    return this;
+  }
+
+  /**
+   * Set the {@link com.linkedin.restli.common.attachments.RestLiAttachmentReader} for the {@link Response}
+   *
+   * @param restLiAttachmentReader the {@link com.linkedin.restli.common.attachments.RestLiAttachmentReader} for the {@link Response}
+   */
+  public MockResponseBuilder<K, V> setRestLiAttachmentReader(RestLiAttachmentReader restLiAttachmentReader)
+  {
+    _restLiAttachmentReader = restLiAttachmentReader;
     return this;
   }
 
@@ -134,7 +142,7 @@ public class MockResponseBuilder<K, V>
    */
   public Response<V> build()
   {
-    Map<String, String> headers = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+    Map<String, String> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     if (_headers != null)
     {
       headers.putAll(_headers);
@@ -165,6 +173,9 @@ public class MockResponseBuilder<K, V>
     }
     List<HttpCookie> cookies = _cookies == null ? Collections.<HttpCookie>emptyList() : _cookies;
 
-    return new ResponseImpl<V>(status, headers, cookies, _entity, _restLiResponseException);
+    final ResponseImpl<V> response = new ResponseImpl<>(status, headers, cookies, _entity, _restLiResponseException);
+    response.setAttachmentReader(_restLiAttachmentReader);
+
+    return response;
   }
 }

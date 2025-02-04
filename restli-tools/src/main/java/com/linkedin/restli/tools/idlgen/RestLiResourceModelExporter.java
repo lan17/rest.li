@@ -16,7 +16,6 @@
 
 package com.linkedin.restli.tools.idlgen;
 
-
 import com.linkedin.pegasus.generator.GeneratorResult;
 import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.internal.server.model.ResourceModel;
@@ -27,22 +26,16 @@ import com.linkedin.restli.restspec.ResourceSchema;
 import com.linkedin.restli.restspec.RestSpecCodec;
 import com.linkedin.restli.server.RestLiConfig;
 import com.linkedin.restli.server.util.FileClassNameScanner;
-
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-
-import org.apache.commons.io.output.NullWriter;
-import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,7 +52,7 @@ public class RestLiResourceModelExporter
 
   /**
    * @param apiName the name of the API
-   * @param classpath classpath to to load the resources. this is purely for Javadoc Doclet {@link RestLiDoclet}
+   * @param classpath classpath to load the resources. this is purely for Javadoc Doclet {@link RestLiDoclet}
    * @param sourcePaths paths to scan for resource Java source files. this is purely for Javadoc Doclet {@link RestLiDoclet}
    * @param resourcePackages packages to scan for resources
    * @param outdir directory in which to output the IDL files
@@ -110,7 +103,7 @@ public class RestLiResourceModelExporter
 
   /**
    * @param apiName the name of the API
-   * @param classpath classpath to to load the resources. this is purely for Javadoc Doclet {@link RestLiDoclet}
+   * @param classpath classpath to load the resources. this is purely for Javadoc Doclet {@link RestLiDoclet}
    * @param sourcePaths paths to scan for resource Java source files. this is purely for Javadoc Doclet {@link RestLiDoclet}
    *                    if both resourcePackages and resourceClasses is null, all classes defined in the directories will be scanned
    * @param resourcePackages packages to scan for resources
@@ -138,7 +131,7 @@ public class RestLiResourceModelExporter
       config.addResourcePackageNames(resourcePackages);
     }
 
-    final Map<String, String> classFileNames = new HashMap<String, String>();
+    final Map<String, String> classFileNames = new HashMap<>();
     for (String path : sourcePaths)
     {
       classFileNames.putAll(FileClassNameScanner.scan(path));
@@ -151,7 +144,7 @@ public class RestLiResourceModelExporter
       {
         config.addResourceClassNames(resourceClasses);
 
-        sourceFileNames = new ArrayList<String>(resourceClasses.length);
+        sourceFileNames = new ArrayList<>(resourceClasses.length);
         for (String resourceClass : resourceClasses)
         {
           final String resourceFileName = classFileNames.get(resourceClass);
@@ -172,7 +165,7 @@ public class RestLiResourceModelExporter
       }
     }
 
-    log.info("Executing Rest.li annotation processor...");
+    log.debug("Executing Rest.li annotation processor...");
     final RestLiApiBuilder apiBuilder = new RestLiApiBuilder(config);
     final Map<String, ResourceModel> rootResourceMap = apiBuilder.build();
     if (rootResourceMap.isEmpty())
@@ -180,32 +173,27 @@ public class RestLiResourceModelExporter
       return new Result();
     }
 
+    List<DocsProvider> languageSpecificDocsProviders = new ArrayList<>();
+
     // We always include the doc provider for javadoc
-    DocsProvider javadocProvider = new DocletDocsProvider(apiName, classpath, sourcePaths, resourcePackages);
+    languageSpecificDocsProviders.add(new DocletDocsProvider(apiName, classpath, sourcePaths, resourcePackages));
 
-    DocsProvider docsProvider;
-    if (additionalDocProviders == null || additionalDocProviders.isEmpty())
-    {
-      docsProvider = javadocProvider;
-    }
-    else
-    {
-      // dynamically load doc providers for additional language, if available
-      List<DocsProvider> languageSpecificDocsProviders = new ArrayList<DocsProvider>();
-      languageSpecificDocsProviders.add(javadocProvider);
+    // dynamically load doc providers for additional language, if available
+    if (additionalDocProviders != null && !additionalDocProviders.isEmpty()) {
       languageSpecificDocsProviders.addAll(MultiLanguageDocsProvider.loadExternalProviders(additionalDocProviders));
-      docsProvider = new MultiLanguageDocsProvider(languageSpecificDocsProviders);
     }
 
-    log.info("Registering source files with doc providers...");
+    DocsProvider docsProvider = new MultiLanguageDocsProvider(languageSpecificDocsProviders);
+
+    log.debug("Registering source files with doc providers...");
 
     docsProvider.registerSourceFiles(classFileNames.values());
 
-    log.info("Exporting IDL files...");
+    log.debug("Exporting IDL files...");
 
     final GeneratorResult result = generateIDLFiles(apiName, outdir, rootResourceMap, docsProvider);
 
-    log.info("Done!");
+    log.debug("Done!");
 
     return result;
   }
@@ -266,7 +254,7 @@ public class RestLiResourceModelExporter
 
     final ResourceModelEncoder encoder = new ResourceModelEncoder(docsProvider);
 
-    final List<ResourceSchema> rootResourceNodes = new ArrayList<ResourceSchema>();
+    final List<ResourceSchema> rootResourceNodes = new ArrayList<>();
     for (Entry<String, ResourceModel> entry: rootResourceMap.entrySet())
     {
       final ResourceSchema rootResourceNode = encoder.buildResourceSchema(entry.getValue());
@@ -296,8 +284,8 @@ public class RestLiResourceModelExporter
 
   class Result implements GeneratorResult
   {
-    private List<File> targetFiles = new ArrayList<File>();
-    private List<File> modifiedFiles = new ArrayList<File>();
+    private List<File> targetFiles = new ArrayList<>();
+    private List<File> modifiedFiles = new ArrayList<>();
 
     public void addTargetFile(File file)
     {
@@ -334,7 +322,7 @@ public class RestLiResourceModelExporter
       throws IOException
   {
     fileName += RestConstants.RESOURCE_MODEL_FILENAME_EXTENSION;
-    log.info("Writing file '" + fileName + '\'');
+    log.debug("Writing file '" + fileName + '\'');
     final File file = new File(outdirFile, fileName);
 
     _codec.writeResourceSchema(rootResourceNode, new FileOutputStream(file));

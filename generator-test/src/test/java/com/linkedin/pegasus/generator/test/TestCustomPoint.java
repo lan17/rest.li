@@ -19,16 +19,13 @@ package com.linkedin.pegasus.generator.test;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.TestUtil;
+import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.template.Custom;
-import com.linkedin.data.template.DataTemplate;
 import com.linkedin.data.template.DataTemplateUtil;
-import com.linkedin.data.template.DirectCoercer;
+import com.linkedin.data.template.GetMode;
 import com.linkedin.data.template.SetMode;
-import com.linkedin.data.template.TemplateOutputCastException;
-import com.linkedin.data.template.TestCustom;
 import com.linkedin.data.template.TestCustom.CustomPoint;
 import com.linkedin.data.template.TestCustom.CustomPoint.CustomPointCoercer;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -37,19 +34,14 @@ import java.util.Map;
 import org.testng.annotations.BeforeSuite;
 import org.testng.annotations.Test;
 
-import static com.linkedin.data.TestUtil.asMap;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
+import static com.linkedin.data.TestUtil.*;
+import static org.testng.Assert.*;
 
 public class TestCustomPoint
 {
   @BeforeSuite
   public void testInitializer()
   {
-    assertFalse(DataTemplateUtil.hasCoercer(CustomPoint.class));
     CustomPointRecord r = new CustomPointRecord();
     assertTrue(DataTemplateUtil.hasCoercer(CustomPoint.class));
   }
@@ -119,7 +111,7 @@ public class TestCustomPoint
   @Test
   public void testCustomPointRecordArray() throws CloneNotSupportedException
   {
-    final List<String> input = new ArrayList<String>(Arrays.asList("1,1", "2,2", "3,3"));
+    final List<String> input = new ArrayList<>(Arrays.asList("1,1", "2,2", "3,3"));
     final DataList inputDataList = new DataList(input);
 
     CustomPointRecord record = new CustomPointRecord();
@@ -153,7 +145,7 @@ public class TestCustomPoint
   @Test
   public void testCustomPointArray() throws IOException
   {
-    final List<String> input = new ArrayList<String>(Arrays.asList("1,1", "2,2", "3,3"));
+    final List<String> input = new ArrayList<>(Arrays.asList("1,1", "2,2", "3,3"));
     final DataList inputDataList = new DataList(input);
     final String customPointArraySchemaText = "{\"type\":\"array\",\"items\":{\"type\":\"typeref\",\"name\":\"CustomPoint\",\"namespace\":\"com.linkedin.pegasus.generator.test\",\"ref\":\"string\",\"java\":{\"class\":\"com.linkedin.data.template.TestCustom.CustomPoint\"}}}";
 
@@ -259,6 +251,17 @@ public class TestCustomPoint
       assertEquals(u.getInt(), i);
 
       i += 11;
+    }
+  }
+
+  private static class CustomPointRecordWithPublicObtainCustomType extends CustomPointRecord
+  {
+    // in order to verify the call count of the protected method from the test, we need to promote its access permission
+    // generally not a good pattern to follow, but we only do this in specific test
+    @Override
+    public <T> T obtainCustomType(RecordDataSchema.Field field, Class<T> valueClass, GetMode mode)
+    {
+      return super.obtainCustomType(field, valueClass, mode);
     }
   }
 

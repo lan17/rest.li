@@ -16,24 +16,31 @@
 
 package com.linkedin.d2.balancer.properties;
 
-
+import com.google.protobuf.ByteString;
 import com.linkedin.d2.balancer.properties.util.PropertyUtil;
 import com.linkedin.d2.balancer.util.JacksonUtil;
 import com.linkedin.d2.discovery.PropertyBuilder;
 import com.linkedin.d2.discovery.PropertySerializationException;
 import com.linkedin.d2.discovery.PropertySerializer;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static com.linkedin.d2.balancer.properties.util.PropertyUtil.mapGet;
 
+
+/**
+ * ClusterPropertiesJsonSerializer serialize and deserialize data stored in a cluster store on service registry (like Zookeeper).
+ * NOTE: The deserialized object is actually a {@link ClusterStoreProperties} to include ALL properties in the store.
+ * The interface is left with PropertySerializer<ClusterProperties> for backward compatibility.
+ */
 public class ClusterPropertiesJsonSerializer implements
     PropertySerializer<ClusterProperties>, PropertyBuilder<ClusterProperties>
 {
@@ -71,22 +78,86 @@ public class ClusterPropertiesJsonSerializer implements
     }
   }
 
-  // working around a javac bug that doesn't recognize the unchecked warning suppression
-  @SuppressWarnings("unchecked")
-  private static <T> T mapGet(Map<String, Object> map, String key)
+  @Override
+  public ClusterProperties fromBytes(byte[] bytes, long version) throws PropertySerializationException
   {
-    return (T) map.get(key);
+    ClusterProperties clusterProperties = fromBytes(bytes);
+    clusterProperties.setVersion(version);
+    return clusterProperties;
+  }
+  
+  public ClusterProperties fromBytes(ByteString bytes, long version) throws PropertySerializationException
+  {
+    try
+    {
+      @SuppressWarnings("unchecked")
+      Map<String, Object> untyped = JacksonUtil.getObjectMapper().readValue(bytes.newInput(), HashMap.class);
+      ClusterProperties clusterProperties = fromMap(untyped);
+      clusterProperties.setVersion(version);
+      return clusterProperties;
+    }
+    catch (Exception e)
+    {
+      throw new PropertySerializationException(e);
+    }
   }
 
-  @Override
-  public ClusterProperties fromMap(Map<String, Object> map)
+  @SuppressWarnings("unchecked")
+  private static <T> T mapGetOrDefault(Map<String, Object> map, String key, T defaultValue)
   {
-    List<URI> bannedList = mapGet(map, PropertyKeys.BANNED_URIS);
-    if (bannedList == null)
+    T value = (T) map.get(key);
+    if (value == null)
     {
-      bannedList = Collections.emptyList();
+      value = defaultValue;
     }
-    Set<URI> banned = new HashSet<URI>(bannedList);
+    return value;
+  }
+
+  /**
+   * Always return the composite class {@link ClusterStoreProperties} to include ALL properties stored on service registry (like Zookeeper),
+   * such as canary configs, distribution strategy, etc.
+   */
+  @Override
+  public ClusterProperties fromMap(Map<String, Object> map) {
+    ClusterProperties stableConfigs = buildClusterPropertiesFromMap(map);
+    ClusterProperties canaryConfigs = null;
+    CanaryDistributionStrategy distributionStrategy = null;
+    FailoutProperties failoutProperties = null;
+
+    // get canary properties and canary distribution strategy, if exist
+    Map<String, Object> canaryConfigsMap = mapGet(map, PropertyKeys.CANARY_CONFIGS);
+    Map<String, Object> distributionStrategyMap = mapGet(map, PropertyKeys.CANARY_DISTRIBUTION_STRATEGY);
+
+    // get existing cluster failout properties if it exists
+    Map<String, Object> clusterFailoutMap = mapGet(map, PropertyKeys.FAILOUT_PROPERTIES);
+    if (canaryConfigsMap != null && !canaryConfigsMap.isEmpty()
+        && distributionStrategyMap != null && !distributionStrategyMap.isEmpty())
+    {
+      canaryConfigs = buildClusterPropertiesFromMap(canaryConfigsMap);
+      distributionStrategy = new CanaryDistributionStrategy(
+        mapGetOrDefault(distributionStrategyMap, PropertyKeys.CANARY_STRATEGY, CanaryDistributionStrategy.DEFAULT_STRATEGY_LABEL),
+        mapGetOrDefault(distributionStrategyMap, PropertyKeys.PERCENTAGE_STRATEGY_PROPERTIES, Collections.emptyMap()),
+        mapGetOrDefault(distributionStrategyMap, PropertyKeys.TARGET_HOSTS_STRATEGY_PROPERTIES, Collections.emptyMap()),
+        mapGetOrDefault(distributionStrategyMap, PropertyKeys.TARGET_APPLICATIONS_STRATEGY_PROPERTIES, Collections.emptyMap()));
+    }
+    if (clusterFailoutMap != null && !clusterFailoutMap.isEmpty())
+    {
+      failoutProperties = new FailoutProperties(
+          mapGetOrDefault(clusterFailoutMap, PropertyKeys.FAILOUT_REDIRECT_CONFIGS, Collections.emptyList()),
+          mapGetOrDefault(clusterFailoutMap, PropertyKeys.FAILOUT_BUCKET_CONFIGS, Collections.emptyList()));
+
+    }
+    return new ClusterStoreProperties(stableConfigs, canaryConfigs, distributionStrategy, failoutProperties);
+  }
+
+  /**
+   * Build cluster configs from map. This could be for either stable or canary configs.
+   */
+  private ClusterProperties buildClusterPropertiesFromMap(Map<String, Object> map)
+  {
+    List<String> bannedList = mapGet(map, PropertyKeys.BANNED_URIS);
+    Set<URI> banned = (bannedList == null) ? Collections.emptySet()
+        : bannedList.stream().map(URI::create).collect(Collectors.toSet());
 
     String clusterName = PropertyUtil.checkAndGetValue(map, PropertyKeys.CLUSTER_NAME, String.class, "ClusterProperties");
     List<String> prioritizedSchemes = mapGet(map, PropertyKeys.PRIORITIZED_SCHEMES);
@@ -94,6 +165,7 @@ public class ClusterPropertiesJsonSerializer implements
     Map<String, Object> partitionPropertiesMap = mapGet(map, PropertyKeys.PARTITION_PROPERTIES);
     PartitionProperties partitionProperties;
     String scope = "cluster: " + clusterName;
+    List<String> validationList = mapGet(map, PropertyKeys.SSL_VALIDATION_STRINGS);
     if (partitionPropertiesMap != null)
     {
       PartitionProperties.PartitionType partitionType =
@@ -127,6 +199,19 @@ public class ClusterPropertiesJsonSerializer implements
               new HashBasedPartitionProperties(partitionKeyRegex, partitionCount, algorithm);
           break;
         }
+        case CUSTOM:
+        {
+          int partitionCount = partitionPropertiesMap.containsKey(PropertyKeys.PARTITION_COUNT)
+              ? PropertyUtil.checkAndGetValue(partitionPropertiesMap, PropertyKeys.PARTITION_COUNT, Number.class, scope).intValue()
+              : 0;
+
+          @SuppressWarnings("unchecked")
+          List<String> partitionAccessorList =partitionPropertiesMap.containsKey(PropertyKeys.PARTITION_ACCESSOR_LIST)
+              ? PropertyUtil.checkAndGetValue(partitionPropertiesMap, PropertyKeys.PARTITION_ACCESSOR_LIST, List.class, scope)
+              : Collections.emptyList();
+          partitionProperties = new CustomizedPartitionProperties(partitionCount, partitionAccessorList);
+          break;
+        }
         case NONE:
           partitionProperties = NullPartitionProperties.getInstance();
           break;
@@ -139,6 +224,14 @@ public class ClusterPropertiesJsonSerializer implements
       partitionProperties = NullPartitionProperties.getInstance();
     }
 
-    return new ClusterProperties(clusterName, prioritizedSchemes, properties, banned, partitionProperties);
+    @SuppressWarnings("unchecked")
+    Map<String, Object> darkClusterProperty = (Map<String, Object>) map.get(PropertyKeys.DARK_CLUSTER_MAP);
+
+    boolean delegated = false;
+    if (map.containsKey(PropertyKeys.DELEGATED)) {
+      delegated = mapGet(map, PropertyKeys.DELEGATED);
+    }
+    return new ClusterProperties(clusterName, prioritizedSchemes, properties, banned, partitionProperties, validationList,
+        darkClusterProperty, delegated);
   }
 }

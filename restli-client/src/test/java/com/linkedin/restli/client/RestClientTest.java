@@ -20,21 +20,19 @@
 
 package com.linkedin.restli.client;
 
-
 import com.linkedin.common.callback.Callback;
 import com.linkedin.common.callback.FutureCallback;
 import com.linkedin.common.util.None;
 import com.linkedin.data.DataMap;
-import com.linkedin.data.codec.JacksonDataCodec;
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.r2.RemoteInvocationException;
-import com.linkedin.r2.filter.R2Constants;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestException;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.message.rest.RestResponseBuilder;
 import com.linkedin.r2.transport.common.Client;
+import com.linkedin.restli.common.ContentType;
 import com.linkedin.restli.common.EmptyRecord;
 import com.linkedin.restli.common.ErrorDetails;
 import com.linkedin.restli.common.ErrorResponse;
@@ -43,8 +41,8 @@ import com.linkedin.restli.common.ResourceSpecImpl;
 import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.internal.client.EntityResponseDecoder;
 import com.linkedin.restli.internal.common.AllProtocolVersions;
+import com.linkedin.restli.internal.common.DataMapConverter;
 import com.linkedin.restli.internal.common.TestConstants;
-
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.HttpCookie;
@@ -54,7 +52,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-
+import javax.activation.MimeTypeParseException;
 import org.easymock.Capture;
 import org.easymock.EasyMock;
 import org.testng.Assert;
@@ -74,6 +72,7 @@ public class RestClientTest
     DEFAULT_REQUEST_CONTEXT.putLocalAttr("__attr1", "1");
   }
 
+  @SuppressWarnings("deprecation")
   @Test
   public void testEmptyErrorResponse()
   {
@@ -82,10 +81,15 @@ public class RestClientTest
 
     Assert.assertNull(e.getServiceErrorMessage());
     Assert.assertNull(e.getErrorDetails());
+    Assert.assertNull(e.getErrorDetailsRecord());
     Assert.assertNull(e.getErrorSource());
     Assert.assertFalse(e.hasServiceErrorCode());
     Assert.assertNull(e.getServiceErrorStackTrace());
     Assert.assertNull(e.getServiceExceptionClass());
+    Assert.assertNull(e.getCode());
+    Assert.assertNull(e.getDocUrl());
+    Assert.assertNull(e.getRequestId());
+    Assert.assertNull(e.getErrorDetailType());
   }
 
   @Test
@@ -95,7 +99,7 @@ public class RestClientTest
 
     @SuppressWarnings("unchecked")
     Callback<None> callback = EasyMock.createMock(Callback.class);
-    Capture<Callback<None>> callbackCapture = new Capture<Callback<None>>();
+    Capture<Callback<None>> callbackCapture = EasyMock.newCapture();
 
     // Underlying client's shutdown should be invoked with correct callback
     client.shutdown(EasyMock.capture(callbackCapture));
@@ -166,29 +170,55 @@ public class RestClientTest
     private final TimeUnit _timeUnit;
   }
 
+  private enum ContentTypeOption
+  {
+    JSON(ContentType.JSON),
+    LICOR_TEXT(ContentType.LICOR_TEXT),
+    LICOR_BINARY(ContentType.LICOR_BINARY),
+    PROTOBUF(ContentType.PROTOBUF),
+    PROTOBUF2(ContentType.PROTOBUF2),
+    PSON(ContentType.PSON),
+    SMILE(ContentType.SMILE);
+
+    ContentTypeOption(ContentType contentType)
+    {
+      _contentType = contentType;
+    }
+
+    private final ContentType _contentType;
+  }
+
   @DataProvider(name = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "sendRequestOptions")
   private Object[][] sendRequestOptions()
   {
-    Object[][] result = new Object[SendRequestOption.values().length * TimeoutOption.values().length * 2][];
+    Object[][] result = new Object[SendRequestOption.values().length *
+                                   TimeoutOption.values().length *
+                                   ContentTypeOption.values().length *
+                                   2][];
     int i = 0;
     for (SendRequestOption sendRequestOption : SendRequestOption.values())
     {
       for (TimeoutOption timeoutOption : TimeoutOption.values())
       {
-        result[i++] = new Object[] {
-            sendRequestOption,
-            timeoutOption,
-            ProtocolVersionOption.USE_LATEST_IF_AVAILABLE,
-            AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
-            RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE
-        };
-        result[i++] = new Object[] {
-            sendRequestOption,
-            timeoutOption,
-            ProtocolVersionOption.FORCE_USE_NEXT,
-            AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
-            RestConstants.HEADER_RESTLI_ERROR_RESPONSE
-        };
+        for (ContentTypeOption contentTypeOption : ContentTypeOption.values())
+        {
+          result[i++] = new Object[] {
+              sendRequestOption,
+              timeoutOption,
+              ProtocolVersionOption.USE_LATEST_IF_AVAILABLE,
+              AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
+              RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE,
+              contentTypeOption._contentType
+          };
+          result[i++] = new Object[] {
+              sendRequestOption,
+              timeoutOption,
+              ProtocolVersionOption.FORCE_USE_NEXT,
+              AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
+              RestConstants.HEADER_RESTLI_ERROR_RESPONSE,
+              contentTypeOption._contentType
+          };
+        }
       }
     }
     return result;
@@ -200,6 +230,7 @@ public class RestClientTest
     Object[][] result = new Object[SendRequestOption.values().length *
                                    GetResponseOption.values().length *
                                    TimeoutOption.values().length *
+                                   ContentTypeOption.values().length *
                                    2][];
     int i = 0;
     for (SendRequestOption sendRequestOption : SendRequestOption.values())
@@ -208,22 +239,26 @@ public class RestClientTest
       {
         for (TimeoutOption timeoutOption : TimeoutOption.values())
         {
-          result[i++] = new Object[] {
-              sendRequestOption,
-              getResponseOption,
-              timeoutOption,
-              ProtocolVersionOption.USE_LATEST_IF_AVAILABLE,
-              AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
-              RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE
-          };
-          result[i++] = new Object[] {
-              sendRequestOption,
-              getResponseOption,
-              timeoutOption,
-              ProtocolVersionOption.FORCE_USE_NEXT,
-              AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
-              RestConstants.HEADER_RESTLI_ERROR_RESPONSE
-          };
+          for (ContentTypeOption contentTypeOption : ContentTypeOption.values())
+          {
+            result[i++] = new Object[]{
+                sendRequestOption,
+                getResponseOption,
+                timeoutOption,
+                ProtocolVersionOption.USE_LATEST_IF_AVAILABLE,
+                AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
+                RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE,
+                contentTypeOption._contentType};
+            result[i++] =
+                new Object[]{
+                    sendRequestOption,
+                    getResponseOption,
+                    timeoutOption,
+                    ProtocolVersionOption.FORCE_USE_NEXT,
+                    AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
+                    RestConstants.HEADER_RESTLI_ERROR_RESPONSE,
+                    contentTypeOption._contentType};
+          }
         }
       }
     }
@@ -234,59 +269,68 @@ public class RestClientTest
   private Object[][] sendRequestAndNoThrowGetResponseOptions()
   {
     Object[][] result = new Object[SendRequestOption.values().length *
-                                   2 *
                                    TimeoutOption.values().length *
-                                   2][];
+                                   ContentTypeOption.values().length *
+                                   4][];
     int i = 0;
     for (SendRequestOption sendRequestOption : SendRequestOption.values())
     {
       for (TimeoutOption timeoutOption : TimeoutOption.values())
       {
-        result[i++] = new Object[] {
-            sendRequestOption,
-            GetResponseOption.GET_RESPONSE_ENTITY_EXPLICIT_NO_THROW,
-            timeoutOption,
-            ProtocolVersionOption.USE_LATEST_IF_AVAILABLE,
-            AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
-            RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE
-        };
-        result[i++] = new Object[] {
-            sendRequestOption,
-            GetResponseOption.GET_RESPONSE_ENTITY_EXPLICIT_NO_THROW,
-            timeoutOption,
-            ProtocolVersionOption.FORCE_USE_NEXT,
-            AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
-            RestConstants.HEADER_RESTLI_ERROR_RESPONSE
-        };
-        result[i++] = new Object[] {
-            sendRequestOption,
-            GetResponseOption.GET_RESPONSE_EXPLICIT_NO_THROW,
-            timeoutOption,
-            ProtocolVersionOption.USE_LATEST_IF_AVAILABLE,
-            AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
-            RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE
-        };
-        result[i++] = new Object[] {
-            sendRequestOption,
-            GetResponseOption.GET_RESPONSE_EXPLICIT_NO_THROW,
-            timeoutOption,
-            ProtocolVersionOption.FORCE_USE_NEXT,
-            AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
-            RestConstants.HEADER_RESTLI_ERROR_RESPONSE
-        };
+        for (ContentTypeOption contentTypeOption : ContentTypeOption.values())
+        {
+          result[i++] = new Object[] {
+              sendRequestOption,
+              GetResponseOption.GET_RESPONSE_ENTITY_EXPLICIT_NO_THROW,
+              timeoutOption,
+              ProtocolVersionOption.USE_LATEST_IF_AVAILABLE,
+              AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
+              RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE,
+              contentTypeOption._contentType
+          };
+          result[i++] = new Object[] {
+              sendRequestOption,
+              GetResponseOption.GET_RESPONSE_ENTITY_EXPLICIT_NO_THROW,
+              timeoutOption,
+              ProtocolVersionOption.FORCE_USE_NEXT,
+              AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
+              RestConstants.HEADER_RESTLI_ERROR_RESPONSE,
+              contentTypeOption._contentType
+          };
+          result[i++] = new Object[] {
+              sendRequestOption,
+              GetResponseOption.GET_RESPONSE_EXPLICIT_NO_THROW,
+              timeoutOption,
+              ProtocolVersionOption.USE_LATEST_IF_AVAILABLE,
+              AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
+              RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE,
+              contentTypeOption._contentType
+          };
+          result[i++] = new Object[] {
+              sendRequestOption,
+              GetResponseOption.GET_RESPONSE_EXPLICIT_NO_THROW,
+              timeoutOption,
+              ProtocolVersionOption.FORCE_USE_NEXT,
+              AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
+              RestConstants.HEADER_RESTLI_ERROR_RESPONSE,
+              contentTypeOption._contentType
+          };
+        }
       }
     }
 
     return result;
   }
 
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "sendRequestAndGetResponseOptions")
   public void testRestLiResponseFuture(SendRequestOption sendRequestOption,
                                        GetResponseOption getResponseOption,
                                        TimeoutOption timeoutOption,
                                        ProtocolVersionOption versionOption,
                                        ProtocolVersion protocolVersion,
-                                       String errorResponseHeaderName)
+                                       String errorResponseHeaderName,
+                                       ContentType contentType)
     throws ExecutionException, RemoteInvocationException,
            TimeoutException, InterruptedException, IOException
   {
@@ -295,9 +339,13 @@ public class RestClientTest
     final String ERR_MSG = "whoops2";
     final int HTTP_CODE = 200;
     final int APP_CODE = 666;
+    final String CODE = "INVALID_INPUT";
+    final String DOC_URL = "https://example.com/errors/invalid-input";
+    final String REQUEST_ID = "abc123";
 
-    RestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, protocolVersion, errorResponseHeaderName);
-    Request<ErrorResponse> request = mockRequest(ErrorResponse.class, versionOption);
+    RestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, CODE, DOC_URL, REQUEST_ID,
+        protocolVersion, errorResponseHeaderName);
+    Request<ErrorResponse> request = mockRequest(ErrorResponse.class, versionOption, contentType);
     RequestBuilder<Request<ErrorResponse>> requestBuilder = mockRequestBuilder(request);
 
     ResponseFuture<ErrorResponse> future = sendRequest(sendRequestOption,
@@ -314,16 +362,21 @@ public class RestClientTest
     Assert.assertEquals(ERR_VALUE, e.getErrorDetails().data().getString(ERR_KEY));
     Assert.assertEquals(APP_CODE, e.getServiceErrorCode().intValue());
     Assert.assertEquals(ERR_MSG, e.getMessage());
-    verifyResponseHeader(sendRequestOption, response.getHeaders());
+    Assert.assertEquals(CODE, e.getCode());
+    Assert.assertEquals(DOC_URL, e.getDocUrl());
+    Assert.assertEquals(REQUEST_ID, e.getRequestId());
+    Assert.assertEquals(EmptyRecord.class.getCanonicalName(), e.getErrorDetailType());
   }
 
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "sendRequestAndGetResponseOptions")
   public void testRestLiResponseExceptionFuture(SendRequestOption sendRequestOption,
                                                 GetResponseOption getResponseOption,
                                                 TimeoutOption timeoutOption,
                                                 ProtocolVersionOption versionOption,
                                                 ProtocolVersion protocolVersion,
-                                                String errorResponseHeaderName)
+                                                String errorResponseHeaderName,
+                                                ContentType contentType)
     throws RemoteInvocationException, TimeoutException, InterruptedException, IOException
   {
     final String ERR_KEY = "someErr";
@@ -331,9 +384,13 @@ public class RestClientTest
     final String ERR_MSG = "whoops2";
     final int HTTP_CODE = 400;
     final int APP_CODE = 666;
+    final String CODE = "INVALID_INPUT";
+    final String DOC_URL = "https://example.com/errors/invalid-input";
+    final String REQUEST_ID = "abc123";
 
-    RestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, protocolVersion, errorResponseHeaderName);
-    Request<EmptyRecord> request = mockRequest(EmptyRecord.class, versionOption);
+    RestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, CODE, DOC_URL, REQUEST_ID,
+        protocolVersion, errorResponseHeaderName);
+    Request<EmptyRecord> request = mockRequest(EmptyRecord.class, versionOption, contentType);
     RequestBuilder<Request<EmptyRecord>> requestBuilder = mockRequestBuilder(request);
 
     ResponseFuture<EmptyRecord> future = sendRequest(sendRequestOption,
@@ -353,18 +410,24 @@ public class RestClientTest
       Assert.assertEquals(ERR_VALUE, e.getErrorDetails().get(ERR_KEY));
       Assert.assertEquals(APP_CODE, e.getServiceErrorCode());
       Assert.assertEquals(ERR_MSG, e.getServiceErrorMessage());
-
-      verifyResponseHeader(sendRequestOption, e.getResponse().getHeaders());
+      Assert.assertEquals(CODE, e.getCode());
+      Assert.assertEquals(DOC_URL, e.getDocUrl());
+      Assert.assertEquals(REQUEST_ID, e.getRequestId());
+      Assert.assertEquals(EmptyRecord.class.getCanonicalName(), e.getErrorDetailType());
+      Assert.assertNotNull(e.getErrorDetailsRecord());
+      Assert.assertTrue(e.getErrorDetailsRecord() instanceof EmptyRecord);
     }
   }
 
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "sendRequestAndNoThrowGetResponseOptions")
   public void testRestLiResponseExceptionFutureNoThrow(SendRequestOption sendRequestOption,
                                                        GetResponseOption getResponseOption,
                                                        TimeoutOption timeoutOption,
                                                        ProtocolVersionOption versionOption,
                                                        ProtocolVersion protocolVersion,
-                                                       String errorResponseHeaderName)
+                                                       String errorResponseHeaderName,
+                                                       ContentType contentType)
       throws RemoteInvocationException, ExecutionException, TimeoutException, InterruptedException, IOException
   {
     final String ERR_KEY = "someErr";
@@ -372,10 +435,13 @@ public class RestClientTest
     final String ERR_MSG = "whoops2";
     final int HTTP_CODE = 400;
     final int APP_CODE = 666;
+    final String CODE = "INVALID_INPUT";
+    final String DOC_URL = "https://example.com/errors/invalid-input";
+    final String REQUEST_ID = "abc123";
 
-    RestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, protocolVersion,
-                                   errorResponseHeaderName);
-    Request<EmptyRecord> request = mockRequest(EmptyRecord.class, versionOption);
+    RestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, CODE, DOC_URL, REQUEST_ID,
+            protocolVersion, errorResponseHeaderName);
+    Request<EmptyRecord> request = mockRequest(EmptyRecord.class, versionOption, contentType);
     RequestBuilder<Request<EmptyRecord>> requestBuilder = mockRequestBuilder(request);
 
     ResponseFuture<EmptyRecord> future = sendRequest(sendRequestOption,
@@ -393,16 +459,22 @@ public class RestClientTest
     Assert.assertEquals(ERR_VALUE, e.getErrorDetails().get(ERR_KEY));
     Assert.assertEquals(APP_CODE, e.getServiceErrorCode());
     Assert.assertEquals(ERR_MSG, e.getServiceErrorMessage());
-
-    verifyResponseHeader(sendRequestOption, response.getHeaders());
+    Assert.assertEquals(CODE, e.getCode());
+    Assert.assertEquals(DOC_URL, e.getDocUrl());
+    Assert.assertEquals(REQUEST_ID, e.getRequestId());
+    Assert.assertEquals(EmptyRecord.class.getCanonicalName(), e.getErrorDetailType());
+    Assert.assertNotNull(e.getErrorDetailsRecord());
+    Assert.assertTrue(e.getErrorDetailsRecord() instanceof EmptyRecord);
   }
 
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "sendRequestOptions")
   public void testRestLiResponseExceptionCallback(SendRequestOption option,
                                                   TimeoutOption timeoutOption,
                                                   ProtocolVersionOption versionOption,
                                                   ProtocolVersion protocolVersion,
-                                                  String errorResponseHeaderName)
+                                                  String errorResponseHeaderName,
+                                                  ContentType contentType)
           throws ExecutionException, TimeoutException, InterruptedException, RestLiDecodingException
   {
     final String ERR_KEY = "someErr";
@@ -410,12 +482,16 @@ public class RestClientTest
     final String ERR_MSG = "whoops2";
     final int HTTP_CODE = 400;
     final int APP_CODE = 666;
+    final String CODE = "INVALID_INPUT";
+    final String DOC_URL = "https://example.com/errors/invalid-input";
+    final String REQUEST_ID = "abc123";
 
-    RestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, protocolVersion, errorResponseHeaderName);
-    Request<EmptyRecord> request = mockRequest(EmptyRecord.class, versionOption);
+    RestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, CODE, DOC_URL, REQUEST_ID,
+        protocolVersion, errorResponseHeaderName);
+    Request<EmptyRecord> request = mockRequest(EmptyRecord.class, versionOption, contentType);
     RequestBuilder<Request<EmptyRecord>> requestBuilder = mockRequestBuilder(request);
 
-    FutureCallback<Response<EmptyRecord>> callback = new FutureCallback<Response<EmptyRecord>>();
+    FutureCallback<Response<EmptyRecord>> callback = new FutureCallback<>();
     try
     {
       sendRequest(option, client, request, requestBuilder, callback);
@@ -435,7 +511,12 @@ public class RestClientTest
       Assert.assertEquals(ERR_VALUE, rlre.getErrorDetails().get(ERR_KEY));
       Assert.assertEquals(APP_CODE, rlre.getServiceErrorCode());
       Assert.assertEquals(ERR_MSG, rlre.getServiceErrorMessage());
-      verifyResponseHeader(option, rlre.getResponse().getHeaders());
+      Assert.assertEquals(CODE, rlre.getCode());
+      Assert.assertEquals(DOC_URL, rlre.getDocUrl());
+      Assert.assertEquals(REQUEST_ID, rlre.getRequestId());
+      Assert.assertEquals(EmptyRecord.class.getCanonicalName(), rlre.getErrorDetailType());
+      Assert.assertNotNull(rlre.getErrorDetailsRecord());
+      Assert.assertTrue(rlre.getErrorDetailsRecord() instanceof EmptyRecord);
 
       // Old
 
@@ -443,13 +524,12 @@ public class RestClientTest
       RestException re = (RestException)cause;
       RestResponse r = re.getResponse();
 
-      ErrorResponse er = new EntityResponseDecoder<ErrorResponse>(ErrorResponse.class).decodeResponse(r).getEntity();
+      ErrorResponse er = new EntityResponseDecoder<>(ErrorResponse.class).decodeResponse(r).getEntity();
 
       Assert.assertEquals(HTTP_CODE, r.getStatus());
       Assert.assertEquals(ERR_VALUE, er.getErrorDetails().data().getString(ERR_KEY));
       Assert.assertEquals(APP_CODE, er.getServiceErrorCode().intValue());
       Assert.assertEquals(ERR_MSG, er.getMessage());
-      verifyResponseHeader(option, re.getResponse().getHeaders());
     }
   }
 
@@ -458,17 +538,18 @@ public class RestClientTest
                                                   TimeoutOption timeoutOption,
                                                   ProtocolVersionOption versionOption,
                                                   ProtocolVersion protocolVersion,
-                                                  String errorResponseHeaderName)
+                                                  String errorResponseHeaderName,
+                                                  ContentType contentType)
       throws ExecutionException, TimeoutException, InterruptedException, RestLiDecodingException
   {
     final int HTTP_CODE = 404;
     final String ERR_MSG = "WHOOPS!";
 
     RestClient client = mockClient(HTTP_CODE, ERR_MSG, protocolVersion);
-    Request<EmptyRecord> request = mockRequest(EmptyRecord.class, versionOption);
+    Request<EmptyRecord> request = mockRequest(EmptyRecord.class, versionOption, contentType);
     RequestBuilder<Request<EmptyRecord>> requestBuilder = mockRequestBuilder(request);
 
-    FutureCallback<Response<EmptyRecord>> callback = new FutureCallback<Response<EmptyRecord>>();
+    FutureCallback<Response<EmptyRecord>> callback = new FutureCallback<>();
     try
     {
       sendRequest(option, client, request, requestBuilder, callback);
@@ -485,8 +566,8 @@ public class RestClientTest
       RemoteInvocationException rlre = (RemoteInvocationException)cause;
       Assert.assertTrue(rlre.getMessage().startsWith("Received error " + HTTP_CODE + " from server"));
       Throwable rlCause = rlre.getCause();
-      Assert.assertTrue(rlCause instanceof RestException, "Excepted RestException not " + rlCause.getClass().getName());
-      RestException rle = (RestException)rlCause;
+      Assert.assertTrue(rlCause instanceof RestException, "Expected RestException not " + rlCause.getClass().getName());
+      RestException rle = (RestException) rlCause;
       Assert.assertEquals(ERR_MSG, rle.getResponse().getEntity().asString("UTF-8"));
       Assert.assertEquals(HTTP_CODE, rle.getResponse().getStatus());
     }
@@ -679,19 +760,6 @@ public class RestClientTest
     return result;
   }
 
-  private void verifyResponseHeader(SendRequestOption option, Map<String, String> headers)
-  {
-    for (Map.Entry<String, Object> attr : DEFAULT_REQUEST_CONTEXT.getLocalAttrs().entrySet())
-    {
-      if (attr.getKey().equals(R2Constants.OPERATION) || attr.getKey().equals(R2Constants.REQUEST_COMPRESSION_OVERRIDE)
-          || attr.getKey().equals(R2Constants.RESPONSE_COMPRESSION_OVERRIDE))
-      {
-        continue;
-      }
-      Assert.assertEquals(headers.get(attr.getKey()), option._context ? attr.getValue().toString() : null);
-    }
-  }
-
   private <T extends RecordTemplate> RequestBuilder<Request<T>> mockRequestBuilder(final Request<T> request)
   {
     return new RequestBuilder<Request<T>>()
@@ -704,18 +772,25 @@ public class RestClientTest
     };
   }
 
-  private <T extends RecordTemplate> Request<T> mockRequest(Class<T> clazz, ProtocolVersionOption versionOption)
+  private <T extends RecordTemplate> Request<T> mockRequest(Class<T> clazz,
+      ProtocolVersionOption versionOption, ContentType contentType)
   {
-    return new GetRequest<T>(Collections.<String, String> emptyMap(),
-                             Collections.<HttpCookie>emptyList(),
-                             clazz,
-                             null,
-                             new DataMap(),
-                             Collections.<String, Class<?>>emptyMap(),
-                             new ResourceSpecImpl(),
-                             "/foo",
-                             Collections.<String, Object>emptyMap(),
-                             new RestliRequestOptionsBuilder().setProtocolVersionOption(versionOption).build());
+    RestliRequestOptions restliRequestOptions = new RestliRequestOptionsBuilder()
+        .setProtocolVersionOption(versionOption)
+        .setContentType(contentType)
+        .setAcceptTypes(Collections.singletonList(contentType))
+        .build();
+
+    return new GetRequest<>(Collections.<String, String>emptyMap(),
+        Collections.<HttpCookie>emptyList(),
+        clazz,
+        null,
+        new DataMap(),
+        Collections.<String, Class<?>>emptyMap(),
+        new ResourceSpecImpl(),
+        "/foo",
+        Collections.<String, Object>emptyMap(),
+        restliRequestOptions);
   }
 
   private static class MyMockClient extends MockClient
@@ -739,7 +814,7 @@ public class RestClientTest
     @Override
     protected Map<String, String> headers()
     {
-      Map<String, String> headers = new HashMap<String, String>(super.headers());
+      Map<String, String> headers = new HashMap<>(super.headers());
       for (Map.Entry<String, Object> attr : _requestContext.getLocalAttrs().entrySet())
       {
         if (!attr.getKey().startsWith("__attr"))
@@ -752,30 +827,44 @@ public class RestClientTest
     }
   }
 
-  private RestClient mockClient(String errKey, String errValue, String errMsg, int httpCode, int appCode, ProtocolVersion protocolVersion, String errorResponseHeaderName)
+  @SuppressWarnings("deprecation")
+  private RestClient mockClient(String errKey,
+                                String errValue,
+                                String errMsg,
+                                int httpCode,
+                                int appCode,
+                                String code,
+                                String docUrl,
+                                String requestId,
+                                ProtocolVersion protocolVersion,
+                                String errorResponseHeaderName)
   {
     ErrorResponse er = new ErrorResponse();
 
     DataMap errMap = new DataMap();
     errMap.put(errKey, errValue);
     er.setErrorDetails(new ErrorDetails(errMap));
+    er.setErrorDetailType(EmptyRecord.class.getCanonicalName());
     er.setStatus(httpCode);
     er.setMessage(errMsg);
     er.setServiceErrorCode(appCode);
+    er.setCode(code);
+    er.setDocUrl(docUrl);
+    er.setRequestId(requestId);
+
+    Map<String,String> headers = new HashMap<>();
+    headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString());
+    headers.put(errorResponseHeaderName, RestConstants.HEADER_VALUE_ERROR);
 
     byte[] mapBytes;
     try
     {
-      mapBytes = new JacksonDataCodec().mapToBytes(er.data());
+      mapBytes = DataMapConverter.getContentType(headers).getCodec().mapToBytes(er.data());
     }
-    catch (IOException e)
+    catch (IOException | MimeTypeParseException e)
     {
       throw new RuntimeException(e);
     }
-
-    Map<String,String> headers = new HashMap<String,String>();
-    headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString());
-    headers.put(errorResponseHeaderName, RestConstants.HEADER_VALUE_ERROR);
 
     return new RestClient(new MyMockClient(httpCode, headers, mapBytes), "http://localhost");
   }
@@ -792,7 +881,7 @@ public class RestClientTest
       throw new RuntimeException(e);
     }
 
-    Map<String,String> headers = new HashMap<String,String>();
+    Map<String,String> headers = new HashMap<>();
     headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString());
 
     return new RestClient(new MyMockClient(httpCode, headers, mapBytes), "http://localhost");

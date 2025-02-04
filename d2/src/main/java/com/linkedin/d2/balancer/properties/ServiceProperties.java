@@ -16,6 +16,8 @@
 
 package com.linkedin.d2.balancer.properties;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.linkedin.d2.balancer.subsetting.SubsettingStrategy;
 import com.linkedin.util.ArgumentUtil;
 
 import java.net.URI;
@@ -25,38 +27,44 @@ import java.util.Map;
 import java.util.Set;
 
 
+/**
+ * ServiceProperties are the properties that define a service and its behaviors.
+ * It is the serialized service object as part of {@link ServiceStoreProperties} that is stored in zookeeper.
+ *
+ * NOTE: {@link ServiceStoreProperties} includes ALL properties on a service store on service registry (zookeeper).
+ *
+ * Serialization NOTE: Most likely you want POJO's here (e.g: Map<String, Object>), and not include pegasus generated objects, because
+ * certain objects are serialized differently than how Jackson would serialize the object (for instance, using different key names), and
+ * that will cause problems in serialization/deserialization.
+ */
+@JsonIgnoreProperties({ "version" })
 public class ServiceProperties
 {
   private final String _serviceName;
   private final String _clusterName;
   private final String _path;
-  private final List<String> _loadBalancerStrategyList;
-  private final Map<String,Object> _loadBalancerStrategyProperties;
-  private final Map<String,Object> _transportClientProperties;
-  private final Map<String,String> _degraderProperties;
+  private final List<String> _prioritizedStrategyList;
+  private final Map<String, Object> _loadBalancerStrategyProperties;
+  private final Map<String, Object> _transportClientProperties;
+  private final Map<String, Object> _relativeStrategyProperties;
+  private final List<Map<String, Object>> _backupRequests;  // each map in the list represents one backup requests strategy
+  private final Map<String, String> _degraderProperties;
   private final List<String> _prioritizedSchemes;
   private final Set<URI> _banned;
-  private final Map<String,Object> _serviceMetadataProperties;
-
-  public ServiceProperties(String serviceName,
-                           String clusterName,
-                           String path)
-  {
-    this(serviceName, clusterName, path, null,
-         Collections.<String, Object>emptyMap(), Collections.<String, Object>emptyMap(),
-         Collections.<String, String>emptyMap(),
-         Collections.<String>emptyList(), Collections.<URI>emptySet());
-  }
+  private final Map<String, Object> _serviceMetadataProperties;
+  private final boolean _enableClusterSubsetting;
+  private final int _minClusterSubsetSize;
+  private long _version;
 
   public ServiceProperties(String serviceName,
                            String clusterName,
                            String path,
-                           List<String> loadBalancerStrategyList)
+                           List<String> prioritizedStrategyList)
   {
-    this(serviceName, clusterName, path, loadBalancerStrategyList,
+    this(serviceName, clusterName, path, prioritizedStrategyList,
          Collections.<String, Object>emptyMap(), Collections.<String, Object>emptyMap(),
-            Collections.<String, String>emptyMap(),
-            Collections.<String>emptyList(), Collections.<URI>emptySet());
+         Collections.<String, String>emptyMap(),
+         Collections.<String>emptyList(), Collections.<URI>emptySet());
   }
 
   // The addition of the StrategyList is to allow new strategies to be introduced and be used as they
@@ -65,10 +73,10 @@ public class ServiceProperties
   public ServiceProperties(String serviceName,
                            String clusterName,
                            String path,
-                           List<String> loadBalancerStrategyList,
+                           List<String> prioritizedStrategyList,
                            Map<String,Object> loadBalancerStrategyProperties)
   {
-    this(serviceName,clusterName,path,loadBalancerStrategyList,loadBalancerStrategyProperties,
+    this(serviceName, clusterName, path, prioritizedStrategyList, loadBalancerStrategyProperties,
          Collections.<String, Object>emptyMap(), Collections.<String, String>emptyMap(),
          Collections.<String>emptyList(), Collections.<URI>emptySet());
   }
@@ -76,65 +84,156 @@ public class ServiceProperties
   public ServiceProperties(String serviceName,
                            String clusterName,
                            String path,
-                           List<String> loadBalancerStrategyList,
+                           List<String> prioritizedStrategyList,
                            Map<String,Object> loadBalancerStrategyProperties,
                            Map<String,Object> transportClientProperties,
                            Map<String,String> degraderProperties,
                            List<String> prioritizedSchemes,
                            Set<URI> banned)
   {
-    this(serviceName,clusterName,path, loadBalancerStrategyList,loadBalancerStrategyProperties,
-        transportClientProperties, degraderProperties, prioritizedSchemes, banned,
-        Collections.<String,Object>emptyMap());
+    this(serviceName, clusterName, path, prioritizedStrategyList, loadBalancerStrategyProperties,
+         transportClientProperties, degraderProperties, prioritizedSchemes, banned,
+         Collections.<String,Object>emptyMap());
+  }
+
+  public ServiceProperties(String serviceName,
+      String clusterName,
+      String path,
+      List<String> prioritizedStrategyList,
+      Map<String,Object> loadBalancerStrategyProperties,
+      Map<String,Object> transportClientProperties,
+      Map<String,String> degraderProperties,
+      List<String> prioritizedSchemes,
+      Set<URI> banned,
+      Map<String,Object> serviceMetadataProperties)
+  {
+    this(serviceName, clusterName, path, prioritizedStrategyList, loadBalancerStrategyProperties,
+         transportClientProperties, degraderProperties, prioritizedSchemes, banned,
+         serviceMetadataProperties, Collections.emptyList());
   }
 
   public ServiceProperties(String serviceName,
                            String clusterName,
                            String path,
-                           List<String> loadBalancerStrategyList,
+                           List<String> prioritizedStrategyList,
                            Map<String,Object> loadBalancerStrategyProperties,
                            Map<String,Object> transportClientProperties,
                            Map<String,String> degraderProperties,
                            List<String> prioritizedSchemes,
                            Set<URI> banned,
-                           Map<String,Object> serviceMetadataProperties)
+                           Map<String,Object> serviceMetadataProperties,
+                           List<Map<String,Object>> backupRequests)
+  {
+    this(serviceName, clusterName, path, prioritizedStrategyList, loadBalancerStrategyProperties, transportClientProperties, degraderProperties,
+         prioritizedSchemes, banned, serviceMetadataProperties, backupRequests, null);
+  }
+
+  public ServiceProperties(String serviceName,
+                           String clusterName,
+                           String path,
+                           List<String> prioritizedStrategyList,
+                           Map<String,Object> loadBalancerStrategyProperties,
+                           Map<String,Object> transportClientProperties,
+                           Map<String,String> degraderProperties,
+                           List<String> prioritizedSchemes,
+                           Set<URI> banned,
+                           Map<String,Object> serviceMetadataProperties,
+                           List<Map<String,Object>> backupRequests,
+                           Map<String, Object> relativeStrategyProperties)
+  {
+    this(serviceName, clusterName, path, prioritizedStrategyList, loadBalancerStrategyProperties, transportClientProperties, degraderProperties,
+        prioritizedSchemes, banned, serviceMetadataProperties, backupRequests, relativeStrategyProperties,
+        SubsettingStrategy.DEFAULT_ENABLE_CLUSTER_SUBSETTING, SubsettingStrategy.DEFAULT_CLUSTER_SUBSET_SIZE);
+  }
+
+  public ServiceProperties(String serviceName,
+      String clusterName,
+      String path,
+      List<String> prioritizedStrategyList,
+      Map<String,Object> loadBalancerStrategyProperties,
+      Map<String,Object> transportClientProperties,
+      Map<String,String> degraderProperties,
+      List<String> prioritizedSchemes,
+      Set<URI> banned,
+      Map<String,Object> serviceMetadataProperties,
+      List<Map<String,Object>> backupRequests,
+      Map<String, Object> relativeStrategyProperties,
+      boolean enableClusterSubsetting,
+      int minClusterSubsetSize)
+  {
+    this(serviceName, clusterName, path, prioritizedStrategyList, loadBalancerStrategyProperties,
+        transportClientProperties, degraderProperties, prioritizedSchemes, banned,
+        serviceMetadataProperties, backupRequests, relativeStrategyProperties, enableClusterSubsetting,
+        minClusterSubsetSize, -1);
+  }
+
+  public ServiceProperties(String serviceName,
+      String clusterName,
+      String path,
+      List<String> prioritizedStrategyList,
+      Map<String,Object> loadBalancerStrategyProperties,
+      Map<String,Object> transportClientProperties,
+      Map<String,String> degraderProperties,
+      List<String> prioritizedSchemes,
+      Set<URI> banned,
+      Map<String,Object> serviceMetadataProperties,
+      List<Map<String,Object>> backupRequests,
+      Map<String, Object> relativeStrategyProperties,
+      boolean enableClusterSubsetting,
+      int minClusterSubsetSize,
+      long version)
   {
     ArgumentUtil.notNull(serviceName, PropertyKeys.SERVICE_NAME);
     ArgumentUtil.notNull(clusterName, PropertyKeys.CLUSTER_NAME);
     ArgumentUtil.notNull(path, PropertyKeys.PATH);
-    ArgumentUtil.notNull(loadBalancerStrategyProperties, "loadBalancerStrategyProperties");
-    if (loadBalancerStrategyList == null || loadBalancerStrategyList.isEmpty())
+
+    if (prioritizedStrategyList == null || prioritizedStrategyList.isEmpty())
     {
       throw new NullPointerException("loadBalancerStrategyList is null or empty");
     }
 
+    _backupRequests =
+        Collections.unmodifiableList(backupRequests == null ? Collections.emptyList() : backupRequests);
     _serviceName = serviceName;
     _clusterName = clusterName;
     _path = path;
-    _loadBalancerStrategyList = (loadBalancerStrategyList != null) ?
-        Collections.unmodifiableList(loadBalancerStrategyList)
-        : Collections.<String>emptyList();
-    _loadBalancerStrategyProperties = Collections.unmodifiableMap(loadBalancerStrategyProperties);
+    _prioritizedStrategyList = Collections.unmodifiableList(prioritizedStrategyList);
+    _loadBalancerStrategyProperties = loadBalancerStrategyProperties != null
+        ? Collections.unmodifiableMap(loadBalancerStrategyProperties) : Collections.emptyMap();
     _transportClientProperties = (transportClientProperties != null) ?
-        Collections.unmodifiableMap(transportClientProperties) : Collections.<String, Object>emptyMap();
+        Collections.unmodifiableMap(transportClientProperties) : Collections.emptyMap();
     _degraderProperties = (degraderProperties != null) ? Collections.unmodifiableMap(degraderProperties) :
         Collections.<String, String>emptyMap();
     _prioritizedSchemes = (prioritizedSchemes != null) ? Collections.unmodifiableList(prioritizedSchemes) :
         Collections.<String>emptyList();
-    _banned = (banned != null) ? Collections.unmodifiableSet(banned) : Collections.<URI>emptySet();
+    _banned = (banned != null) ? Collections.unmodifiableSet(banned) : Collections.emptySet();
     _serviceMetadataProperties = (serviceMetadataProperties != null) ? Collections.unmodifiableMap(serviceMetadataProperties) :
         Collections.<String,Object>emptyMap();
+    _relativeStrategyProperties = relativeStrategyProperties != null
+        ? relativeStrategyProperties : Collections.emptyMap();
+    _enableClusterSubsetting = enableClusterSubsetting;
+    _minClusterSubsetSize = minClusterSubsetSize;
+    _version = version;
   }
 
+  public ServiceProperties(ServiceProperties other)
+  {
+    this(other._serviceName, other._clusterName, other._path, other._prioritizedStrategyList, other._loadBalancerStrategyProperties,
+        other._transportClientProperties, other._degraderProperties, other._prioritizedSchemes, other._banned, other._serviceMetadataProperties,
+        other._backupRequests, other._relativeStrategyProperties, other._enableClusterSubsetting, other._minClusterSubsetSize);
+  }
 
   public String getClusterName()
   {
     return _clusterName;
   }
 
+  /**
+   * @return Prioritized {@link com.linkedin.d2.balancer.strategies.LoadBalancerStrategy} list.
+   */
   public List<String> getLoadBalancerStrategyList()
   {
-    return _loadBalancerStrategyList;
+    return _prioritizedStrategyList;
   }
 
   public String getPath()
@@ -147,9 +246,38 @@ public class ServiceProperties
     return _serviceName;
   }
 
+  public void setVersion(long version)
+  {
+    _version = version;
+  }
+
+  public long getVersion()
+  {
+    return _version;
+  }
+
+  /**
+   * @return Properties used by load balancer component of {@link com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategyV3}.
+   */
   public Map<String,Object> getLoadBalancerStrategyProperties()
   {
     return _loadBalancerStrategyProperties;
+  }
+
+  /**
+   * @return Properties used by degrader component of {@link com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategyV3}.
+   */
+  public Map<String, String> getDegraderProperties()
+  {
+    return _degraderProperties;
+  }
+
+  /**
+   * @return Properties used by {@link com.linkedin.d2.balancer.strategies.relative.RelativeLoadBalancerStrategy}.
+   */
+  public Map<String, Object> getRelativeStrategyProperties()
+  {
+    return _relativeStrategyProperties;
   }
 
   public Map<String, Object> getTransportClientProperties()
@@ -157,9 +285,9 @@ public class ServiceProperties
     return _transportClientProperties;
   }
 
-  public Map<String, String> getDegraderProperties()
+  public List<Map<String, Object>> getBackupRequests()
   {
-    return _degraderProperties;
+    return _backupRequests;
   }
 
   public List<String> getPrioritizedSchemes()
@@ -182,16 +310,28 @@ public class ServiceProperties
     return _serviceMetadataProperties;
   }
 
+  public boolean isEnableClusterSubsetting()
+  {
+    return _enableClusterSubsetting;
+  }
+
+  public int getMinClusterSubsetSize()
+  {
+    return _minClusterSubsetSize;
+  }
+
   @Override
   public String toString()
   {
     return "ServiceProperties [_clusterName=" + _clusterName
         +  ", _path=" + _path
-        + ", _serviceName=" + _serviceName + ", _loadBalancerStrategyList=" + _loadBalancerStrategyList
+        + ", _serviceName=" + _serviceName + ", _loadBalancerStrategyList=" + _prioritizedStrategyList
         + ", _loadBalancerStrategyProperties="
         + _loadBalancerStrategyProperties
         + ", _transportClientProperties="
         + _transportClientProperties
+        + ", _relativeStrategyProperties="
+        + _relativeStrategyProperties
         + ", _degraderProperties="
         + _degraderProperties
         + ", prioritizedSchemes="
@@ -200,6 +340,12 @@ public class ServiceProperties
         + _banned
         + ", serviceMetadata="
         + _serviceMetadataProperties
+        + ", backupRequests="
+        + _backupRequests
+        + ", enableClusterSubsetting="
+        + _enableClusterSubsetting
+        + ", minimumClusterSubsetSize="
+        + _minClusterSubsetSize
         + "]";
   }
 
@@ -209,15 +355,19 @@ public class ServiceProperties
     final int prime = 31;
     int result = 1;
     result = prime * result + _clusterName.hashCode();
-    result = prime * result + _loadBalancerStrategyList.hashCode();
+    result = prime * result + _prioritizedStrategyList.hashCode();
     result = prime * result + _path.hashCode();
     result = prime * result + _serviceName.hashCode();
     result = prime * result + _loadBalancerStrategyProperties.hashCode();
     result = prime * result + _degraderProperties.hashCode();
     result = prime * result + _transportClientProperties.hashCode();
+    result = prime * result + _backupRequests.hashCode();
     result = prime * result + _prioritizedSchemes.hashCode();
     result = prime * result + _banned.hashCode();
     result = prime * result + _serviceMetadataProperties.hashCode();
+    result = prime * result + _relativeStrategyProperties.hashCode();
+    result = prime * result + Boolean.hashCode(_enableClusterSubsetting);
+    result = prime * result + Integer.hashCode(_minClusterSubsetSize);
     return result;
   }
 
@@ -233,7 +383,7 @@ public class ServiceProperties
     ServiceProperties other = (ServiceProperties) obj;
     if (!_clusterName.equals(other._clusterName))
       return false;
-    if (!_loadBalancerStrategyList.equals(other._loadBalancerStrategyList))
+    if (!_prioritizedStrategyList.equals(other._prioritizedStrategyList))
       return false;
     if (!_path.equals(other._path))
       return false;
@@ -242,15 +392,23 @@ public class ServiceProperties
     if (!_loadBalancerStrategyProperties.equals(other._loadBalancerStrategyProperties))
       return false;
     if (!_transportClientProperties.equals(other._transportClientProperties))
-          return false;
+      return false;
+    if (!_backupRequests.equals(other._backupRequests))
+      return false;
     if (!_degraderProperties.equals(other._degraderProperties))
-          return false;
+      return false;
     if (!_prioritizedSchemes.equals(other._prioritizedSchemes))
-          return false;
+      return false;
     if (!_banned.equals(other._banned))
-          return false;
+      return false;
     if (!_serviceMetadataProperties.equals(other._serviceMetadataProperties))
-          return false;
+      return false;
+    if (!_relativeStrategyProperties.equals(other._relativeStrategyProperties))
+      return false;
+    if (_enableClusterSubsetting != other._enableClusterSubsetting)
+      return false;
+    if (_minClusterSubsetSize != other._minClusterSubsetSize)
+      return false;
     return true;
   }
 

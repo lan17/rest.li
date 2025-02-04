@@ -17,6 +17,12 @@
 package com.linkedin.restli.example.impl;
 
 
+import com.linkedin.restli.example.EXIF;
+import com.linkedin.restli.example.PhotoCriteria;
+import com.linkedin.restli.server.BatchFinderResult;
+import com.linkedin.restli.server.CollectionResult;
+import com.linkedin.restli.server.NoMetadata;
+import com.linkedin.restli.server.annotations.BatchFinder;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -94,9 +100,9 @@ public class PhotoResource extends CollectionResourceTemplate<Long, Photo>
   @Override
   public BatchResult<Long, Photo> batchGet(Set<Long> ids)
   {
-    Map<Long, Photo> result = new HashMap<Long, Photo>();
+    Map<Long, Photo> result = new HashMap<>();
     Map<Long, RestLiServiceException> errors =
-        new HashMap<Long, RestLiServiceException>();
+        new HashMap<>();
 
     for (Long key : ids)
     {
@@ -111,7 +117,7 @@ public class PhotoResource extends CollectionResourceTemplate<Long, Photo>
                                                        + " has been found."));
       }
     }
-    return new BatchResult<Long, Photo>(result, errors);
+    return new BatchResult<>(result, errors);
   }
 
   // update an existing photo with given entity
@@ -184,7 +190,7 @@ public class PhotoResource extends CollectionResourceTemplate<Long, Photo>
                           @QueryParam("title") @Optional String title,
                           @QueryParam("format") @Optional PhotoFormats format)
   {
-    final List<Photo> photos = new ArrayList<Photo>();
+    final List<Photo> photos = new ArrayList<>();
     int index = 0;
     final int begin = pagingContext.getStart();
     final int end = begin + pagingContext.getCount();
@@ -209,6 +215,50 @@ public class PhotoResource extends CollectionResourceTemplate<Long, Photo>
       index++;
     }
     return photos;
+  }
+
+  @BatchFinder(value = "searchPhotos", batchParam = "criteria")
+  public BatchFinderResult<PhotoCriteria, Photo, NoMetadata> searchPhotos(@PagingContextParam PagingContext pagingContext,
+      @QueryParam("criteria") PhotoCriteria[] criteria, @QueryParam("exif") @Optional EXIF exif)
+  {
+     BatchFinderResult<PhotoCriteria, Photo, NoMetadata> batchFinderResult = new BatchFinderResult<>();
+
+    for (PhotoCriteria currentCriteria: criteria) {
+      if (currentCriteria.getTitle() != null) {
+        // on success
+        final List<Photo> photos = new ArrayList<>();
+        int index = 0;
+        final int begin = pagingContext.getStart();
+        final int end = begin + pagingContext.getCount();
+        final Collection<Photo> dbPhotos = _db.getData().values();
+        for (Photo p : dbPhotos)
+        {
+          if (index == end)
+          {
+            break;
+          }
+          else if (index >= begin)
+          {
+            if (p.getTitle().equalsIgnoreCase(currentCriteria.getTitle()))
+            {
+              if (currentCriteria.getFormat() == null || currentCriteria.getFormat() == p.getFormat())
+              {
+                photos.add(p);
+              }
+            }
+          }
+
+          index++;
+        }
+        CollectionResult<Photo, NoMetadata> cr = new CollectionResult<>(photos, photos.size());
+        batchFinderResult.putResult(currentCriteria, cr);
+      } else {
+        // on error: to construct error response for test
+        batchFinderResult.putError(currentCriteria, new RestLiServiceException(HttpStatus.S_404_NOT_FOUND, "Failed to find Photo!"));
+      }
+    }
+
+    return batchFinderResult;
   }
 
   // custom action defined on collection level without any parameter

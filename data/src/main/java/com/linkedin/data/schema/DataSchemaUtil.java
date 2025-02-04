@@ -18,7 +18,6 @@ package com.linkedin.data.schema;
 
 import com.linkedin.data.ByteString;
 import com.linkedin.data.element.DataElement;
-
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
@@ -104,7 +103,8 @@ public class DataSchemaUtil
           dataSchema = field.getType();
           break;
         case UNION:
-          dataSchema = ((UnionDataSchema) dataSchema).getType(path[i].toString());
+          UnionDataSchema unionDataSchema = (UnionDataSchema) dataSchema;
+          dataSchema = unionDataSchema.getTypeByMemberKey(path[i].toString());
           if (dataSchema == null) return null;
           break;
         default:
@@ -114,6 +114,19 @@ public class DataSchemaUtil
     }
     return null;
   }
+
+  /**
+   * Returns the java class representing the de-referenced type of the input schema.
+   */
+  public static Class<?> getDataClassFromSchema(DataSchema schema)
+  {
+    if (schema == null)
+    {
+      return null;
+    }
+    return dataSchemaTypeToPrimitiveDataSchemaClass(schema.getDereferencedType());
+  }
+
 
   private DataSchemaUtil() {}
 
@@ -125,7 +138,7 @@ public class DataSchemaUtil
 
   static
   {
-    _TYPE_STRING_TO_PRIMITIVE_DATA_SCHEMA_MAP = new HashMap<String, PrimitiveDataSchema>();
+    _TYPE_STRING_TO_PRIMITIVE_DATA_SCHEMA_MAP = new HashMap<>();
     _TYPE_STRING_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchemaConstants.NULL_TYPE, DataSchemaConstants.NULL_DATA_SCHEMA);
     _TYPE_STRING_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchemaConstants.BOOLEAN_TYPE, DataSchemaConstants.BOOLEAN_DATA_SCHEMA);
     _TYPE_STRING_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchemaConstants.INTEGER_TYPE, DataSchemaConstants.INTEGER_DATA_SCHEMA);
@@ -135,7 +148,7 @@ public class DataSchemaUtil
     _TYPE_STRING_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchemaConstants.BYTES_TYPE, DataSchemaConstants.BYTES_DATA_SCHEMA);
     _TYPE_STRING_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchemaConstants.STRING_TYPE, DataSchemaConstants.STRING_DATA_SCHEMA);
 
-    _JAVA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_TYPE = new HashMap<Class<?>, PrimitiveDataSchema>(32);
+    _JAVA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_TYPE = new HashMap<>(32);
     _JAVA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_TYPE.put(Integer.class, DataSchemaConstants.INTEGER_DATA_SCHEMA);
     _JAVA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_TYPE.put(int.class, DataSchemaConstants.INTEGER_DATA_SCHEMA);
     _JAVA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_TYPE.put(Long.class, DataSchemaConstants.LONG_DATA_SCHEMA);
@@ -151,7 +164,7 @@ public class DataSchemaUtil
     _JAVA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_TYPE.put(String.class, DataSchemaConstants.STRING_DATA_SCHEMA);
     _JAVA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_TYPE.put(ByteString.class, DataSchemaConstants.BYTES_DATA_SCHEMA);
 
-    _DATA_SCHEMA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_MAP = new IdentityHashMap<DataSchema.Type, PrimitiveDataSchema>();
+    _DATA_SCHEMA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_MAP = new IdentityHashMap<>();
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchema.Type.NULL, DataSchemaConstants.NULL_DATA_SCHEMA);
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchema.Type.BOOLEAN, DataSchemaConstants.BOOLEAN_DATA_SCHEMA);
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchema.Type.INT, DataSchemaConstants.INTEGER_DATA_SCHEMA);
@@ -161,7 +174,7 @@ public class DataSchemaUtil
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchema.Type.BYTES, DataSchemaConstants.BYTES_DATA_SCHEMA);
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_DATA_SCHEMA_MAP.put(DataSchema.Type.STRING, DataSchemaConstants.STRING_DATA_SCHEMA);
 
-    _DATA_SCHEMA_TYPE_TO_PRIMITIVE_JAVA_TYPE_MAP = new IdentityHashMap<DataSchema.Type, Class<?>>();
+    _DATA_SCHEMA_TYPE_TO_PRIMITIVE_JAVA_TYPE_MAP = new IdentityHashMap<>();
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_JAVA_TYPE_MAP.put(DataSchema.Type.INT, Integer.class);
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_JAVA_TYPE_MAP.put(DataSchema.Type.LONG, Long.class);
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_JAVA_TYPE_MAP.put(DataSchema.Type.FLOAT, Float.class);
@@ -170,7 +183,7 @@ public class DataSchemaUtil
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_JAVA_TYPE_MAP.put(DataSchema.Type.STRING, String.class);
     _DATA_SCHEMA_TYPE_TO_PRIMITIVE_JAVA_TYPE_MAP.put(DataSchema.Type.BYTES, ByteString.class);
 
-    _TYPE_STRING_TO_COMPLEX_DATA_SCHEMA_TYPE_MAP = new HashMap<String, DataSchema.Type>();
+    _TYPE_STRING_TO_COMPLEX_DATA_SCHEMA_TYPE_MAP = new HashMap<>();
     _TYPE_STRING_TO_COMPLEX_DATA_SCHEMA_TYPE_MAP.put(DataSchemaConstants.ARRAY_TYPE, DataSchema.Type.ARRAY);
     _TYPE_STRING_TO_COMPLEX_DATA_SCHEMA_TYPE_MAP.put(DataSchemaConstants.ENUM_TYPE, DataSchema.Type.ENUM);
     _TYPE_STRING_TO_COMPLEX_DATA_SCHEMA_TYPE_MAP.put(DataSchemaConstants.ERROR_TYPE, DataSchema.Type.RECORD);

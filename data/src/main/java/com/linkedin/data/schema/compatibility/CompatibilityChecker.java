@@ -16,7 +16,7 @@
 
 package com.linkedin.data.schema.compatibility;
 
-
+import com.linkedin.data.DataMap;
 import com.linkedin.data.message.MessageList;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.data.schema.DataSchema;
@@ -29,11 +29,14 @@ import com.linkedin.data.schema.PrimitiveDataSchema;
 import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.schema.TyperefDataSchema;
 import com.linkedin.data.schema.UnionDataSchema;
+import com.linkedin.data.schema.validator.DataSchemaAnnotationValidator;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+
 
 /**
  * Compare two {@link com.linkedin.data.schema.DataSchema} for compatibility.
@@ -74,8 +77,8 @@ public class CompatibilityChecker
     private final DataSchema _newer;
   }
 
-  private final ArrayDeque<String> _path = new ArrayDeque<String>();
-  private final HashSet<Checked> _checked = new HashSet<Checked>();
+  private final ArrayDeque<String> _path = new ArrayDeque<>();
+  private final HashSet<Checked> _checked = new HashSet<>();
   private Result _result;
   private CompatibilityOptions _options;
 
@@ -108,7 +111,7 @@ public class CompatibilityChecker
     }
 
     int pathCount = 1;
-    if (_options.getMode() == CompatibilityOptions.Mode.DATA)
+    if (_options.getMode() == CompatibilityOptions.Mode.DATA || _options.getMode() == CompatibilityOptions.Mode.EXTENSION )
     {
       older = older.getDereferencedDataSchema();
       while (newer.getType() == DataSchema.Type.TYPEREF)
@@ -260,33 +263,100 @@ public class CompatibilityChecker
     }
   }
 
+  private static enum FieldModifier
+  {
+    OPTIONAL,
+    REQUIRED,
+    REQUIRED_WITH_DEFAULT
+  }
+
+  private static FieldModifier toFieldModifier(RecordDataSchema.Field field)
+  {
+    if (field.getOptional())
+    {
+      return FieldModifier.OPTIONAL;
+    }
+    else
+    {
+      if (field.getDefault() != null)
+      {
+        return FieldModifier.REQUIRED_WITH_DEFAULT;
+      }
+      else
+      {
+        return FieldModifier.REQUIRED;
+      }
+    }
+  }
+
   private void checkRecord(RecordDataSchema older, RecordDataSchema newer)
   {
     checkName(older, newer);
 
-    List<RecordDataSchema.Field> commonFields = new ArrayList<RecordDataSchema.Field>(newer.getFields().size());
-    List<String> newerRequiredAdded = new CheckerArrayList<String>();
-    List<String> newerOptionalAdded = new CheckerArrayList<String>();
-    List<String> requiredToOptional = new CheckerArrayList<String>();
-    List<String> optionalToRequired = new CheckerArrayList<String>();
-    List<String> newerRequiredRemoved = new CheckerArrayList<String>();
-    List<String> newerOptionalRemoved = new CheckerArrayList<String>();
+    List<RecordDataSchema.Field> commonFields = new ArrayList<>(newer.getFields().size());
+    List<String> newerRequiredAdded = new CheckerArrayList<>();
+    List<String> newerRequiredWithDefaultAdded = new CheckerArrayList<>();
+    List<String> newerOptionalAdded = new CheckerArrayList<>();
+    List<String> requiredToOptional = new CheckerArrayList<>();
+    List<String> requiredWithDefaultToOptional = new CheckerArrayList<>();
+    List<String> optionalToRequired = new CheckerArrayList<>();
+    List<String> optionalToRequiredWithDefault = new CheckerArrayList<>();
+    List<String> newerRequiredRemoved = new CheckerArrayList<>();
+    List<String> newerOptionalRemoved = new CheckerArrayList<>();
+    List<String> requiredWithDefaultToRequired = new CheckerArrayList<>();
+    List<String> requiredToRequiredWithDefault = new CheckerArrayList<>();
 
     for (RecordDataSchema.Field newerField : newer.getFields())
     {
       String fieldName = newerField.getName();
       RecordDataSchema.Field olderField = older.getField(fieldName);
+
+      FieldModifier newerFieldModifier = toFieldModifier(newerField);
+
       if (olderField == null)
       {
-        (newerField.getOptional() ? newerOptionalAdded : newerRequiredAdded).add(fieldName);
+        if (newerFieldModifier == FieldModifier.OPTIONAL)
+        {
+          newerOptionalAdded.add(fieldName);
+        }
+        // Required fields with defaults are considered compatible and are not added to newerRequiredAdded
+        else if (newerFieldModifier == FieldModifier.REQUIRED)
+        {
+          newerRequiredAdded.add(fieldName);
+        }
+        else if (newerFieldModifier == FieldModifier.REQUIRED_WITH_DEFAULT)
+        {
+          newerRequiredWithDefaultAdded.add(fieldName);
+        }
       }
       else
       {
+        checkFieldValidators(olderField, newerField);
+
+        FieldModifier olderFieldModifier = toFieldModifier(olderField);
+
         commonFields.add(newerField);
-        boolean newerFieldOptional = newerField.getOptional();
-        if (newerFieldOptional != olderField.getOptional())
+        if (olderFieldModifier == FieldModifier.OPTIONAL && newerFieldModifier == FieldModifier.REQUIRED_WITH_DEFAULT) {
+          optionalToRequiredWithDefault.add(fieldName);
+        }
+        else if (olderFieldModifier == FieldModifier.OPTIONAL && newerFieldModifier == FieldModifier.REQUIRED) {
+          optionalToRequired.add(fieldName);
+        }
+        else if (olderFieldModifier == FieldModifier.REQUIRED && newerFieldModifier == FieldModifier.OPTIONAL)
         {
-          (newerFieldOptional ? requiredToOptional : optionalToRequired).add(fieldName);
+          requiredToOptional.add(fieldName);
+        }
+        else if (olderFieldModifier == FieldModifier.REQUIRED && newerFieldModifier == FieldModifier.REQUIRED_WITH_DEFAULT)
+        {
+          requiredToRequiredWithDefault.add(fieldName);
+        }
+        else if (olderFieldModifier == FieldModifier.REQUIRED_WITH_DEFAULT && newerFieldModifier == FieldModifier.OPTIONAL)
+        {
+          requiredWithDefaultToOptional.add(fieldName);
+        }
+        else if (olderFieldModifier == FieldModifier.REQUIRED_WITH_DEFAULT && newerFieldModifier == FieldModifier.REQUIRED)
+        {
+          requiredWithDefaultToRequired.add(fieldName);
         }
       }
     }
@@ -300,11 +370,18 @@ public class CompatibilityChecker
       }
     }
 
-    if (newerRequiredAdded.isEmpty() == false)
+    if (newerRequiredAdded.isEmpty() == false && _options.getMode() != CompatibilityOptions.Mode.EXTENSION)
     {
       appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_READER,
                     "new record added required fields %s",
                     newerRequiredAdded);
+    }
+
+    if (newerRequiredWithDefaultAdded.isEmpty() == false)
+    {
+      appendMessage(CompatibilityMessage.Impact.OLD_READER_IGNORES_DATA,
+          "new record added required with default fields %s",
+          newerRequiredAdded);
     }
 
     if (newerRequiredRemoved.isEmpty() == false)
@@ -321,11 +398,29 @@ public class CompatibilityChecker
                     optionalToRequired);
     }
 
+    if (optionalToRequiredWithDefault.isEmpty() == false)
+    {
+      appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_AND_OLD_READERS,
+          "new record changed optional fields to required fields with defaults %s. This change is compatible for "
+          + "Pegasus but incompatible for Avro, if this record schema is never converted to Avro, this error may "
+          + "safely be ignored.",
+          optionalToRequiredWithDefault);
+    }
+
     if (requiredToOptional.isEmpty() == false)
     {
       appendMessage(CompatibilityMessage.Impact.BREAKS_OLD_READER,
                     "new record changed required fields to optional fields %s",
                     requiredToOptional);
+    }
+
+    if (requiredWithDefaultToOptional.isEmpty() == false)
+    {
+      appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_AND_OLD_READERS,
+          "new record changed required fields with defaults to optional fields %s. This change is compatible for "
+          + "Pegasus but incompatible for Avro, if this record schema is never converted to Avro, this error may "
+          + "safely be ignored.",
+          requiredWithDefaultToOptional);
     }
 
     if (newerOptionalAdded.isEmpty() == false)
@@ -337,9 +432,24 @@ public class CompatibilityChecker
 
     if (newerOptionalRemoved.isEmpty() == false)
     {
-      appendMessage(CompatibilityMessage.Impact.NEW_READER_IGNORES_DATA,
-                    "new record removed optional fields %s",
+      appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_AND_OLD_READERS,
+                    "new record removed optional fields %s. This allows a new field to be added " +
+                        "with the same name but different type in the future.",
                     newerOptionalRemoved);
+    }
+
+    if (requiredWithDefaultToRequired.isEmpty() == false)
+    {
+      appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_READER,
+          "new record removed default from required fields %s",
+          requiredWithDefaultToRequired);
+    }
+
+    if (requiredToRequiredWithDefault.isEmpty() == false)
+    {
+      appendMessage(CompatibilityMessage.Impact.BREAKS_OLD_READER,
+          "new record added default to required fields %s",
+          requiredToRequiredWithDefault);
     }
 
     for (RecordDataSchema.Field newerField : commonFields)
@@ -357,12 +467,14 @@ public class CompatibilityChecker
   }
 
   private void computeAddedUnionMembers(UnionDataSchema base, UnionDataSchema changed,
-                                        List<String> added, List<DataSchema> commonMembers)
+                                        List<String> added, List<UnionDataSchema.Member> commonMembers)
   {
-    for (DataSchema member : changed.getTypes())
+    for (UnionDataSchema.Member member : changed.getMembers())
     {
       String unionMemberKey = member.getUnionMemberKey();
-      if (base.contains(unionMemberKey) == false)
+      boolean isMemberNewlyAdded = (base.getTypeByMemberKey(unionMemberKey) == null);
+
+      if (isMemberNewlyAdded)
       {
         added.add(unionMemberKey);
       }
@@ -375,35 +487,54 @@ public class CompatibilityChecker
 
   private void checkUnion(UnionDataSchema older, UnionDataSchema newer)
   {
+    // Check for any changes in member aliasing
+    if (older.areMembersAliased() != newer.areMembersAliased())
+    {
+      appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_AND_OLD_READERS,
+          "new union %s member aliases",
+          newer.areMembersAliased() ? "added" : "removed");
+    }
+
     // using list to preserve union member order
-    List<DataSchema> commonMembers = new CheckerArrayList<DataSchema>(newer.getTypes().size());
-    List<String> newerAdded = new CheckerArrayList<String>();
-    List<String> olderAdded = new CheckerArrayList<String>();
+    List<UnionDataSchema.Member> commonMembers = new CheckerArrayList<>(newer.getMembers().size());
+    List<String> newerAdded = new CheckerArrayList<>();
+    List<String> olderAdded = new CheckerArrayList<>();
 
     computeAddedUnionMembers(older, newer, newerAdded, commonMembers);
     computeAddedUnionMembers(newer, older, olderAdded, null);
 
-    if (newerAdded.isEmpty() == false)
+    if (!newerAdded.isEmpty())
     {
-      appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_READER,
+      appendMessage(CompatibilityMessage.Impact.BREAKS_OLD_READER,
                     "new union added members %s",
                     newerAdded);
     }
 
-    if (olderAdded.isEmpty() == false)
+    if (!olderAdded.isEmpty())
     {
-      appendMessage(CompatibilityMessage.Impact.BREAKS_OLD_READER,
+      appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_READER,
                     "new union removed members %s",
                     olderAdded);
     }
 
-    for (DataSchema newerSchema : commonMembers)
+    for (UnionDataSchema.Member newerMember : commonMembers)
     {
-      String memberKey = newerSchema.getUnionMemberKey();
+      DataSchema newerSchema = newerMember.getType();
+      DataSchema olderSchema = older.getTypeByMemberKey(newerMember.getUnionMemberKey());
 
-      DataSchema olderSchema = older.getType(memberKey);
       assert(olderSchema != null);
+
+      if (newerMember.hasAlias())
+      {
+        _path.addLast(newerMember.getAlias());
+      }
+
       check(olderSchema, newerSchema);
+
+      if (newerMember.hasAlias())
+      {
+        _path.removeLast();
+      }
     }
   }
 
@@ -414,24 +545,37 @@ public class CompatibilityChecker
     _path.addLast(DataSchemaConstants.SYMBOLS_KEY);
 
     // using list to preserve symbol order
-    List<String> newerOnlySymbols = new CheckerArrayList<String>(newer.getSymbols());
-    newerOnlySymbols.removeAll(older.getSymbols());
+    List<String> newerOnlySymbols = new CheckerArrayList<>(newer.getSymbols());
+    List<String> olderOnlySymbols = new CheckerArrayList<>(older.getSymbols());
 
-    List<String> olderOnlySymbols = new CheckerArrayList<String>(older.getSymbols());
+    newerOnlySymbols.removeAll(older.getSymbols());
     olderOnlySymbols.removeAll(newer.getSymbols());
 
-    if (newerOnlySymbols.isEmpty() == false)
+    if (!newerOnlySymbols.isEmpty())
     {
-      appendMessage(CompatibilityMessage.Impact.BREAKS_OLD_READER,
+      appendMessage(CompatibilityMessage.Impact.ENUM_VALUE_ADDED,
                     "new enum added symbols %s",
                     newerOnlySymbols);
     }
 
-    if (olderOnlySymbols.isEmpty() == false)
+    if (!olderOnlySymbols.isEmpty())
     {
       appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_READER,
                     "new enum removed symbols %s",
                     olderOnlySymbols);
+    }
+
+    if (newerOnlySymbols.isEmpty() && olderOnlySymbols.isEmpty())
+    {
+      for (int i = 0; i < newer.getSymbols().size(); i++)
+      {
+        if (!newer.getSymbols().get(i).equals(older.getSymbols().get(i)))
+        {
+          appendMessage(CompatibilityMessage.Impact.ENUM_SYMBOLS_ORDER_CHANGE, "enum symbols order changed at symbol %s",
+              newer.getSymbols().get(i));
+          break;
+        }
+      }
     }
 
     _path.removeLast();
@@ -487,6 +631,38 @@ public class CompatibilityChecker
     }
   }
 
+  /**
+   * Checks the compatibility of the validation rules specified on some field.
+   *
+   * @param older older schema field
+   * @param newer newer schema field
+   */
+  private void checkFieldValidators(RecordDataSchema.Field older, RecordDataSchema.Field newer)
+  {
+    final DataMap olderValidators = (DataMap) older.getProperties().getOrDefault(DataSchemaAnnotationValidator.VALIDATE, new DataMap());
+    final DataMap newerValidators = (DataMap) newer.getProperties().getOrDefault(DataSchemaAnnotationValidator.VALIDATE, new DataMap());
+
+    // Compute the union of the previous validation rules and the current validation rules
+    final Set<String> validatorKeysUnion = new HashSet<>();
+    validatorKeysUnion.addAll(olderValidators.keySet());
+    validatorKeysUnion.addAll(newerValidators.keySet());
+
+    // Check the compatibility of each validation rule
+    for (String key : validatorKeysUnion)
+    {
+      if (!olderValidators.containsKey(key) && newerValidators.containsKey(key))
+      {
+        // Added validation rule, thus old writer may write data that a new reader doesn't expect
+        appendMessage(CompatibilityMessage.Impact.BREAKS_NEW_READER, "added new validation rule \"%s\"", key);
+      }
+      else if (olderValidators.containsKey(key) && !newerValidators.containsKey(key))
+      {
+        // Removed validation rule, thus new writer may write data that an old reader doesn't expect
+        appendMessage(CompatibilityMessage.Impact.BREAKS_OLD_READER, "removed old validation rule \"%s\"", key);
+      }
+    }
+  }
+
   private void appendMessage(CompatibilityMessage.Impact impact, String format, Object... args)
   {
     CompatibilityMessage message = new CompatibilityMessage(_path.toArray(), impact, format, args);
@@ -497,7 +673,7 @@ public class CompatibilityChecker
   {
     private Result()
     {
-      _messages = new MessageList<CompatibilityMessage>();
+      _messages = new MessageList<>();
     }
 
     @Override

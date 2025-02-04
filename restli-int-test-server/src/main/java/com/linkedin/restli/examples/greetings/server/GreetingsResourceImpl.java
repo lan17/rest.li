@@ -18,6 +18,7 @@ package com.linkedin.restli.examples.greetings.server;
 
 
 import com.linkedin.data.template.BooleanArray;
+import com.linkedin.data.template.StringArray;
 import com.linkedin.data.template.StringMap;
 import com.linkedin.data.transform.DataProcessingException;
 import com.linkedin.restli.common.HttpStatus;
@@ -81,6 +82,8 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
   private static final String[] GREETINGS =
       { "Good morning!", "Guten Morgen!", "Buenos dias!", "Bon jour!", "Buon Giorno!" };
   private static final Tone[] TONES = { Tone.FRIENDLY, Tone.SINCERE, Tone.INSULTING };
+  private static final List<String> GREETING_SENDERS = Arrays.asList(
+      "Alice", "Bob", "Cath", "Dave", "Erica", "Filipe", "Gordon", "Helen" );
 
   private static final Tone DEFAULT_TONE = Tone.INSULTING;
 
@@ -90,23 +93,25 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
   static {
     // generate some "random" initial data
     for (int i = 0; i < INITIAL_SIZE; i++)
+    {
       INITIAL_MESSAGES[i] = GREETINGS[i % GREETINGS.length];
-    for (int i = 0; i < INITIAL_SIZE; i++)
       INITIAL_TONES[i] = TONES[i % TONES.length];
+    }
   }
 
   private final AtomicLong _idSeq = new AtomicLong();
-  private final Map<Long, Greeting> _db = Collections.synchronizedMap(new LinkedHashMap<Long, Greeting>());
+  private final Map<Long, Greeting> _db = Collections.synchronizedMap(new LinkedHashMap<>());
   private final String _resourceName;
 
   public GreetingsResourceImpl(String resourceName)
   {
     for (int i = 0; i < INITIAL_SIZE; i++)
     {
-      Greeting g =
-          new Greeting().setId(_idSeq.incrementAndGet())
-                        .setMessage(INITIAL_MESSAGES[i])
-                        .setTone(INITIAL_TONES[i]);
+      Greeting g = new Greeting()
+          .setId(_idSeq.incrementAndGet())
+          .setMessage(INITIAL_MESSAGES[i])
+          .setTone(INITIAL_TONES[i])
+          .setSenders(new StringArray(GREETING_SENDERS));
       _db.put(g.getId(), g);
     }
     _resourceName = resourceName;
@@ -129,8 +134,8 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
   @RestMethod.BatchGet
   public Map<Long, Greeting> batchGet(Set<Long> ids)
   {
-    Map<Long, Greeting> batch = new HashMap<Long, Greeting>();
-    Map<Long, RestLiServiceException> errors = new HashMap<Long, RestLiServiceException>();
+    Map<Long, Greeting> batch = new HashMap<>();
+    Map<Long, RestLiServiceException> errors = new HashMap<>();
     for (long id : ids)
     {
       Greeting g = _db.get(id);
@@ -144,57 +149,61 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
       }
     }
 
-    return new BatchResult<Long, Greeting>(batch, errors);
+    return new BatchResult<>(batch, errors);
   }
 
   @RestMethod.BatchUpdate
   public BatchUpdateResult<Long, Greeting> batchUpdate(BatchUpdateRequest<Long, Greeting> entities)
   {
-    Map<Long, UpdateResponse> responseMap = new HashMap<Long, UpdateResponse>();
+    Map<Long, UpdateResponse> responseMap = new HashMap<>();
     for (Map.Entry<Long, Greeting> entry : entities.getData().entrySet())
     {
       responseMap.put(entry.getKey(), update(entry.getKey(), entry.getValue()));
     }
-    return new BatchUpdateResult<Long, Greeting>(responseMap);
+    return new BatchUpdateResult<>(responseMap);
   }
 
   @RestMethod.BatchPartialUpdate
   public BatchUpdateResult<Long, Greeting> batchUpdate(BatchPatchRequest<Long, Greeting> entityUpdates)
   {
-    Map<Long, UpdateResponse> responseMap = new HashMap<Long, UpdateResponse>();
+    Map<Long, UpdateResponse> responseMap = new HashMap<>();
     for (Map.Entry<Long, PatchRequest<Greeting>> entry : entityUpdates.getData().entrySet())
     {
       responseMap.put(entry.getKey(), update(entry.getKey(), entry.getValue()));
     }
-    return new BatchUpdateResult<Long, Greeting>(responseMap);
+    return new BatchUpdateResult<>(responseMap);
   }
 
   @RestMethod.BatchCreate
   public BatchCreateResult<Long, Greeting> batchCreate(BatchCreateRequest<Long, Greeting> entities)
   {
-    List<CreateResponse> responses = new ArrayList<CreateResponse>(entities.getInput().size());
+    List<CreateResponse> responses = new ArrayList<>(entities.getInput().size());
 
     for (Greeting g : entities.getInput())
     {
       responses.add(create(g, false));
     }
-    return new BatchCreateResult<Long, Greeting>(responses);
+    return new BatchCreateResult<>(responses);
   }
 
   @RestMethod.BatchDelete
   public BatchUpdateResult<Long, Greeting> batchDelete(BatchDeleteRequest<Long, Greeting> deleteRequest)
   {
-    Map<Long, UpdateResponse> responseMap = new HashMap<Long, UpdateResponse>();
+    Map<Long, UpdateResponse> responseMap = new HashMap<>();
     for (Long id : deleteRequest.getKeys())
     {
       responseMap.put(id, delete(id));
     }
-    return new BatchUpdateResult<Long, Greeting>(responseMap);
+    return new BatchUpdateResult<>(responseMap);
   }
 
   @RestMethod.Get
   public Greeting get(Long key)
   {
+    if (key == 204L)
+    {
+      throw new RestLiServiceException(HttpStatus.S_204_NO_CONTENT);
+    }
     return _db.get(key);
   }
 
@@ -248,7 +257,7 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
   {
     // Deterministic behaviour of getAll to make it easier to test as part of the integration test suite
     // Just return those greetings that have "GetAll" present in their message
-    List<Greeting> greetings = new ArrayList<Greeting>();
+    List<Greeting> greetings = new ArrayList<>();
     for (Greeting greeting: _db.values())
     {
       if (greeting.getMessage().contains("GetAll"))
@@ -269,7 +278,7 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
   @Finder("search")
   public List<Greeting> search(@PagingContextParam PagingContext ctx, @QueryParam("tone") @Optional Tone tone)
   {
-    List<Greeting> greetings = new ArrayList<Greeting>();
+    List<Greeting> greetings = new ArrayList<>();
     int idx = 0;
     int start = ctx.getStart();
     int stop = start + ctx.getCount();
@@ -294,7 +303,7 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
   @Finder("searchWithPostFilter")
   public CollectionResult<Greeting, Empty> searchWithPostFilter(@PagingContextParam PagingContext ctx)
   {
-    List<Greeting> greetings = new ArrayList<Greeting>();
+    List<Greeting> greetings = new ArrayList<>();
     int idx = 0;
     int start = ctx.getStart();
     int stop = start + ctx.getCount();
@@ -315,14 +324,14 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
     int total = _db.values().size();
     // but we keep the numElements returned as the full count despite the fact that with the filter removed 1
     // this is to keep paging consistent even in the presence of a post filter.
-    return new CollectionResult<Greeting, Empty>(greetings, total, null, PageIncrement.FIXED);
+    return new CollectionResult<>(greetings, total, null, PageIncrement.FIXED);
   }
 
   @Finder("searchWithTones")
   public List<Greeting> searchWithTones(@PagingContextParam PagingContext ctx, @QueryParam("tones") @Optional Tone[] tones)
   {
-    Set<Tone> toneSet = new HashSet<Tone>(Arrays.asList(tones));
-    List<Greeting> greetings = new ArrayList<Greeting>();
+    Set<Tone> toneSet = new HashSet<>(Arrays.asList(tones));
+    List<Greeting> greetings = new ArrayList<>();
     int idx = 0;
     int start = ctx.getStart();
     int stop = start + ctx.getCount();
@@ -349,7 +358,7 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
   {
     List<Greeting> greetings = search(ctx, tone);
 
-    Map<Tone, Integer> toneCounts = new HashMap<Tone, Integer>();
+    Map<Tone, Integer> toneCounts = new HashMap<>();
     for (Greeting g : greetings)
     {
       if (!toneCounts.containsKey(g.getTone()))
@@ -369,7 +378,7 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
       metadata.getFacets().add(f);
     }
 
-    return new CollectionResult<Greeting, SearchMetadata>(greetings, null, metadata);
+    return new CollectionResult<>(greetings, null, metadata);
   }
 
   // test if @{link EmptyArray} is generated from ArrayOfEmptys.pdsc
@@ -478,5 +487,17 @@ class GreetingsResourceImpl implements KeyValueResource<Long,Greeting>
   public void exceptionTest()
   {
     throw new RestLiServiceException(HttpStatus.S_500_INTERNAL_SERVER_ERROR, "Test Exception");
+  }
+
+  @Action(name = "modifyCustomContext")
+  public void modifyCustomContext(BaseResource resource)
+  {
+    java.util.Optional<Object> foo = resource.getContext().getCustomContextData("foo");
+    if (foo.isPresent() && foo.get().equals("bar"))
+    {
+      resource.getContext().putCustomContextData("foo", "newbar");
+      return;
+    }
+    throw new RestLiServiceException(HttpStatus.S_500_INTERNAL_SERVER_ERROR);
   }
 }

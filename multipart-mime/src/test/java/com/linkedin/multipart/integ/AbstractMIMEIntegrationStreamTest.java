@@ -35,8 +35,8 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
 
 
 /**
@@ -52,7 +52,7 @@ public abstract class AbstractMIMEIntegrationStreamTest
   protected TransportClientFactory _clientFactory;
   protected Client _client;
 
-  @BeforeMethod
+  @BeforeClass
   public void setup() throws IOException
   {
     _clientFactory = getClientFactory();
@@ -61,14 +61,14 @@ public abstract class AbstractMIMEIntegrationStreamTest
     _server.start();
   }
 
-  @AfterMethod
+  @AfterClass
   public void tearDown() throws Exception
   {
-    final FutureCallback<None> clientShutdownCallback = new FutureCallback<None>();
+    final FutureCallback<None> clientShutdownCallback = new FutureCallback<>();
     _client.shutdown(clientShutdownCallback);
     clientShutdownCallback.get();
 
-    final FutureCallback<None> factoryShutdownCallback = new FutureCallback<None>();
+    final FutureCallback<None> factoryShutdownCallback = new FutureCallback<>();
     _clientFactory.shutdown(factoryShutdownCallback);
     factoryShutdownCallback.get();
 
@@ -83,7 +83,7 @@ public abstract class AbstractMIMEIntegrationStreamTest
 
   protected TransportClientFactory getClientFactory()
   {
-    return new HttpClientFactory();
+    return new HttpClientFactory.Builder().build();
   }
 
   protected Map<String, String> getClientProperties()

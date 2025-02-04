@@ -16,16 +16,14 @@
 
 package com.linkedin.d2.balancer;
 
-import java.util.HashMap;
-import java.util.Map;
-
-import com.linkedin.d2.balancer.strategies.LoadBalancerStrategy;
-import com.linkedin.d2.balancer.strategies.LoadBalancerStrategyFactory;
-import com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategyFactoryV3;
-import com.linkedin.d2.balancer.strategies.random.RandomLoadBalancerStrategyFactory;
+import com.linkedin.d2.balancer.util.WarmUpLoadBalancer;
 import com.linkedin.d2.balancer.zkfs.ZKFSComponentFactory;
 import com.linkedin.d2.balancer.zkfs.ZKFSLoadBalancer;
 import com.linkedin.d2.balancer.zkfs.ZKFSTogglingLoadBalancerFactoryImpl;
+import com.linkedin.d2.jmx.D2ClientJmxManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /**
  * Implementation of {@link LoadBalancerWithFacilitiesFactory} interface, which creates
@@ -33,18 +31,33 @@ import com.linkedin.d2.balancer.zkfs.ZKFSTogglingLoadBalancerFactoryImpl;
  */
 public class ZKFSLoadBalancerWithFacilitiesFactory implements LoadBalancerWithFacilitiesFactory
 {
+  private static final Logger LOG = LoggerFactory.getLogger(ZKFSLoadBalancerWithFacilitiesFactory.class);
 
   @Override
   public LoadBalancerWithFacilities create(D2ClientConfig config)
   {
-    return  new ZKFSLoadBalancer(config.zkHosts,
-                                    (int) config.zkSessionTimeoutInMs,
-                                    (int) config.zkStartupTimeoutInMs,
-                                    createLoadBalancerFactory(config),
-                                    config.flagFile,
-                                    config.basePath,
-                                    config.shutdownAsynchronously,
-                                    config.isSymlinkAware);
+    LOG.info("Creating D2 LoadBalancer based on ZKFSLoadBalancerWithFacilitiesFactory");
+
+    ZKFSLoadBalancer zkfsLoadBalancer = new ZKFSLoadBalancer(config.zkHosts,
+      (int) config.zkSessionTimeoutInMs,
+      (int) config.zkStartupTimeoutInMs,
+      createLoadBalancerFactory(config),
+      config.flagFile,
+      config.basePath,
+      config.shutdownAsynchronously,
+      config.isSymlinkAware,
+      config._executorService,
+      config.zooKeeperDecorator);
+
+    LoadBalancerWithFacilities balancer = zkfsLoadBalancer;
+
+    if (config.warmUp)
+    {
+      balancer = new WarmUpLoadBalancer(balancer, zkfsLoadBalancer, config.startUpExecutorService, config.fsBasePath,
+        config.d2ServicePath, config.downstreamServicesFetcher, config.warmUpTimeoutSeconds,
+        config.warmUpConcurrentRequests, config.dualReadStateManager, false);
+    }
+    return balancer;
   }
 
 
@@ -60,8 +73,8 @@ public class ZKFSLoadBalancerWithFacilitiesFactory implements LoadBalancerWithFa
       loadBalancerComponentFactory = config.componentFactory;
     }
 
-    final Map<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>> loadBalancerStrategyFactories =
-        createDefaultLoadBalancerStrategyFactories();
+    D2ClientJmxManager d2ClientJmxManager = new D2ClientJmxManager(config.d2JmxManagerPrefix, config.jmxManager,
+        D2ClientJmxManager.DiscoverySourceType.ZK, config.dualReadStateManager);
 
     return new ZKFSTogglingLoadBalancerFactoryImpl(loadBalancerComponentFactory,
                                                    config.lbWaitTimeout,
@@ -69,30 +82,24 @@ public class ZKFSLoadBalancerWithFacilitiesFactory implements LoadBalancerWithFa
                                                    config.basePath,
                                                    config.fsBasePath,
                                                    config.clientFactories,
-                                                   loadBalancerStrategyFactories,
+                                                   config.loadBalancerStrategyFactories,
                                                    config.d2ServicePath,
                                                    config.sslContext,
                                                    config.sslParameters,
                                                    config.isSSLEnabled,
-                                                   config.clientServicesConfig);
+                                                   config.clientServicesConfig,
+                                                   config.useNewEphemeralStoreWatcher,
+                                                   config.partitionAccessorRegistry,
+                                                   config.enableSaveUriDataOnDisk,
+                                                   config.sslSessionValidatorFactory,
+                                                   d2ClientJmxManager,
+                                                   config.zookeeperReadWindowMs,
+                                                   config.deterministicSubsettingMetadataProvider,
+                                                   config.failoutConfigProviderFactory,
+                                                   config.canaryDistributionProvider,
+                                                   config.serviceDiscoveryEventEmitter,
+                                                   config.dualReadStateManager,
+                                                   config.loadBalanceStreamException
+    );
   }
-
-  private Map<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>> createDefaultLoadBalancerStrategyFactories()
-  {
-    final Map<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>> loadBalancerStrategyFactories =
-        new HashMap<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>>();
-
-    final RandomLoadBalancerStrategyFactory randomStrategyFactory = new RandomLoadBalancerStrategyFactory();
-    final DegraderLoadBalancerStrategyFactoryV3 degraderStrategyFactoryV3 = new DegraderLoadBalancerStrategyFactoryV3();
-
-    loadBalancerStrategyFactories.put("random", randomStrategyFactory);
-    loadBalancerStrategyFactories.put("degrader", degraderStrategyFactoryV3);
-    loadBalancerStrategyFactories.put("degraderV2", degraderStrategyFactoryV3);
-    loadBalancerStrategyFactories.put("degraderV3", degraderStrategyFactoryV3);
-    loadBalancerStrategyFactories.put("degraderV2_1", degraderStrategyFactoryV3);
-
-    return loadBalancerStrategyFactories;
-  }
-
-
 }

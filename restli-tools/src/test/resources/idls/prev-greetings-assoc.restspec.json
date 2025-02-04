@@ -1,8 +1,10 @@
 {
   "name" : "greetings",
   "namespace": "com.linkedin.restli.greetings",
+  "d2ServiceName": "oldD2Assoc",
   "path" : "/greetings",
   "schema" : "com.linkedin.greetings.api.Greeting",
+  "entityType" : "STRUCTURED_DATA",
   "doc" : "A richer \"Hello world\" example, demonstrating a full array of methods, finders and actions",
   "association" : {
     "identifier" : "greetingsId",

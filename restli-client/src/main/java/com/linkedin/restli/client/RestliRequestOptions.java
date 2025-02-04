@@ -19,6 +19,8 @@ package com.linkedin.restli.client;
 
 import com.linkedin.r2.filter.CompressionOption;
 
+import com.linkedin.restli.common.ContentType;
+import java.util.Collections;
 import java.util.List;
 
 
@@ -32,17 +34,28 @@ public class RestliRequestOptions
   private final ProtocolVersionOption _protocolVersionOption;
   private final CompressionOption _requestCompressionOverride;
   private final CompressionOption _responseCompressionOverride;
-  private final RestClient.ContentType _contentType;
-  private final List<RestClient.AcceptType> _acceptTypes;
+  private final ContentType _contentType;
+  private final List<ContentType> _acceptTypes;
+  private final boolean _acceptResponseAttachments;
+  private final ProjectionDataMapSerializer _projectionDataMapSerializer;
 
   public static final RestliRequestOptions DEFAULT_OPTIONS
-      = new RestliRequestOptions(ProtocolVersionOption.USE_LATEST_IF_AVAILABLE, null, null, null, null);
+      = new RestliRequestOptions(ProtocolVersionOption.USE_LATEST_IF_AVAILABLE, null, null, null, null, false, null);
 
   public static final RestliRequestOptions FORCE_USE_NEXT_OPTION =
-      new RestliRequestOptions(ProtocolVersionOption.FORCE_USE_NEXT, null, null, null, null);
+      new RestliRequestOptions(ProtocolVersionOption.FORCE_USE_NEXT, null, null, null, null, false, null);
 
   public static final RestliRequestOptions FORCE_USE_PREV_OPTION =
-      new RestliRequestOptions(ProtocolVersionOption.FORCE_USE_PREVIOUS, null, null, null, null);
+      new RestliRequestOptions(ProtocolVersionOption.FORCE_USE_PREVIOUS, null, null, null, null, false, null);
+
+  public static final RestliRequestOptions DEFAULT_MULTIPLEXER_OPTIONS = new RestliRequestOptions(
+      ProtocolVersionOption.USE_LATEST_IF_AVAILABLE,
+      null,
+      null,
+      ContentType.JSON,
+      Collections.singletonList(ContentType.JSON),
+      false,
+      null);
 
   /**
    * Content type and accept types (if not null) passed in this constructor will take precedence over the corresponding configuration set
@@ -53,12 +66,19 @@ public class RestliRequestOptions
    * @param responseCompressionOverride response compression override
    * @param contentType request content type
    * @param acceptTypes list of accept types for response
+   * @param acceptResponseAttachments This should only be set if clients want to handle streaming attachments
+   *                                  in responses from servers. Otherwise this should not be set. Note that setting
+   *                                  this allows servers to send back potentially large blobs of data which clients
+   *                                  are responsible for consuming.
+   * @param projectionDataMapSerializer Serializer to convert projection params to a mask tree datamap.
    */
   RestliRequestOptions(ProtocolVersionOption protocolVersionOption,
-                       CompressionOption requestCompressionOverride,
-                       CompressionOption responseCompressionOverride,
-                       RestClient.ContentType contentType,
-                       List<RestClient.AcceptType> acceptTypes)
+      CompressionOption requestCompressionOverride,
+      CompressionOption responseCompressionOverride,
+      ContentType contentType,
+      List<ContentType> acceptTypes,
+      boolean acceptResponseAttachments,
+      ProjectionDataMapSerializer projectionDataMapSerializer)
   {
     _protocolVersionOption =
         (protocolVersionOption == null) ? ProtocolVersionOption.USE_LATEST_IF_AVAILABLE : protocolVersionOption;
@@ -66,6 +86,9 @@ public class RestliRequestOptions
     _responseCompressionOverride = responseCompressionOverride;
     _contentType = contentType;
     _acceptTypes = acceptTypes;
+    _acceptResponseAttachments = acceptResponseAttachments;
+    _projectionDataMapSerializer =
+        (projectionDataMapSerializer == null) ? RestLiProjectionDataMapSerializer.DEFAULT_SERIALIZER : projectionDataMapSerializer;
   }
 
   public ProtocolVersionOption getProtocolVersionOption()
@@ -78,12 +101,12 @@ public class RestliRequestOptions
     return _requestCompressionOverride;
   }
 
-  public List<RestClient.AcceptType> getAcceptTypes()
+  public List<ContentType> getAcceptTypes()
   {
     return _acceptTypes;
   }
 
-  public RestClient.ContentType getContentType()
+  public ContentType getContentType()
   {
     return _contentType;
   }
@@ -91,6 +114,15 @@ public class RestliRequestOptions
   public CompressionOption getResponseCompressionOverride()
   {
     return _responseCompressionOverride;
+  }
+
+  public boolean getAcceptResponseAttachments()
+  {
+    return _acceptResponseAttachments;
+  }
+
+  public ProjectionDataMapSerializer getProjectionDataMapSerializer() {
+    return _projectionDataMapSerializer;
   }
 
   @Override
@@ -107,6 +139,10 @@ public class RestliRequestOptions
 
     RestliRequestOptions that = (RestliRequestOptions) o;
 
+    if (_acceptResponseAttachments != that._acceptResponseAttachments)
+    {
+      return false;
+    }
     if (_acceptTypes != null ? !_acceptTypes.equals(that._acceptTypes) : that._acceptTypes != null)
     {
       return false;
@@ -127,6 +163,10 @@ public class RestliRequestOptions
     {
       return false;
     }
+    if (!_projectionDataMapSerializer.equals(that._projectionDataMapSerializer))
+    {
+      return false;
+    }
 
     return true;
   }
@@ -139,17 +179,21 @@ public class RestliRequestOptions
     result = 31 * result + (_responseCompressionOverride != null ? _responseCompressionOverride.hashCode() : 0);
     result = 31 * result + (_contentType != null ? _contentType.hashCode() : 0);
     result = 31 * result + (_acceptTypes != null ? _acceptTypes.hashCode() : 0);
+    result = 31 * result + (_acceptResponseAttachments ? 1 : 0);
+    result = 31 * result + _projectionDataMapSerializer.hashCode();
     return result;
   }
 
   @Override
   public String toString()
   {
-    return "{_protocolVersionOption: " + _protocolVersionOption
-        + ", _requestCompressionOverride: " + _requestCompressionOverride
-        + ", _responseCompressionOverride: " + _responseCompressionOverride
-        + ", _contentType: " + _contentType
-        + ", _acceptTypes: " + _acceptTypes
-        + "}";
+    return "RestliRequestOptions{" +
+        "_protocolVersionOption=" + _protocolVersionOption +
+        ", _requestCompressionOverride=" + _requestCompressionOverride +
+        ", _responseCompressionOverride=" + _responseCompressionOverride +
+        ", _contentType=" + _contentType +
+        ", _acceptTypes=" + _acceptTypes +
+        ", _acceptResponseAttachments=" + _acceptResponseAttachments +
+        '}';
   }
 }

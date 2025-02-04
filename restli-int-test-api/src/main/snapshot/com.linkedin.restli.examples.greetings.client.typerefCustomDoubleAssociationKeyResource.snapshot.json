@@ -1,10 +1,5 @@
 {
   "models" : [ {
-    "type" : "enum",
-    "name" : "Tone",
-    "namespace" : "com.linkedin.restli.examples.greetings.api",
-    "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
-  }, {
     "type" : "record",
     "name" : "Message",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -17,16 +12,25 @@
       "type" : "string"
     }, {
       "name" : "tone",
-      "type" : "Tone",
+      "type" : {
+        "type" : "enum",
+        "name" : "Tone",
+        "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
+      },
       "doc" : "tone"
     } ]
-  }, {
+  }, "com.linkedin.restli.examples.greetings.api.Tone", {
     "type" : "typeref",
     "name" : "CustomDoubleRef",
     "namespace" : "com.linkedin.restli.examples.typeref.api",
     "ref" : "double",
     "java" : {
       "class" : "com.linkedin.restli.examples.custom.types.CustomDouble"
+    },
+    "validate" : {
+      "regex" : {
+        "regex" : "[0-9]*\\.[0-9]"
+      }
     }
   }, {
     "type" : "typeref",
@@ -36,6 +40,15 @@
     "java" : {
       "class" : "com.linkedin.restli.examples.custom.types.CustomString"
     }
+  }, {
+    "type" : "typeref",
+    "name" : "UriRef",
+    "namespace" : "com.linkedin.restli.examples.typeref.api",
+    "ref" : "string",
+    "java" : {
+      "class" : "java.net.URI",
+      "coercerClass" : "com.linkedin.restli.examples.custom.types.UriCoercer"
+    }
   } ],
   "schema" : {
     "name" : "typerefCustomDoubleAssociationKeyResource",
@@ -43,11 +56,12 @@
     "path" : "/typerefCustomDoubleAssociationKeyResource",
     "schema" : "com.linkedin.restli.examples.greetings.api.Message",
     "doc" : "generated from: com.linkedin.restli.examples.greetings.server.TyperefCustomDoubleAssociationKeyResource",
+    "resourceClass" : "com.linkedin.restli.examples.greetings.server.TyperefCustomDoubleAssociationKeyResource",
     "association" : {
       "identifier" : "typerefCustomDoubleAssociationKeyResourceId",
       "assocKeys" : [ {
         "name" : "dest",
-        "type" : "com.linkedin.restli.examples.typeref.api.CustomDoubleRef"
+        "type" : "com.linkedin.restli.examples.typeref.api.UriRef"
       }, {
         "name" : "src",
         "type" : "com.linkedin.restli.examples.typeref.api.CustomDoubleRef"
@@ -55,6 +69,7 @@
       "supports" : [ "get" ],
       "methods" : [ {
         "method" : "get",
+        "javaMethodName" : "get",
         "parameters" : [ {
           "name" : "array",
           "type" : "{ \"type\" : \"array\", \"items\" : \"com.linkedin.restli.examples.typeref.api.CustomStringRef\" }"

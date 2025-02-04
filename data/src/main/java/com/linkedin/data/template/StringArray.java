@@ -18,6 +18,8 @@ package com.linkedin.data.template;
 
 import com.linkedin.data.DataList;
 import com.linkedin.data.schema.ArrayDataSchema;
+import com.linkedin.util.ArgumentUtil;
+import java.util.Arrays;
 import java.util.Collection;
 
 
@@ -49,6 +51,13 @@ public final class StringArray extends DirectArrayTemplate<String>
     super(list, SCHEMA, String.class, String.class);
   }
 
+  public StringArray(String first, String... rest)
+  {
+    this(new DataList(rest.length + 1));
+    add(first);
+    addAll(Arrays.asList(rest));
+  }
+
   @Override
   public StringArray clone() throws CloneNotSupportedException
   {
@@ -59,5 +68,19 @@ public final class StringArray extends DirectArrayTemplate<String>
   public StringArray copy() throws CloneNotSupportedException
   {
     return (StringArray) super.copy();
+  }
+
+  @Override
+  protected Object coerceInput(String object) throws ClassCastException
+  {
+    ArgumentUtil.notNull(object, "object");
+    return object;
+  }
+
+  @Override
+  protected String coerceOutput(Object object) throws TemplateOutputCastException
+  {
+    assert(object != null);
+    return DataTemplateUtil.coerceStringOutput(object);
   }
 }

@@ -353,7 +353,7 @@ public class TestGroupsClient extends RestLiIntegrationTest
     GroupMembership patchedGroupMembership1 = buildGroupMembership(null, "ALFRED@test.linkedin.com", "ALFRED", "Hitchcock");
     GroupMembership patchedGroupMembership2 = buildGroupMembership(null, "BRUCE@test.linkedin.com", "BRUCE", "Willis");
 
-    Map<CompoundKey, PatchRequest<GroupMembership>> patchInputs = new HashMap<CompoundKey, PatchRequest<GroupMembership>>();
+    Map<CompoundKey, PatchRequest<GroupMembership>> patchInputs = new HashMap<>();
     patchInputs.put(key1, PatchGenerator.diff(groupMembership1, patchedGroupMembership1));
     patchInputs.put(key2, PatchGenerator.diff(groupMembership2, patchedGroupMembership2));
 
@@ -463,17 +463,18 @@ public class TestGroupsClient extends RestLiIntegrationTest
     Response<EmptyRecord> createResponse = getClient().sendRequest(createRequest).getResponse();
     Assert.assertEquals(createResponse.getStatus(), 201);
 
-    GroupMembershipParam param = new GroupMembershipParam();
-    param.setIntParameter(1);
-    param.setStringParameter("1");
+    GroupMembershipParam param = new GroupMembershipParam()
+        .setIntParameter(1)
+        .setStringParameter("1");
 
-    GroupMembershipQueryParam groupMembershipQueryParam1 = new GroupMembershipQueryParam();
-    groupMembershipQueryParam1.setIntParameter(1);
-    groupMembershipQueryParam1.setStringParameter("1");
-    GroupMembershipQueryParam groupMembershipQueryParam2 = new GroupMembershipQueryParam();
-    groupMembershipQueryParam2.setIntParameter(2);
-    groupMembershipQueryParam2.setStringParameter("2");
-    GroupMembershipQueryParamArray queryParamArray = new GroupMembershipQueryParamArray(Arrays.asList(groupMembershipQueryParam1, groupMembershipQueryParam2));
+    GroupMembershipQueryParam groupMembershipQueryParam1 = new GroupMembershipQueryParam()
+        .setIntParameter(1)
+        .setStringParameter("1");
+    GroupMembershipQueryParam groupMembershipQueryParam2 = new GroupMembershipQueryParam()
+        .setIntParameter(2)
+        .setStringParameter("2");
+    GroupMembershipQueryParamArray queryParamArray = new GroupMembershipQueryParamArray(
+        groupMembershipQueryParam1, groupMembershipQueryParam2);
     // Get the resource back and check state
     Request<ComplexKeyGroupMembership> request = builders.get()
                                           .id(complexKey)
@@ -583,7 +584,7 @@ public class TestGroupsClient extends RestLiIntegrationTest
   {
     CompoundKey key1 = buildCompoundKey(1, 1);
     CompoundKey key2 = buildCompoundKey(2, 1);
-    Set<CompoundKey> allRequestedKeys = new HashSet<CompoundKey>(Arrays.asList(key1, key2));
+    Set<CompoundKey> allRequestedKeys = new HashSet<>(Arrays.asList(key1, key2));
 
     Request<BatchKVResponse<CompoundKey, GroupMembership>> request = new GroupMembershipsBuilders(requestOptions).batchGet()
                     .ids(key1, key2)
@@ -593,7 +594,7 @@ public class TestGroupsClient extends RestLiIntegrationTest
 
     Assert.assertTrue(allRequestedKeys.containsAll(groupMemberships.getResults().keySet()));
     Assert.assertTrue(allRequestedKeys.containsAll(groupMemberships.getErrors().keySet()));
-    Set<CompoundKey> allResponseKeys = new HashSet<CompoundKey>(groupMemberships.getResults().keySet());
+    Set<CompoundKey> allResponseKeys = new HashSet<>(groupMemberships.getResults().keySet());
     allResponseKeys.addAll(groupMemberships.getErrors().keySet());
     Assert.assertEquals(allResponseKeys, allRequestedKeys);
   }
@@ -604,7 +605,7 @@ public class TestGroupsClient extends RestLiIntegrationTest
   {
     CompoundKey key1 = buildCompoundKey(1, 1);
     CompoundKey key2 = buildCompoundKey(2, 1);
-    Set<CompoundKey> allRequestedKeys = new HashSet<CompoundKey>(Arrays.asList(key1, key2));
+    Set<CompoundKey> allRequestedKeys = new HashSet<>(Arrays.asList(key1, key2));
 
     Request<BatchKVResponse<CompoundKey, EntityResponse<GroupMembership>>> request = new GroupMembershipsRequestBuilders(requestOptions).batchGet()
       .ids(key1, key2)
@@ -614,7 +615,7 @@ public class TestGroupsClient extends RestLiIntegrationTest
 
     Assert.assertTrue(allRequestedKeys.containsAll(groupMemberships.getResults().keySet()));
     Assert.assertTrue(allRequestedKeys.containsAll(groupMemberships.getErrors().keySet()));
-    Set<CompoundKey> allResponseKeys = new HashSet<CompoundKey>(groupMemberships.getResults().keySet());
+    Set<CompoundKey> allResponseKeys = new HashSet<>(groupMemberships.getResults().keySet());
     allResponseKeys.addAll(groupMemberships.getErrors().keySet());
     Assert.assertEquals(allResponseKeys, allRequestedKeys);
   }
@@ -676,8 +677,8 @@ public class TestGroupsClient extends RestLiIntegrationTest
                                                                                               String stringParam)
   {
     ComplexResourceKey<GroupMembershipKey, GroupMembershipParam> complexKey =
-        new ComplexResourceKey<GroupMembershipKey, GroupMembershipParam>(new GroupMembershipKey(),
-                                                                         new GroupMembershipParam());
+        new ComplexResourceKey<>(new GroupMembershipKey(),
+            new GroupMembershipParam());
     complexKey.getKey().setMemberID(memberID);
     complexKey.getKey().setGroupID(groupID);
     complexKey.getParams().setIntParameter(intParam);

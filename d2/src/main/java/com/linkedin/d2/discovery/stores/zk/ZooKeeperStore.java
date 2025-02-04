@@ -16,16 +16,6 @@
 
 package com.linkedin.d2.discovery.stores.zk;
 
-import java.io.File;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-
-import org.apache.zookeeper.WatchedEvent;
-import org.apache.zookeeper.Watcher;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.linkedin.common.callback.Callback;
 import com.linkedin.common.util.None;
 import com.linkedin.d2.discovery.PropertySerializer;
@@ -35,6 +25,14 @@ import com.linkedin.d2.discovery.stores.PropertyStore;
 import com.linkedin.d2.discovery.stores.PropertyStoreException;
 import com.linkedin.d2.discovery.stores.util.AbstractPropertyStoreAsync;
 import com.linkedin.d2.discovery.util.Stats;
+import java.io.File;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static com.linkedin.d2.discovery.util.LogUtil.debug;
 import static com.linkedin.d2.discovery.util.LogUtil.info;
@@ -44,8 +42,9 @@ public abstract class ZooKeeperStore<T> extends AbstractPropertyStoreAsync<T>
     PropertyEventPublisher<T>,
     PropertyStore<T>
 {
-  private static final Logger           _log =
-                                                 LoggerFactory.getLogger(ZooKeeperStore.class);
+  private static final Logger           _log = LoggerFactory.getLogger(ZooKeeperStore.class);
+
+  public static final int DEFAULT_READ_WINDOW_MS = -1; //disabled by default
 
   protected PropertyEventBus<T>         _eventBus;
   protected final ZKConnection          _zkConn;
@@ -185,50 +184,29 @@ public abstract class ZooKeeperStore<T> extends AbstractPropertyStoreAsync<T>
 
   protected abstract class ZKStoreWatcher implements Watcher
   {
-    private final Object      _mutex        = new Object();
-    private final Set<String> _watches  = new HashSet<String>();
-    private volatile int      _watchCount;
+    private final Set<String> _watches = ConcurrentHashMap.newKeySet();
 
     public void addWatch(String propertyName)
     {
-      synchronized (_mutex)
-      {
-        _watches.add(propertyName);
-        _watchCount++;
-      }
+      _watches.add(propertyName);
     }
     public void cancelWatch(String propertyName)
     {
-      synchronized (_mutex)
-      {
-        _watches.remove(propertyName);
-        _watchCount--;
-      }
+      _watches.remove(propertyName);
     }
     public int getWatchCount()
     {
-      return _watchCount;
+      return _watches.size();
     }
 
     public void cancelAllWatches()
     {
-      synchronized (_mutex)
-      {
-        _watches.clear();
-        _watchCount = 0;
-      }
+      _watches.clear();
     }
 
     protected boolean containsWatch(String prop)
     {
-      synchronized (_mutex)
-      {
-        if(_watches.contains(prop))
-        {
-          return true;
-        }
-      }
-      return false;
+      return _watches.contains(prop);
     }
 
     @Override

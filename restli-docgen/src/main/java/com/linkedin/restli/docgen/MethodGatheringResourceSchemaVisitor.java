@@ -18,6 +18,7 @@ package com.linkedin.restli.docgen;
 
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.restli.restspec.ActionSchema;
+import com.linkedin.restli.restspec.BatchFinderSchema;
 import com.linkedin.restli.restspec.FinderSchema;
 import com.linkedin.restli.restspec.RestMethodSchema;
 import com.linkedin.restli.server.ResourceLevel;
@@ -61,6 +62,14 @@ public class MethodGatheringResourceSchemaVisitor extends BaseResourceSchemaVisi
   }
 
   /**
+   * @return batchfinders from the target ResourceSchemas
+   */
+  public Set<BatchFinderSchema> getBatchFinders()
+  {
+    return _batchFinders;
+  }
+
+  /**
    * @return collection-level actions from the target ResourceSchemas
    */
   public Set<ActionSchema> getCollectionActions()
@@ -98,10 +107,11 @@ public class MethodGatheringResourceSchemaVisitor extends BaseResourceSchemaVisi
   @SuppressWarnings("unchecked")
   public Iterator<RecordTemplate> getAllMethodsIterator()
   {
-    return new ChainedIterator<RecordTemplate>(_restMethods.iterator(),
-                                               _finders.iterator(),
-                                               _collectionActions.iterator(),
-                                               _entityActions.iterator());
+    return new ChainedIterator<>(_restMethods.iterator(),
+        _finders.iterator(),
+        _batchFinders.iterator(),
+        _collectionActions.iterator(),
+        _entityActions.iterator());
   }
 
   @Override
@@ -137,6 +147,17 @@ public class MethodGatheringResourceSchemaVisitor extends BaseResourceSchemaVisi
   }
 
   @Override
+  public void visitBatchFinder(VisitContext context,
+      RecordTemplate parentResource,
+      BatchFinderSchema batchFinderSchema)
+  {
+    if (isTargetResourcePath(context))
+    {
+      _batchFinders.add(batchFinderSchema);
+    }
+  }
+
+  @Override
   public void visitRestMethod(VisitContext context,
                               RecordTemplate parentResource,
                               RestMethodSchema restMethodSchema)
@@ -152,9 +173,10 @@ public class MethodGatheringResourceSchemaVisitor extends BaseResourceSchemaVisi
     return _resourceNames.contains(visitContext.getResourcePath());
   }
 
-  private final Set<String> _resourceNames = new HashSet<String>();
-  private final Set<RestMethodSchema> _restMethods = new HashSet<RestMethodSchema>();
-  private final Set<FinderSchema> _finders = new HashSet<FinderSchema>();
-  private final Set<ActionSchema> _collectionActions = new HashSet<ActionSchema>();
-  private final Set<ActionSchema> _entityActions = new HashSet<ActionSchema>();
+  private final Set<String> _resourceNames = new HashSet<>();
+  private final Set<RestMethodSchema> _restMethods = new HashSet<>();
+  private final Set<FinderSchema> _finders = new HashSet<>();
+  private final Set<BatchFinderSchema> _batchFinders = new HashSet<>();
+  private final Set<ActionSchema> _collectionActions = new HashSet<>();
+  private final Set<ActionSchema> _entityActions = new HashSet<>();
 }

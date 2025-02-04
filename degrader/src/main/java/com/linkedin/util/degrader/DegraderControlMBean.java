@@ -20,6 +20,7 @@
 
 package com.linkedin.util.degrader;
 
+import com.linkedin.common.stats.LongStats;
 import java.util.Date;
 
 /**
@@ -48,6 +49,15 @@ public interface DegraderControlMBean
   double getErrorRate();
   long   getOutstandingLatency();
   int    getOutstandingCount();
+  default boolean isHigh()
+  {
+    return false;
+  }
+  default boolean isLow()
+  {
+    return false;
+  }
+  default LongStats getCallTimeStats() { return new LongStats();}
 
   // Control attributes
 
@@ -65,6 +75,9 @@ public interface DegraderControlMBean
   long getHighOutstanding();
   long getLowOutstanding();
   int getMinOutstandingCount();
+  default double getInitialDropRate() { return 0.0;}
+  default double getLogThreshold() { return 0.0; }
+  double getPreemptiveRequestTimeoutRate();
 
   void setLogEnabled(boolean logEnabled);
   void setLatencyToUse(String latencyToUse);
@@ -80,6 +93,8 @@ public interface DegraderControlMBean
   void setHighOutstanding(long highOutstanding);
   void setLowOutstanding(long lowOutstanding);
   void setMinOutstandingCount(int minOutstandingCount);
+  default void setLogThreshold(double threshold) {};
+  void setPreemptiveRequestTimeoutRate(double preemptiveRequestTimeoutRate);
 
   void reset();
 }

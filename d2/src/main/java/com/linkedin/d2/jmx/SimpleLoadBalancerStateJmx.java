@@ -17,6 +17,7 @@
 package com.linkedin.d2.jmx;
 
 import com.linkedin.d2.balancer.clients.TrackerClient;
+import com.linkedin.d2.discovery.stores.zk.SymlinkUtil;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -39,6 +40,12 @@ public class SimpleLoadBalancerStateJmx implements SimpleLoadBalancerStateJmxMBe
   public int getClusterCount()
   {
     return _state.getClusterCount();
+  }
+
+  @Override
+  public long getSymlinkClusterCount()
+  {
+    return _state.getClusters().stream().filter(SymlinkUtil::isSymlinkNodeOrPath).count();
   }
 
   @Override
@@ -68,13 +75,13 @@ public class SimpleLoadBalancerStateJmx implements SimpleLoadBalancerStateJmxMBe
   @Override
   public List<String> getSupportedSchemes()
   {
-    return new ArrayList<String>(_state.getSupportedSchemes());
+    return new ArrayList<>(_state.getSupportedSchemes());
   }
 
   @Override
   public List<String> getSupportedStrategies()
   {
-    return new ArrayList<String>(_state.getSupportedStrategies());
+    return new ArrayList<>(_state.getSupportedStrategies());
   }
 
   @Override

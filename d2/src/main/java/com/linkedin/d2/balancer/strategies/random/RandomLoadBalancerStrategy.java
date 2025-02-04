@@ -18,16 +18,24 @@ package com.linkedin.d2.balancer.strategies.random;
 
 import com.linkedin.d2.balancer.clients.TrackerClient;
 import com.linkedin.d2.balancer.strategies.LoadBalancerStrategy;
+import com.linkedin.d2.balancer.util.hashing.HashFunction;
+import com.linkedin.d2.balancer.util.hashing.RandomHash;
 import com.linkedin.d2.balancer.util.hashing.Ring;
 import com.linkedin.r2.message.Request;
 import com.linkedin.r2.message.RequestContext;
 
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import javax.annotation.Nonnull;
 
 public class RandomLoadBalancerStrategy implements LoadBalancerStrategy
 {
+  public static final String RANDOM_STRATEGY_NAME = "random";
+
   private final Random _random;
 
   public RandomLoadBalancerStrategy()
@@ -35,10 +43,17 @@ public class RandomLoadBalancerStrategy implements LoadBalancerStrategy
     _random = new Random();
   }
 
+  @Nonnull
   @Override
-  public Ring<URI> getRing(long clusterGenerationId, int partitionId, List<TrackerClient> trackerClients)
+  public Ring<URI> getRing(long clusterGenerationId, int partitionId, Map<URI, TrackerClient> trackerClients)
   {
     throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public HashFunction<Request> getHashFunction()
+  {
+    return new RandomHash();
   }
 
   @Override
@@ -46,13 +61,21 @@ public class RandomLoadBalancerStrategy implements LoadBalancerStrategy
                                         RequestContext requestContext,
                                         long clusterGenerationId,
                                         int partitionId,
-                                        List<TrackerClient> trackerClients)
+                                        Map<URI, TrackerClient> trackerClients)
   {
-    if (trackerClients.size() > 0)
+    int size = trackerClients.size();
+    if (size > 0)
     {
-      return trackerClients.get(_random.nextInt(trackerClients.size()));
+      List<TrackerClient> trackerClientList = new ArrayList<>(trackerClients.values());
+      return trackerClientList.get(_random.nextInt(trackerClients.size()));
     }
 
     return null;
+  }
+
+  @Override
+  public String getName()
+  {
+    return RANDOM_STRATEGY_NAME;
   }
 }

@@ -44,7 +44,7 @@ public class AnnotationSet
    */
   public AnnotationSet(final Annotation[] annos)
   {
-    _map = new HashMap<Class<? extends Annotation>, Annotation>();
+    _map = new HashMap<>();
     for (Annotation anno : annos)
     {
       _map.put(anno.annotationType(), anno);
@@ -76,7 +76,8 @@ public class AnnotationSet
    * @param classes annotations to count
    * @return number of annotations out of the input array present in the set
    */
-  public int count(final Class<? extends Annotation> ... classes)
+  @SafeVarargs
+  public final int count(final Class<? extends Annotation>... classes)
   {
     int result = 0;
     for (Class<? extends Annotation> clazz : classes)

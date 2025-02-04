@@ -18,20 +18,32 @@ package com.linkedin.data.schema;
 
 
 import com.linkedin.data.Data;
+import com.linkedin.data.DataComplex;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.codec.DataLocation;
 import com.linkedin.data.codec.JacksonDataCodec;
-import com.linkedin.data.schema.resolver.DefaultDataSchemaResolver;
+import com.linkedin.data.message.MessageUtil;
 
+import com.linkedin.data.schema.grammar.PdlSchemaParser;
+import com.linkedin.data.schema.resolver.DefaultDataSchemaResolver;
+import com.linkedin.data.schema.validation.CoercionMode;
+import com.linkedin.data.schema.validation.RequiredMode;
+import com.linkedin.data.schema.validation.ValidateDataAgainstSchema;
+import com.linkedin.data.schema.validation.ValidationOptions;
+import com.linkedin.data.schema.validation.ValidationResult;
+import com.linkedin.util.FileUtil;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -45,17 +57,17 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
   /**
    * Constructor with resolver.
    *
-   * @param resolver to be used to find {@link DataSchema}'s.
+   * @param resolver to be used to find {@link DataSchema}s.
    */
   protected AbstractSchemaParser(DataSchemaResolver resolver)
   {
-    _resolver = resolver;
+    _resolver = resolver == null ? new DefaultDataSchemaResolver() : resolver;
   }
 
   /**
    * Get the {@link DataSchemaResolver}.
    *
-   * @return the resolver to used to find {@link DataSchema}'s, may be null
+   * @return the resolver to used to find {@link DataSchema}s, may be null
    *         if no resolver has been provided to parser.
    */
   public DataSchemaResolver getResolver()
@@ -64,12 +76,12 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
   }
 
   /**
-   * Return the top level {@link DataSchema}'s.
+   * Return the top level {@link DataSchema}s.
    *
    * The top level DataSchema's represent the types
    * that are not defined within other types.
    *
-   * @return the list of top level {@link DataSchema}'s in the
+   * @return the list of top level {@link DataSchema}s in the
    *         order that are defined.
    */
   public List<DataSchema> topLevelDataSchemas()
@@ -82,6 +94,25 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
     return _dataLocationMap;
   }
 
+  /**
+   * Set the {@link ValidationOptions} used to validate default values.
+   *
+   * @param validationOptions used to validate default values.
+   */
+  public void setValidationOptions(ValidationOptions validationOptions)
+  {
+    _validationOptions = validationOptions;
+  }
+
+  /**
+   * Return the {@link ValidationOptions} used to validate default values.
+   *
+   * @return the {@link ValidationOptions} used to validate default values.
+   */
+  public ValidationOptions getValidationOptions()
+  {
+    return _validationOptions;
+  }
 
   /**
    * Bind name and aliases to {@link NamedDataSchema}.
@@ -99,7 +130,12 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
     {
       for (Name aliasName : aliasNames)
       {
-        ok &= bindNameToSchema(aliasName, schema);
+        // Avro allows for self referential aliases (where the alias is the same as the FQN).
+        // There is no need to bind a self-referential alias to itself.
+        if (!Objects.equals(aliasName.getFullName(), name.getFullName()))
+        {
+          ok &= bindNameToSchema(aliasName, schema);
+        }
       }
     }
     return ok;
@@ -127,10 +163,18 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
     }
     if (ok)
     {
-      DataSchema found = getResolver().existingDataSchema(name.getFullName());
+      DataSchemaLocation found = getResolver().existingSchemaLocation(name.getFullName());
       if (found != null)
       {
-        startErrorMessage(name).append("\"").append(name.getFullName()).append("\" already defined as " + found + ".\n");
+        if (found == DataSchemaLocation.NO_LOCATION)
+        {
+          startErrorMessage(name).append("\"").append(name.getFullName())
+                  .append("\" already defined as " + getResolver().existingDataSchema(name.getFullName()) + ".\n");
+        }
+        else
+        {
+          startErrorMessage(name).append("\"").append(name.getFullName()).append("\" already defined at " + found + ".\n");
+        }
         ok = false;
       }
       else
@@ -153,8 +197,44 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
     if (schema == null)
     {
       schema = getResolver().findDataSchema(fullName, errorMessageBuilder());
+      if (schema != null)
+      {
+        checkForCycleWithInclude(((NamedDataSchema) schema).getFullName());
+      }
     }
     return schema;
+  }
+
+  protected void checkForCycleWithInclude(String fullName)
+  {
+    LinkedHashMap<String, Boolean> pendingSchemas = getResolver().getPendingSchemas();
+    // Return if there is no cycle.
+    if (!pendingSchemas.containsKey(fullName))
+    {
+      return;
+    }
+
+    boolean cycleFound = false;
+    List<String> schemasInCycle = new ArrayList<>(pendingSchemas.size());
+    for (Map.Entry<String, Boolean> pendingSchema : pendingSchemas.entrySet())
+    {
+      // Lookup the schema that started the cycle.
+      if (cycleFound || pendingSchema.getKey().equals(fullName))
+      {
+        cycleFound = true;
+        // Get all the schemas that form the cycle.
+        schemasInCycle.add(pendingSchema.getKey());
+      }
+    }
+    // Add error message if there is an include in the cycle.
+    if (schemasInCycle.stream().anyMatch(pendingSchemas::get))
+    {
+      startErrorMessage(fullName)
+          .append("\"").append(fullName).append("\"")
+          .append(" cannot be parsed as it is part of circular reference involving includes.")
+          .append(" Record(s) with include in the cycle: ")
+          .append(schemasInCycle);
+    }
   }
 
   /**
@@ -246,6 +326,29 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
   }
 
   /**
+   * Set the current package.
+   *
+   * Current package for generated data bindings. It is prepended to the unqualified name of pegasus types to produce the
+   * fully qualified data binding name.
+   *
+   * @param packageName to set as current package.
+   */
+  public void setCurrentPackage(String packageName)
+  {
+    _currentPackage = packageName;
+  }
+
+  /**
+   * Get the current package.
+   *
+   * @return the current package.
+   */
+  public String getCurrentPackage()
+  {
+    return _currentPackage;
+  }
+
+  /**
    * Return the {@link StringBuilder} containing the error message from parsing.
    *
    * @return the {@link StringBuilder} containing the error message from parsing.
@@ -334,6 +437,45 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
     // this allows error messages such re-definition of a name to include a location.
     addToDataLocationMap(name, lookupDataLocation(nameString));
     return name;
+  }
+
+  /**
+   * Parse a {@link DataMap} to obtain a package name for data binding.
+   *
+   * Return the package name if explicitly specified for the named schema in the {@link DataMap}. If package is not
+   * specified, there are three cases:
+   * <p><ul>
+   * <li>If the namespace of the named schema is the same as currentNamespace, then it should inherit currentPackage as its package.
+   * <li>If the namespace of the named schema is a sub-namespace of currentNamespace, then it should inherit currentPackage as its package prefix and
+   * its package should be a sub-package of currentPackage.
+   * <li>Otherwise, we will return null for the package name to indicate that no package override for this named schema, and by default its namespace
+   * will be used in generating data binding.
+   * </ul><p>
+   *
+   * @param map to parse.
+   * @param packageKey is the key used to find the package in the map.
+   * @param currentPackage is the current package.
+   * @param currentNamespace is the current namespace.
+   * @param name {@link Name} parsed from the {@link DataMap}
+   * @return the package name for current named schema.
+   */
+  protected String getPackageFromDataMap(DataMap map, String packageKey, String currentPackage, String currentNamespace, Name name)
+  {
+    String packageName = getString(map, packageKey, false);
+    if (packageName == null)
+    {
+      packageName = currentPackage;
+      // check if the namespace of the named schema is a sub-namespace of currentNamespace, then it should inherit currentPackage as its package
+      // prefix and its package should be a sub-package of currentPackage. This normally happens for a nested named schema with a fully qualified
+      // name specified in its "name" field in the DataMap.
+      if (name.getNamespace().startsWith(currentNamespace + ".") && packageName != null && !packageName.isEmpty())
+      {
+        // in this case, if package is not explicitly specified, we should append sub-namespace to saveCurrentPackage
+        // but if saveCurrentPackage is not specified, then we should treat no package override for this nested type.
+        packageName += name.getNamespace().substring(currentNamespace.length());
+      }
+    }
+    return packageName;
   }
 
   /**
@@ -586,7 +728,7 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
     List<String> list = null;
     if (dataList != null)
     {
-      list = new ArrayList<String>();
+      list = new ArrayList<>();
       for (Object o : dataList)
       {
         if (o instanceof String)
@@ -612,31 +754,57 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
   protected Map<String, Object> extractProperties(DataMap map, Set<String> reserved)
   {
     // Use TreeMap to keep properties in sorted order.
-    Map<String, Object> props = new TreeMap<String, Object>();
+    Map<String, Object> props = new TreeMap<>();
     for (Map.Entry<String, Object> e : map.entrySet())
     {
       String key = e.getKey();
-      if (reserved.contains(key) == false)
+      if (!reserved.contains(key))
       {
         Object value = e.getValue();
-        if (value != Data.NULL)
-        {
-          Object replaced = props.put(key, value);
-          assert(replaced == null);
-        }
-        else
-        {
-          startErrorMessage(value).append("\"").append(key).append("\" is a property and its value must not be null.\n");
-        }
+        Object replaced = props.put(key, value);
+        assert(replaced == null);
       }
     }
     return props;
   }
 
   /**
+   * Validate that the default value complies with the {@link DataSchema} of the record.
+   *
+   * @param recordSchema of the record.
+   */
+  protected void validateDefaults(RecordDataSchema recordSchema)
+  {
+    for (RecordDataSchema.Field field : recordSchema.getFields())
+    {
+      Object value = field.getDefault();
+      if (value != null)
+      {
+        DataSchema valueSchema = field.getType();
+        ValidationResult result = ValidateDataAgainstSchema.validate(value, valueSchema, _validationOptions);
+        if (result.isValid() == false)
+        {
+          startErrorMessage(value).
+              append("Default value ").append(value).
+              append(" of field \"").append(field.getName()).
+              append("\" declared in record \"").append(recordSchema.getFullName()).
+              append("\" failed validation.\n");
+          MessageUtil.appendMessages(errorMessageBuilder(), result.getMessages());
+        }
+        Object fixed = result.getFixed();
+        field.setDefault(fixed);
+      }
+      if (field.getDefault() instanceof DataComplex)
+      {
+        ((DataComplex) field.getDefault()).setReadOnly();
+      }
+    }
+  }
+
+  /**
    * Set the current location for the source of input to the parser.
    *
-   * This current location is will be used to annotate {@link NamedDataSchema}'s
+   * This current location is will be used to annotate {@link NamedDataSchema}s
    * generated from parsing.
    *
    * @param location of the input source.
@@ -738,6 +906,43 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
     }
   }
 
+  protected void checkTyperefCycle(TyperefDataSchema sourceSchema, DataSchema refSchema)
+  {
+    if (refSchema == null)
+    {
+      return;
+    }
+    if (refSchema.getType() == DataSchema.Type.TYPEREF)
+    {
+      if (sourceSchema.getFullName().equals(((TyperefDataSchema) refSchema).getFullName()))
+      {
+        startErrorMessage(sourceSchema.getFullName()).append("\"")
+            .append(sourceSchema.getFullName())
+            .append("\"")
+            .append(" cannot be parsed as the typeref has a circular reference to itself.");
+      }
+      else
+      {
+        checkTyperefCycle(sourceSchema, ((TyperefDataSchema) refSchema).getRef());
+      }
+    }
+    else if (refSchema.getType() == DataSchema.Type.UNION)
+    {
+      for (UnionDataSchema.Member member : ((UnionDataSchema) refSchema).getMembers())
+      {
+        checkTyperefCycle(sourceSchema, member.getType());
+      }
+    }
+    else if (refSchema.getType() == DataSchema.Type.ARRAY)
+    {
+      checkTyperefCycle(sourceSchema, ((ArrayDataSchema) refSchema).getItems());
+    }
+    else if (refSchema.getType() == DataSchema.Type.MAP)
+    {
+      checkTyperefCycle(sourceSchema, ((MapDataSchema) refSchema).getValues());
+    }
+  }
+
   /**
    * Used to store the message returned by a callee.
    *
@@ -762,10 +967,45 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
 
   /**
    * Current namespace, used to determine full name from unqualified name.
+   * This is used for over-the-wire rest.li protocol.
    */
   private String _currentNamespace = "";
 
-  private final Map<Object, DataLocation> _dataLocationMap = new IdentityHashMap<Object, DataLocation>();
-  private final List<DataSchema> _topLevelDataSchemas = new ArrayList<DataSchema>();
+  /**
+   * Current package, used to pass package override information to nested unqualified name.
+   * This is used for generated data models to resolve class name conflict.
+   */
+  private String _currentPackage = "";
+
+  private final Map<Object, DataLocation> _dataLocationMap = new IdentityHashMap<>();
+  private final List<DataSchema> _topLevelDataSchemas = new ArrayList<>();
   private final DataSchemaResolver _resolver;
+
+  public static final ValidationOptions getDefaultSchemaParserValidationOptions()
+  {
+    return new ValidationOptions(RequiredMode.CAN_BE_ABSENT_IF_HAS_DEFAULT, CoercionMode.NORMAL);
+  }
+
+  private ValidationOptions _validationOptions = getDefaultSchemaParserValidationOptions();
+
+  public static PegasusSchemaParser parserForFile(File schemaSourceFile, DataSchemaResolver resolver)
+  {
+    return parserForFileExtension(FileUtil.getExtension(schemaSourceFile), resolver);
+  }
+
+  public static PegasusSchemaParser parserForFileExtension(String extension, DataSchemaResolver resolver)
+  {
+    if (extension.equals(SchemaParser.FILETYPE))
+    {
+      return new SchemaParser(resolver);
+    }
+    else if (extension.equals(PdlSchemaParser.FILETYPE))
+    {
+      return new PdlSchemaParser(resolver);
+    }
+    else
+    {
+      throw new IllegalArgumentException("Unrecognized file extension: " + extension);
+    }
+  }
 }

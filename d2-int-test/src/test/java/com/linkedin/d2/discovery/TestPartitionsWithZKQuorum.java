@@ -84,7 +84,7 @@ public class TestPartitionsWithZKQuorum extends D2BaseTest
                                                 InterruptedException,
                                                 Exception
   {
-    _echoServers = new ArrayList<LoadBalancerEchoServer>();
+    _echoServers = new ArrayList<>();
     setup();
     assertEquals(LoadBalancerClientCli.runDiscovery(_quorum.getHosts(), "/d2", D2_CONFIG_DEFAULT_PARTITION_DATA), 0);
     _cli = new LoadBalancerClientCli(_quorum.getHosts(), "/d2");
@@ -109,14 +109,14 @@ public class TestPartitionsWithZKQuorum extends D2BaseTest
                                                 InterruptedException,
                                                 Exception
   {
-    _echoServers = new ArrayList<LoadBalancerEchoServer>();
+    _echoServers = new ArrayList<>();
     setup();
     assertEquals(LoadBalancerClientCli.runDiscovery(_quorum.getHosts(), "/d2", D2_CONFIG_CUSTOM_PARTITION_DATA), 0);
     _cli = new LoadBalancerClientCli(_quorum.getHosts(), "/d2");
     _client = _cli.createZKFSTogglingLBClient(_quorum.getHosts(), "/d2", null);
     // Echo servers startup
-    Map<Integer, Double> partitionWeight = new HashMap<Integer, Double>();
-    partitionWeight.put(new Integer(1), new Double(1.0d));
+    Map<Integer, Double> partitionWeight = new HashMap<>();
+    partitionWeight.put(Integer.valueOf(1), Double.valueOf(1.0d));
     startCustomPartitionEchoServers(partitionWeight);
     assertAllEchoServersRegistered(_cli.getZKClient(), _zkUriString, _echoServers);
     assertQuorumProcessAllRequests(D2_CONFIG_CUSTOM_PARTITION_DATA);
@@ -135,14 +135,14 @@ public class TestPartitionsWithZKQuorum extends D2BaseTest
                                                 InterruptedException,
                                                 Exception
   {
-    _echoServers = new ArrayList<LoadBalancerEchoServer>();
+    _echoServers = new ArrayList<>();
     setup();
     assertEquals(LoadBalancerClientCli.runDiscovery(_quorum.getHosts(), "/d2", D2_CONFIG_DATA), 0);
     _cli = new LoadBalancerClientCli(_quorum.getHosts(), "/d2");
     _client = _cli.createZKFSTogglingLBClient(_quorum.getHosts(), "/d2", null);
     // Echo servers startup
-    Map<Integer, Double> partitionWeight = new HashMap<Integer, Double>();
-    partitionWeight.put(new Integer(1), new Double(1.0d));
+    Map<Integer, Double> partitionWeight = new HashMap<>();
+    partitionWeight.put(Integer.valueOf(1), Double.valueOf(1.0d));
     startAllEchoServers(partitionWeight);
     assertAllEchoServersRegistered(_cli.getZKClient(), _zkUriString, _echoServers);
     assertQuorumProcessAllRequests(D2_CONFIG_DATA);
@@ -168,8 +168,10 @@ public class TestPartitionsWithZKQuorum extends D2BaseTest
 
   private void startCustomPartitionEchoServers(Map<Integer, Double> partitionWeight) throws Exception
   {
-    _echoServers.add(startEchoServer(getHost(_zkHosts[0]), getPort(_zkHosts[0]), ECHO_SERVER_HOST, ECHO_SERVER_PORT4, "cluster-4", partitionWeight, "service-4_11", "service-4_12", "service-4_13" ));
-    _echoServers.add(startEchoServer(getHost(_zkHosts[0]), getPort(_zkHosts[0]), ECHO_SERVER_HOST, ECHO_SERVER_PORT5, "cluster-4", partitionWeight, "service-4_11", "service-4_12", "service-4_13" ));
+    _echoServers.add(startEchoServer(getHost(_zkHosts[0]), getPort(_zkHosts[0]), ECHO_SERVER_HOST, ECHO_SERVER_PORT4, "cluster-4", partitionWeight,
+        false, "service-4_11", "service-4_12", "service-4_13" ));
+    _echoServers.add(startEchoServer(getHost(_zkHosts[0]), getPort(_zkHosts[0]), ECHO_SERVER_HOST, ECHO_SERVER_PORT5, "cluster-4", partitionWeight,
+        false, "service-4_11", "service-4_12", "service-4_13" ));
   }
 
   private void startAllEchoServers(Map<Integer, Double> partitionWeight) throws Exception

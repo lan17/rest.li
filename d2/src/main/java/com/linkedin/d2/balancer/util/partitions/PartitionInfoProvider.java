@@ -40,19 +40,17 @@ public interface PartitionInfoProvider
    * @param keys all the keys we want to find the partition for.
    *             if it's null we will return hosts in all partitions
    * @param hash this will be used to help determine the host uri that we return
-   * @return
-   * @throws ServiceUnavailableException
    */
-  public <K> HostToKeyMapper<K> getPartitionInformation(URI serviceUri, Collection<K> keys, int limitHostPerPartition, int hash)
+  <K> HostToKeyMapper<K> getPartitionInformation(URI serviceUri, Collection<K> keys, int limitHostPerPartition,
+      int hash)
       throws ServiceUnavailableException;
 
 
   /**
    * Provides a partitionAccessor object that can tell which partition a key belongs to.
-   * 
-   * @param serviceUri for example d2://articles
+   *
+   * @param serviceName for request d2://articles, serviceName is articles
    * @return partitionAccessor
-   * @throws ServiceUnavailableException
    */
-  public PartitionAccessor getPartitionAccessor(URI serviceUri) throws ServiceUnavailableException;
+  PartitionAccessor getPartitionAccessor(String serviceName) throws ServiceUnavailableException;
 }

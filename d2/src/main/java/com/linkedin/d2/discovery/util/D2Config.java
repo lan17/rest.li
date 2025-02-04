@@ -155,22 +155,22 @@ public class D2Config
   public int configure() throws Exception
   {
     // original map derived from properties file
-    Map<String,Object> clusterServiceConfiguration = merge(_clusterServiceConfigurations);
+    Map<String, Object> clusterServiceConfiguration = merge(_clusterServiceConfigurations);
     // map of clusterName -> cluster configuration
-    Map<String,Map<String,Object>> clusters = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clusters = new HashMap<>();
     // map of serviceName -> service configuration
-    Map<String,Map<String,Object>> services = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> services = new HashMap<>();
     // Ugly. But this is a map of service groups, so it needs to reflect multiple services maps.
-    Map<String,Map<String,Map<String,Object>>> serviceVariants = new HashMap<String,Map<String,Map<String,Object>>>();
+    Map<String, Map<String, Map<String, Object>>> serviceVariants = new HashMap<>();
 
     // temporary mapping from cluster name to services map, to aid in create cluster variants and
     // service groups.
-    Map<String,Map<String,Map<String,Object>>> clusterToServiceMapping = new HashMap<String,Map<String,Map<String,Object>>>();
+    Map<String, Map<String, Map<String, Object>>> clusterToServiceMapping = new HashMap<>();
     int status;
     // temporary mapping from cluster name to the list of colo variants it has.
-    Map<String,List<String>> variantToVariantsMapping = new HashMap<String, List<String>>();
+    Map<String, List<String>> variantToVariantsMapping = new HashMap<>();
     // temporary mapping from cluster name to coloVariant ClusterNames list.
-    Map<String, List<String>> clusterToColoClustersMapping = new HashMap<String, List<String>>();
+    Map<String, List<String>> clusterToColoClustersMapping = new HashMap<>();
     // mapping from regular cluster name to the list of containing services
     // which will be added as children of the regular cluster znode.
     Map<String, List<String>> regularClusterToServicesMapping = new HashMap<>();
@@ -235,6 +235,8 @@ public class D2Config
       final String masterColo = (String)clusterConfig.remove(PropertyKeys.MASTER_COLO);
       final String enableSymlinkString = (String)clusterConfig.remove(PropertyKeys.ENABLE_SYMLINK);
       final boolean enableSymlink;
+      @SuppressWarnings("unchecked")
+      final List<String> bannedUris = (List<String>) clusterConfig.remove(PropertyKeys.BANNED_URIS);
 
       regularClusterToServicesMapping.put(clusterName, servicesConfigs.keySet().stream().collect(Collectors.toList()));
 
@@ -262,7 +264,7 @@ public class D2Config
       }
 
       Map<String, String> clusterProperties = new HashMap<>();
-      if (coloVariants != null && coloVariants.size() > 0)
+      if (coloVariants != null && coloVariants.size() > 0 && !(coloVariants.size() == 1 && coloVariants.contains("")))
       {
         clusterProperties.put(PropertyKeys.COLO_VARIANTS, String.join(LIST_SEPARATOR, coloVariants));
       }
@@ -275,6 +277,10 @@ public class D2Config
         clusterProperties.put(PropertyKeys.CLUSTER_VARIANTS, String.join(LIST_SEPARATOR, clusterVariantConfig.keySet()));
       }
       clusterConfig.put(PropertyKeys.CLUSTER_PROPERTIES, clusterProperties);
+      if (bannedUris != null)
+      {
+        clusterConfig.put(PropertyKeys.BANNED_URIS, bannedUris);
+      }
 
       // rather than handling the coloVariant case separately from the regular cluster case, we will
       // treat regular clusters as having an empty-string coloVariant list. This allows us to have a
@@ -307,7 +313,7 @@ public class D2Config
         // coloServicesConfigs are the set of d2 services in this cluster in this colo
         // for the regular cluster case I could avoid creation of a new HashMap for both coloServicesConfig
         // and coloServiceConfig, as an optimization at the expense of simplicity.
-        Map<String,Map<String,Object>> coloServicesConfigs = new HashMap<String, Map<String, Object>>();
+        Map<String, Map<String, Object>> coloServicesConfigs = new HashMap<>();
 
         // Only create the default services once, and only when we have an empty colo string or the
         // colo matches the default colo.
@@ -343,7 +349,7 @@ public class D2Config
           Map<String, Object> transportClientConfig = (Map<String, Object>) transportClientProperty;
           serviceConfig.put(PropertyKeys.TRANSPORT_CLIENT_PROPERTIES, transportClientConfig);
 
-          Map<String,Object> coloServiceConfig = new HashMap<String,Object>(serviceConfig);
+          Map<String, Object> coloServiceConfig = new HashMap<>(serviceConfig);
 
           // we will create the default services when this is a non-colo aware cluster or when the colo
           // matches the default colo. This, along with the defaultServicesCreated flag, ensures we
@@ -359,7 +365,7 @@ public class D2Config
               // Cluster. Why not just use the original service name? We will point the original
               // service name at the local cluster, as well as to make it explicit that requests
               // sent to this service might cross colos, if the master is located in another colo.
-              Map<String,Object> masterServiceConfig = new HashMap<String,Object>(serviceConfig);
+              Map<String, Object> masterServiceConfig = new HashMap<>(serviceConfig);
               String masterServiceName = serviceName + PropertyKeys.MASTER_SUFFIX;
               String masterClusterName;
               if (enableSymlink)
@@ -381,7 +387,7 @@ public class D2Config
             // the colo-agnostic service -> colo-agnostic cluster mapping (fooService -> FooCluster)
             // the latter only being done for regular clusters, the former only being done for clusters
             // that have coloVariants specified.
-            Map<String,Object> regularServiceConfig = new HashMap<String,Object>(serviceConfig);
+            Map<String, Object> regularServiceConfig = new HashMap<>(serviceConfig);
             if (createColoVariantsForService)
             {
               // we set isDefaultService flag only if it is a multi-colo aware service.
@@ -394,7 +400,6 @@ public class D2Config
 
             final String defaultColoClusterName = clusterNameWithRouting(clusterName,
                                                                          colo,
-                                                                         defaultColo,
                                                                          masterColo,
                                                                          defaultRoutingToMasterColo,
                                                                          enableSymlink);
@@ -426,7 +431,7 @@ public class D2Config
         Map<String,Object> coloClusterConfig = clusterConfig;
         if (!clusterName.equals(coloClusterName))
         {
-          coloClusterConfig = new HashMap<String,Object>(clusterConfig);
+          coloClusterConfig = new HashMap<>(clusterConfig);
           coloClusterConfig.put(PropertyKeys.CLUSTER_NAME, coloClusterName);
           if (createDefaultServices)
           {
@@ -441,7 +446,7 @@ public class D2Config
         // list before the cluster variants.
         if (clusterVariantConfig != null)
         {
-          Map<String,Map<String,Object>> coloClusterVariantConfig = new HashMap<String,Map<String,Object>>(clusterVariantConfig);
+          Map<String, Map<String, Object>> coloClusterVariantConfig = new HashMap<>(clusterVariantConfig);
           status = handleClusterVariants(coloClusterVariantConfig, clusterConfig, clusters,
                                      coloServicesConfigs,  clusterToServiceMapping, colo,
                                      variantToVariantsMapping, masterColo, enableSymlink);
@@ -478,7 +483,7 @@ public class D2Config
         // listed clusters, and prep that for writing to a different znode than the default service
         // znode directory. Note that we had already pointed those services to the appropriate cluster
         // variant earlier.
-        Map<String,Map<String,Object>> servicesGroupConfig = new HashMap<String,Map<String,Object>>();
+        Map<String, Map<String, Object>> servicesGroupConfig = new HashMap<>();
         @SuppressWarnings("unchecked")
         Map<String,Object> configGroupMap = (Map<String,Object>) _serviceVariants.get(serviceGroup);
         String type = (String)configGroupMap.get(PropertyKeys.TYPE);
@@ -536,7 +541,7 @@ public class D2Config
         {
           // start from the full list of services, and then overwrite the services specified by the
           // cluster variants.
-          Map<String,Map<String,Object>> fullServiceList = new HashMap<String,Map<String,Object>>(services);
+          Map<String, Map<String, Object>> fullServiceList = new HashMap<>(services);
           fullServiceList.putAll(servicesGroupConfig);
           serviceVariants.put(serviceGroup, fullServiceList);
         }
@@ -611,19 +616,12 @@ public class D2Config
 
   protected static String clusterNameWithRouting(final String clusterName,
                                                  final String destinationColo,
-                                                 final String defaultColo,
                                                  final String masterColo,
                                                  final boolean defaultRoutingToMasterColo,
                                                  final boolean enableSymlink)
   {
     final String defaultColoClusterName;
-    if ("".matches(destinationColo))
-    {
-      // If we didn't have an coloVariants for this cluster, make sure to use the original
-      // cluster name.
-      defaultColoClusterName = clusterName;
-    }
-    else if (defaultRoutingToMasterColo)
+    if (!"".matches(destinationColo) && defaultRoutingToMasterColo)
     {
       // If this service is configured to route all requests to the master colo by default
       // then we need to configure the service to use the master colo.
@@ -638,7 +636,9 @@ public class D2Config
     }
     else
     {
-      defaultColoClusterName = D2Utils.addSuffixToBaseName(clusterName, defaultColo);
+      // For regular service node, if not route to master colo, the cluster name should be the original
+      // cluster without suffix.
+      defaultColoClusterName = clusterName;
     }
     return defaultColoClusterName;
   }
@@ -649,9 +649,9 @@ public class D2Config
                                Map<String, Object> propertyDefaults) throws Exception
   {
     ZooKeeperPermanentStore<T> store = _useDeltaWrite ?
-            new DeltaWriteZooKeeperPermanentStore<T>(_zkConnection, serializer, path) :
-            new ZooKeeperPermanentStore<T>(_zkConnection, serializer, path);
-    ConfigWriter<T> writer = new ConfigWriter<T>(store, builder, properties, propertyDefaults, _timeout,
+            new DeltaWriteZooKeeperPermanentStore<>(_zkConnection, serializer, path) :
+            new ZooKeeperPermanentStore<>(_zkConnection, serializer, path);
+    ConfigWriter<T> writer = new ConfigWriter<>(store, builder, properties, propertyDefaults, _timeout,
             TimeUnit.MILLISECONDS, _maxOutstandingWrites);
     writer.writeConfig();
   }
@@ -666,18 +666,18 @@ public class D2Config
       for (String serviceName : services)
       {
         FutureCallback<None> callback = new FutureCallback<>();
-        _zkConnection.ensurePersistentNodeExists(D2Utils.getServicePathAsChildOfCluster(clusterName, serviceName), callback);
+        _zkConnection.ensurePersistentNodeExists(D2Utils.getServicePathAsChildOfCluster(clusterName, serviceName, _basePath), callback);
         callback.get(_timeout, TimeUnit.MILLISECONDS);
       }
     }
   }
 
-  private Map<String,Object> merge(List<Map<String,Object>> maps)
+  private Map<String, Object> merge(List<Map<String, Object>> maps)
   {
-    Map<String,Object> result = new HashMap<String,Object>();
-    for (Map<String,Object> map : maps)
+    Map<String, Object> result = new HashMap<>();
+    for (Map<String, Object> map : maps)
     {
-      for (Map.Entry<String,Object> e : map.entrySet())
+      for (Map.Entry<String, Object> e : map.entrySet())
       {
         if (result.put(e.getKey(), e.getValue()) != null)
         {
@@ -707,8 +707,7 @@ public class D2Config
         }
         Long partitionSize = PropertyUtil.parseLong(PropertyKeys.PARTITION_SIZE,
                                                     PropertyUtil.checkAndGetValue(partitionProperties, PropertyKeys.PARTITION_SIZE, String.class, clusterName));
-        int partitionCount = PropertyUtil.parseInt(PropertyKeys.PARTITION_COUNT,
-                                                   PropertyUtil.checkAndGetValue(partitionProperties, PropertyKeys.PARTITION_COUNT, String.class, clusterName));
+        int partitionCount = parsePartitionCount(partitionProperties, clusterName);
         Long start = PropertyUtil.parseLong(PropertyKeys.KEY_RANGE_START,
                                             PropertyUtil.checkAndGetValue(partitionProperties, PropertyKeys.KEY_RANGE_START, String.class, clusterName));
 
@@ -745,8 +744,7 @@ public class D2Config
           return PARTITION_CONFIG_ERROR_EXIT_CODE;
         }
 
-        int partitionCount = PropertyUtil.parseInt(PropertyKeys.PARTITION_COUNT,
-                                                   PropertyUtil.checkAndGetValue(partitionProperties, PropertyKeys.PARTITION_COUNT, String.class, clusterName));
+        int partitionCount = parsePartitionCount(partitionProperties, clusterName);
         if (partitionCount < 0)
         {
           _log.error("partition count needs to be non negative");
@@ -769,10 +767,39 @@ public class D2Config
       }
       break;
 
+      case CUSTOM:
+      {
+        int partitionCount = parsePartitionCount(partitionProperties, clusterName);
+        if ( partitionCount < 0)
+        {
+          _log.error("partition count needs to be non negative");
+          return PARTITION_CONFIG_ERROR_EXIT_CODE;
+        }
+        @SuppressWarnings("unchecked")
+        List<String> partitionAccessorList = partitionProperties.containsKey(PropertyKeys.PARTITION_ACCESSOR_LIST)
+            ? PropertyUtil.checkAndGetValue(partitionProperties, PropertyKeys.PARTITION_ACCESSOR_LIST, List.class, clusterName)
+            : Collections.emptyList();
+        partitionProperties.put(PropertyKeys.PARTITION_COUNT, partitionCount);
+        clusterConfig.put(PropertyKeys.PARTITION_ACCESSOR_LIST, partitionAccessorList);
+        break;
+      }
       default:
         break;
     }
     return NO_ERROR_EXIT_CODE;
+  }
+
+  private int parsePartitionCount(Map<String, Object> partitionProperties, String clusterName)
+  {
+    // Partition Count is not a required field for all partition types.
+    // When not presented, set it to 0;
+    if (!partitionProperties.containsKey(PropertyKeys.PARTITION_COUNT))
+    {
+      return 0;
+    }
+
+    return PropertyUtil.parseInt(PropertyKeys.PARTITION_COUNT,
+        PropertyUtil.checkAndGetValue(partitionProperties, PropertyKeys.PARTITION_COUNT, String.class, clusterName));
   }
 
   // clusterToServiceMapping will store the servicesConfig using the clusterVariant name as the key.
@@ -791,6 +818,7 @@ public class D2Config
     for (String variant : clusterVariantConfig.keySet())
     {
       Map<String,Object> varConfig = clusterVariantConfig.get(variant);
+      String defaultColoClusterName = variant;
       String variantColoName = D2Utils.addSuffixToBaseName(variant, coloStr);
       String masterColoName;
       if (enableSymlink)
@@ -813,7 +841,7 @@ public class D2Config
         return EXCEPTION_EXIT_CODE;
       }
 
-      Map<String,Map<String,Object>> varServicesConfig = new HashMap<String,Map<String,Object>>();
+      Map<String, Map<String, Object>> varServicesConfig = new HashMap<>();
 
       // now take a copy of the services for the default sibling cluster and point the
       // services to the cluster variant. We form this clusterToServiceMapping here so it is
@@ -839,6 +867,12 @@ public class D2Config
           // for default services whose defaultRouting = Master, we also want them to
           // point to the master colo.
           varServiceConfig.put(PropertyKeys.CLUSTER_NAME, masterColoName);
+        }
+        else if (defaultServiceString != null && "true".equalsIgnoreCase(defaultServiceString))
+        {
+          // for default services who is not default routing to master, we want them to
+          // point to the variant cluster without suffix, e.g. clusterFoo.
+          varServiceConfig.put(PropertyKeys.CLUSTER_NAME, defaultColoClusterName);
         }
         else
         {
@@ -877,7 +911,7 @@ public class D2Config
     }
     else
     {
-      variantsList = new ArrayList<String>();
+      variantsList = new ArrayList<>();
       variantsList.add(variantName);
       variantToVariantsMapping.put(variant, variantsList);
     }

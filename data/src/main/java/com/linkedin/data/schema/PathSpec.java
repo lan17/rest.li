@@ -22,8 +22,14 @@ package com.linkedin.data.schema;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.regex.Pattern;
+
 
 /**
  * A PathSpec represents a path within a complex data object.  PathSpecs may be obtained from
@@ -41,6 +47,9 @@ public class PathSpec
   //use this specific instance to differentiate a true wildcard from a "*" key
   public static final String WILDCARD = new String("*");
 
+  public static final String ATTR_ARRAY_START = "start";
+  public static final String ATTR_ARRAY_COUNT = "count";
+
   /**
    * Construct a new {@link PathSpec} from a list of parent segments and a current
    * segment.
@@ -50,7 +59,7 @@ public class PathSpec
    */
   public PathSpec(List<String> parentPath, String segment)
   {
-    _path = new ArrayList<String>(parentPath.size()+1);
+    _path = new ArrayList<>(parentPath.size()+1);
     _path.addAll(parentPath);
     _path.add(segment);
   }
@@ -62,7 +71,7 @@ public class PathSpec
    */
   public PathSpec(String segment)
   {
-    _path = new ArrayList<String>(1);
+    _path = new ArrayList<>(1);
     _path.add(segment);
   }
 
@@ -73,7 +82,18 @@ public class PathSpec
    */
   public PathSpec(String... segments)
   {
-    _path = new ArrayList<String>(Arrays.asList(segments));
+    _path = new ArrayList<>(Arrays.asList(segments));
+  }
+
+  /**
+   * Construct a new {@link PathSpec} from {@link java.util.Collection} type
+   *
+   * @param pathSpecCollection the collection that contains path segments.
+   */
+  public PathSpec(Collection<String> pathSpecCollection)
+  {
+    _path = new ArrayList<>(pathSpecCollection.size());
+    _path.addAll(pathSpecCollection);
   }
 
   /**
@@ -82,6 +102,11 @@ public class PathSpec
   public PathSpec()
   {
     _path = Collections.emptyList();
+  }
+
+  public void setAttribute(String name, Object value)
+  {
+    _attributes.put(name, value);
   }
 
   /**
@@ -99,6 +124,36 @@ public class PathSpec
     return Collections.unmodifiableList(_path);
   }
 
+  /**
+   * Specifies whether this PathSpec has no segment
+   * @return <code>true</code> if this pathSpec has no segment, <code>false</code> otherwise
+   */
+  public boolean isEmptyPath()
+  {
+    return _path.isEmpty();
+  }
+
+  public Map<String, Object> getPathAttributes()
+  {
+    return Collections.unmodifiableMap(_attributes);
+  }
+
+  /**
+   * Returns a new PathSpec using the same path as this PathSpec but truncated of its last element.
+   * The parent of an empty PathSpec is itself.
+   */
+  public PathSpec getParent()
+  {
+    if (_path.size() <= 1)
+    {
+      return emptyPath();
+    }
+    else
+    {
+      return new PathSpec(_path.subList(0, _path.size() - 1));
+    }
+  }
+
   @Override
   public String toString()
   {
@@ -109,7 +164,32 @@ public class PathSpec
       rep.append(s);
     }
 
+    boolean beforeAttributes = true;
+    if (!_attributes.isEmpty())
+    {
+      for (Map.Entry<String, Object> attribute: _attributes.entrySet())
+      {
+        rep.append(beforeAttributes ? PATH_ATTR_SEPARATOR : ATTR_SEPARATOR);
+        rep.append(attribute.getKey());
+        rep.append(ATTR_KEY_VALUE_SEPARATOR);
+        rep.append(attribute.getValue());
+
+        beforeAttributes = false;
+      }
+    }
+
     return rep.toString();
+  }
+
+  /**
+   * Test whether a string match the syntax pattern of {@link PathSpec#toString()}
+   *
+   * @param pathSpecStr string under validation
+   * @return whether it is valid
+   */
+  public static boolean validatePathSpecString(String pathSpecStr)
+  {
+    return PATHSPEC_PATTERN.matcher(pathSpecStr).matches();
   }
 
   @Override
@@ -134,7 +214,8 @@ public class PathSpec
           return false;
         }
       }
-      return true;
+
+      return Objects.equals(_attributes, other._attributes);
     }
     return false;
   }
@@ -142,10 +223,15 @@ public class PathSpec
   @Override
   public int hashCode()
   {
-    return _path.hashCode();
+    return Objects.hash(_path, _attributes);
   }
 
   private final List<String> _path;
+  private final Map<String, Object> _attributes = new HashMap<>();
   private static final PathSpec EMPTY_PATH_SPEC = new PathSpec();
-  private static final char SEPARATOR = '/';
+  public static final char SEPARATOR = '/';
+  private static final char ATTR_SEPARATOR = '&';
+  private static final char PATH_ATTR_SEPARATOR = '?';
+  private static final char ATTR_KEY_VALUE_SEPARATOR = '=';
+  private static final Pattern PATHSPEC_PATTERN = Pattern.compile(String.format("^(%s[^%<s\\s]+)+", SEPARATOR));
 }

@@ -16,7 +16,6 @@
 
 package com.linkedin.restli.internal.common;
 
-
 import com.linkedin.data.DataComplex;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
@@ -28,8 +27,8 @@ import com.linkedin.restli.common.ComplexResourceKey;
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.ProtocolVersion;
 import com.linkedin.restli.common.RestConstants;
-
 import java.io.UnsupportedEncodingException;
+import java.net.URI;
 import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,53 +36,62 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 
 /**
  * A utility class for creating URI parameters in the rest.li 2.0 URI style.
  *
- * @see {@link URIElementParser} for parsing 2.0 URI
+ * @see URIElementParser URIElementParser for parsing 2.0 URIs
  *
  * @author Moira Tagle
  * @version $Revision: $
  */
-
 public class URIParamUtils
 {
   private static final String[] _EMPTY_STRING_ARRAY = new String[0];
-
-  private static Map<String, String> dataMapToQueryParams(DataMap dataMap)
-  {
-    final Map<String, String> result = encodeDataMapParameters(dataMap);
-
-    //Walk through the pipeline
-    for (final String parameterName : RestConstants.PROJECTION_PARAMETERS)
-    {
-      if (dataMap.containsKey(parameterName))
-      {
-        result.put(parameterName, URIMaskUtil.encodeMaskForURI(dataMap.getDataMap(parameterName)));
-      }
-    }
-
-    return result;
-  }
+  private static final Pattern NORMALIZED_URI_PATTERN = Pattern.compile("(^/|/$)");
+  private static final Pattern URI_SEPARATOR_PATTERN = Pattern.compile("/+");
 
   /**
-   * Encode the given {@link DataMap} as a map from query param to value
+   * Return the string encoded version of query parameters.
+   * For projection parameters stored in dataMap, this function handles both cases when the value is a original string
+   * or a structured {@link DataMap}
    *
-   * @param dataMap the {@link com.linkedin.data.DataMap} to be encoded
-   * @return a {@link Map} from query param key to value
+   * @param dataMap the {@link DataMap} which represents the query parameters
+   * @return a {@link Map} from query param key to value in encoded string
    */
-  private static Map<String, String> encodeDataMapParameters(DataMap dataMap)
+  private static Map<String, String> dataMapToQueryParams(DataMap dataMap)
   {
-    Map<String, String> flattenedMap = new HashMap<String, String>();
+    Map<String, String> flattenedMap = new HashMap<>();
     for (Map.Entry<String, Object> entry : dataMap.entrySet())
     {
-      String flattenedValue = encodeElement(entry.getValue(),
-                                            URLEscaper.Escaping.URL_ESCAPING,
-                                            UriComponent.Type.QUERY_PARAM);
-      String encodedKey = encodeString(entry.getKey(), URLEscaper.Escaping.URL_ESCAPING, UriComponent.Type.QUERY_PARAM);
-      flattenedMap.put(encodedKey, flattenedValue);
+      // Serialize the projection MaskTree values
+      if (RestConstants.PROJECTION_PARAMETERS.contains(entry.getKey()))
+      {
+        Object projectionParameters = entry.getValue();
+        if (projectionParameters instanceof String)
+        {
+          flattenedMap.put(entry.getKey(), (String) projectionParameters);
+        }
+        else if (projectionParameters instanceof DataMap)
+        {
+          flattenedMap.put(entry.getKey(), URIMaskUtil.encodeMaskForURI((DataMap) projectionParameters));
+        }
+        else
+        {
+          throw new IllegalArgumentException("Invalid projection field data type");
+        }
+      }
+      else
+      {
+
+        String flattenedValue = encodeElement(entry.getValue(),
+                                              URLEscaper.Escaping.URL_ESCAPING,
+                                              UriComponent.Type.QUERY_PARAM);
+        String encodedKey = encodeString(entry.getKey(), URLEscaper.Escaping.URL_ESCAPING, UriComponent.Type.QUERY_PARAM);
+        flattenedMap.put(encodedKey, flattenedValue);
+      }
     }
     return flattenedMap;
   }
@@ -110,7 +118,7 @@ public class URIParamUtils
 
   public static Map<String, String> encodePathKeysForUri(Map<String, Object> pathKeys, ProtocolVersion version)
   {
-    final Map<String, String> escapedKeys = new HashMap<String, String>();
+    final Map<String, String> escapedKeys = new HashMap<>();
 
     for (Map.Entry<String, Object> entry : pathKeys.entrySet())
     {
@@ -169,8 +177,6 @@ public class URIParamUtils
 
   /**
    * Universal function for serializing Keys to Strings.
-   * @see {@link #encodeKeyForUri(Object, com.linkedin.jersey.api.uri.UriComponent.Type, com.linkedin.restli.common.ProtocolVersion)},
-   *      {@link #encodeKeyForBody(Object, boolean, com.linkedin.restli.common.ProtocolVersion)}
    *
    * @param key the key
    * @param escaping determines if the resulting string should be URI escaped or not.
@@ -181,6 +187,9 @@ public class URIParamUtils
    *             be true.
    * @param version the protocol version.
    * @return a stringified version of the key, suitable for insertion into a URI or json body.
+   *
+   * @see #encodeKeyForUri(Object, com.linkedin.jersey.api.uri.UriComponent.Type, com.linkedin.restli.common.ProtocolVersion)
+   * @see #encodeKeyForBody(Object, boolean, com.linkedin.restli.common.ProtocolVersion)
    */
   public static String keyToString(Object key,
                                    URLEscaper.Escaping escaping,
@@ -231,7 +240,7 @@ public class URIParamUtils
 
   private static String compoundKeyToStringV1(CompoundKey key)
   {
-    List<String> keyList = new ArrayList<String>(key.getPartKeys());
+    List<String> keyList = new ArrayList<>(key.getPartKeys());
     Collections.sort(keyList);
 
     StringBuilder b = new StringBuilder();
@@ -314,7 +323,7 @@ public class URIParamUtils
         stringBuilder.append(URIConstants.OBJ_START);
         if (!dataMap.isEmpty())
         {
-          List<String> keys = new ArrayList<String>(dataMap.keySet());
+          List<String> keys = new ArrayList<>(dataMap.keySet());
           Collections.sort(keys);
           ListIterator<String> iterator = keys.listIterator();
 
@@ -417,7 +426,7 @@ public class URIParamUtils
 
       if (RestConstants.PROJECTION_PARAMETERS.contains(key))
       {
-        //don't decode it.
+        // Don't decode it
         value = encodedValue;
       }
       else
@@ -442,6 +451,45 @@ public class URIParamUtils
    *
    * @param uriBuilder the {@link UriBuilder}
    * @param params The {@link DataMap} representing the parameters
+   * @param version The {@link ProtocolVersion}
+   */
+  public static void addSortedParams(UriBuilder uriBuilder, DataMap params, ProtocolVersion version)
+  {
+    if(version.compareTo(AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion()) >= 0)
+    {
+      addSortedParams(uriBuilder, params);
+    }
+    else
+    {
+      QueryParamsDataMap.addSortedParams(uriBuilder, params);
+    }
+  }
+
+  /**
+   * replace the values of the given queryParam with new ones
+   * @param uri initial URI
+   * @param queryParam name of the queryParam
+   * @param values values of the queryParam
+   * @param parameters all parameters
+   * @param version The {@link ProtocolVersion}
+   */
+
+  public static URI replaceQueryParam(URI uri, String queryParam, DataComplex values, DataMap parameters, ProtocolVersion version)
+  {
+    UriBuilder builder = UriBuilder.fromPath(uri.getPath());
+    DataMap newQueryParams = new DataMap();
+    newQueryParams.putAll(parameters);
+    newQueryParams.put(queryParam, values);
+    URIParamUtils.addSortedParams(builder, newQueryParams, version);
+
+    return builder.build();
+  }
+
+  /**
+   * Add the given parameters to the UriBuilder, in sorted order.
+   *
+   * @param uriBuilder the {@link UriBuilder}
+   * @param params The {@link DataMap} representing the parameters
    */
   public static void addSortedParams(UriBuilder uriBuilder, DataMap params)
   {
@@ -452,7 +500,7 @@ public class URIParamUtils
   // params must already be escaped.
   private static void addSortedParams(UriBuilder uriBuilder, Map<String, String> params)
   {
-    List<String> keysList = new ArrayList<String>(params.keySet());
+    List<String> keysList = new ArrayList<>(params.keySet());
     Collections.sort(keysList);
 
     for (String key: keysList)
@@ -468,7 +516,7 @@ public class URIParamUtils
    * field types when we need to do this transition internally. As a result, it may be slightly slower.
    *
    * @return a {@link DataMap} representation of this {@link CompoundKey}
-   * @see {@link CompoundKey#toDataMap(java.util.Map)}
+   * @see CompoundKey#toDataMap(java.util.Map)
    */
   public static DataMap compoundKeyToDataMap(CompoundKey compoundKey)
   {
@@ -493,9 +541,9 @@ public class URIParamUtils
 
   public static String[] extractPathComponentsFromUriTemplate(String uriTemplate)
   {
-    final String normalizedUriTemplate = uriTemplate.replaceAll("(^/|/$)", "");
+    final String normalizedUriTemplate = NORMALIZED_URI_PATTERN.matcher(uriTemplate).replaceAll("");
     final UriTemplate template = new UriTemplate(normalizedUriTemplate);
     final String uri = template.createURI(_EMPTY_STRING_ARRAY);
-    return uri.replaceAll("/+", "/").split("/");
+    return URI_SEPARATOR_PATTERN.split(uri);
   }
 }

@@ -26,6 +26,7 @@ import com.linkedin.restli.examples.greetings.api.Tone;
 import com.linkedin.restli.server.PathKeys;
 import com.linkedin.restli.server.annotations.Action;
 import com.linkedin.restli.server.annotations.Finder;
+import com.linkedin.restli.server.annotations.PathKeyParam;
 import com.linkedin.restli.server.annotations.PathKeysParam;
 import com.linkedin.restli.server.annotations.QueryParam;
 import com.linkedin.restli.server.annotations.RestLiCollection;
@@ -63,7 +64,7 @@ public class AssociationsSubResource extends CollectionResourceTemplate<String, 
   @Finder("tone")
   public List<Message> findByTone(@QueryParam("tone") Tone tone)
   {
-    List<Message> messages = new ArrayList<Message>(2);
+    List<Message> messages = new ArrayList<>(2);
 
     Message message1 = new Message();
     message1.setId("one");
@@ -98,5 +99,11 @@ public class AssociationsSubResource extends CollectionResourceTemplate<String, 
     {
       return null;
     }
+  }
+
+  @Action(name="concatenateStrings")
+  public String thingAction(@PathKeyParam("src") String src, @PathKeyParam("dest") String dest)
+  {
+    return src + dest;
   }
 }

@@ -20,21 +20,23 @@
 
 package com.linkedin.r2.transport.http.client;
 
+import com.linkedin.common.stats.LongTracker;
+import com.linkedin.common.stats.LongTracking;
+import com.linkedin.r2.util.SingleTimeout;
 import com.linkedin.util.ArgumentUtil;
+import com.linkedin.util.clock.Clock;
+import com.linkedin.util.clock.SystemClock;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Queue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
-import com.linkedin.common.stats.LongStats;
-import com.linkedin.common.stats.LongTracking;
 import com.linkedin.r2.SizeLimitExceededException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,14 +63,21 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
   private final int _maxSize;
   private final int _maxWaiters;
   private final long _idleTimeout;
+  private final long _waiterTimeout;
+  private final long _creationTimeout;
   private final ScheduledExecutorService _timeoutExecutor;
   private final int _minSize;
   private volatile ScheduledFuture<?> _objectTimeoutFuture;
   private final RateLimiter _rateLimiter;
 
+  public static final int MIN_WAITER_TIMEOUT = 300;
+  public static final int MAX_WAITER_TIMEOUT = 1000;
+  public static final int DEFAULT_OBJECT_CREATION_TIMEOUT = 10000;
+
+
   private enum State { NOT_YET_STARTED, RUNNING, SHUTTING_DOWN, STOPPED }
 
-  public enum Strategy { MRU, LRU };
+  public enum Strategy { MRU, LRU }
   private final Strategy _strategy;
 
   // All members below are protected by this lock
@@ -76,31 +85,18 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
   private final Object _lock = new Object();
   // Including idle, checked out, and creations/destructions in progress
   private int _poolSize = 0;
+  private int _checkedOut = 0;
   // Unused objects live here, sorted by age.
   // The first object is the least recently added object.
-  private final Deque<TimedObject<T>> _idle = new LinkedList<TimedObject<T>>();
+  private final Deque<TimedObject<T>> _idle = new LinkedList<>();
   // When no unused objects are available, callbacks live here while they wait
   // for a new object (either returned by another user, or newly created)
-  private final LinkedDeque<Callback<T>> _waiters = new LinkedDeque<Callback<T>>();
+  private final LinkedDeque<Callback<T>> _waiters = new LinkedDeque<>();
   private Throwable _lastCreateError = null;
   private State _state = State.NOT_YET_STARTED;
   private Callback<None> _shutdownCallback = null;
-  private final LongTracking _waitTimeTracker = new LongTracking();
-
-  // Statistics for each pool, retrieved with getStats()
-  // See AsyncPoolStats for details
-  // These are total counts over the entire lifetime of the pool
-  private int _totalCreated = 0;
-  private int _totalDestroyed = 0;
-  private int _totalCreateErrors = 0;
-  private int _totalDestroyErrors = 0;
-  private int _totalBadDestroyed = 0;
-  private int _totalTimedOut = 0;
-  // These counters reset on each call to getStats()
-  private int _sampleMaxCheckedOut = 0;
-  private int _sampleMaxPoolSize = 0;
-  // These are instantaneous values
-  private int _checkedOut = 0;
+  private final AsyncPoolStatsTracker _statsTracker;
+  private final Clock _clock;
 
   /**
    * Constructs an AsyncPool with maxWaiters equals to ({@code Integer.MAX_VALUE}).
@@ -153,6 +149,37 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
         maxWaiters, strategy, minSize, new NoopRateLimiter());
   }
 
+  public AsyncPoolImpl(String name,
+      Lifecycle<T> lifecycle,
+      int maxSize,
+      long idleTimeout,
+      ScheduledExecutorService timeoutExecutor,
+      int maxWaiters,
+      Strategy strategy,
+      int minSize,
+      RateLimiter rateLimiter)
+  {
+    this(name, lifecycle, maxSize, idleTimeout, timeoutExecutor,
+        maxWaiters, strategy, minSize, rateLimiter, SystemClock.instance(), new LongTracking());
+  }
+
+  @Deprecated
+  public AsyncPoolImpl(String name,
+      Lifecycle<T> lifecycle,
+      int maxSize,
+      long idleTimeout,
+      ScheduledExecutorService timeoutExecutor,
+      int maxWaiters,
+      Strategy strategy,
+      int minSize,
+      RateLimiter rateLimiter,
+      Clock clock,
+      LongTracker waitTimeTracker)
+  {
+    this(name, lifecycle, maxSize, idleTimeout, Integer.MAX_VALUE, timeoutExecutor, maxWaiters, strategy, minSize,
+        rateLimiter, clock, waitTimeTracker);
+  }
+
   /**
    * Creates an AsyncPoolImpl with a specified strategy of
    * returning pool objects and a minimum pool size.
@@ -180,32 +207,64 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
    *                no minimum.
    * @param rateLimiter an optional {@link RateLimiter} that controls the
    *                    object creation rate.
+   * @param clock a clock object used in tracking async pool stats
+   * @param waitTimeTracker tracker used to track pool stats such as percentile
+   *                        latency, max, min, standard deviation is enabled.
    *
    */
   public AsyncPoolImpl(String name,
       Lifecycle<T> lifecycle,
       int maxSize,
       long idleTimeout,
+      long waiterTimeout,
       ScheduledExecutorService timeoutExecutor,
       int maxWaiters,
       Strategy strategy,
       int minSize,
-      RateLimiter rateLimiter)
+      RateLimiter rateLimiter,
+      Clock clock,
+      LongTracker waitTimeTracker)
   {
     ArgumentUtil.notNull(lifecycle, "lifecycle");
     ArgumentUtil.notNull(timeoutExecutor, "timeoutExecutor");
     ArgumentUtil.notNull(strategy, "strategy");
     ArgumentUtil.notNull(rateLimiter, "rateLimiter");
 
-    _poolName = name;
+    _poolName = name + "/" + Integer.toHexString(hashCode());
     _lifecycle = lifecycle;
     _maxSize = maxSize;
     _idleTimeout = idleTimeout;
+    _waiterTimeout = waiterTimeout;
+    _creationTimeout = DEFAULT_OBJECT_CREATION_TIMEOUT; // TODO: expose this through cfg2
     _timeoutExecutor = timeoutExecutor;
     _maxWaiters = maxWaiters;
     _strategy = strategy;
     _minSize = minSize;
     _rateLimiter = rateLimiter;
+    _clock = clock;
+    _statsTracker = new AsyncPoolStatsTracker(
+        () -> _lifecycle.getStats(),
+        () -> _maxSize,
+        () -> _minSize,
+        () -> {
+          synchronized (_lock) {
+            return _poolSize;
+          }
+        },
+        () -> {
+          synchronized (_lock)
+          {
+            return _checkedOut;
+          }
+        },
+        () -> {
+          synchronized (_lock)
+          {
+            return _idle.size();
+          }
+        },
+        clock,
+        waitTimeTracker);
   }
 
   @Override
@@ -276,7 +335,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
   {
     synchronized (_lock)
     {
-      List<Callback<T>> cancelled = new ArrayList<Callback<T>>(_waiters.size());
+      List<Callback<T>> cancelled = new ArrayList<>(_waiters.size());
       for (Callback<T> item; (item = _waiters.poll()) != null;)
       {
          cancelled.add(item);
@@ -293,7 +352,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
     boolean create = false;
     boolean reject = false;
     final LinkedDeque.Node<Callback<T>> node;
-    final Callback<T> callbackWithTracking = new TimeTrackingCallback<T>(callback);
+    Callback<T> callbackWithTracking = new TimeTrackingCallback<>(callback);
     for (;;)
     {
       TimedObject<T> obj = null;
@@ -315,6 +374,10 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
           {
             if (_waiters.size() < _maxWaiters)
             {
+              if (isWaiterTimeoutEnabled())
+              {
+                callbackWithTracking = new WaiterTimeoutCallback(callbackWithTracking);
+              }
               // No objects available and the waiter list is not full; add to waiter list and break out of loop
               node = _waiters.addLastNode(callbackWithTracking);
               create = shouldCreate();
@@ -332,7 +395,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
       {
         // Defer execution of the callback until we are out of the synchronized block
         callbackWithTracking.onError(new IllegalStateException(_poolName + " is " + _state));
-        return null;
+        return () -> false;
       }
       T rawObj = obj.get();
       if (_lifecycle.validateGet(rawObj))
@@ -342,10 +405,10 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
         synchronized (_lock)
         {
           _checkedOut++;
-          _sampleMaxCheckedOut = Math.max(_checkedOut, _sampleMaxCheckedOut);
+          _statsTracker.sampleMaxCheckedOut();
         }
         callbackWithTracking.onSuccess(rawObj);
-        return null;
+        return () -> false;
       }
       // Invalid object, discard it and keep trying
       destroy(rawObj, true);
@@ -354,8 +417,9 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
     if (reject)
     {
       // This is a recoverable exception. User can simply retry the failed get() operation.
-      callbackWithTracking.onError(new SizeLimitExceededException("AsyncPool " + _poolName + " reached maximum waiter size: " + _maxWaiters));
-      return null;
+      callbackWithTracking.onError(
+          new SizeLimitExceededException("AsyncPool " + _poolName + " reached maximum waiter size: " + _maxWaiters));
+      return () -> false;
     }
     trc("enqueued a waiter");
     if (create)
@@ -369,10 +433,21 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
       {
         synchronized (_lock)
         {
-          return _waiters.removeNode(node) != null;
+          boolean cancelled = _waiters.removeNode(node) != null;
+          if (cancelled)
+          {
+            shutdownIfNeeded();
+          }
+          return cancelled;
         }
       }
     };
+  }
+
+  private boolean isWaiterTimeoutEnabled()
+  {
+    // Do not enable waiter timeout if the configured value is not within the fail fast threshold
+    return _waiterTimeout >= MIN_WAITER_TIMEOUT && _waiterTimeout <= MAX_WAITER_TIMEOUT;
   }
 
   @Override
@@ -404,12 +479,12 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
       waiter = _waiters.poll();
       if (waiter == null)
       {
-        _idle.offerLast(new TimedObject<T>(obj));
+        _idle.offerLast(new TimedObject<>(obj));
       }
       else
       {
         _checkedOut++;
-        _sampleMaxCheckedOut = Math.max(_checkedOut, _sampleMaxCheckedOut);
+        _statsTracker.sampleMaxCheckedOut();
       }
       shutdown = checkShutdownComplete();
     }
@@ -449,32 +524,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
     // get a copy of the stats
     synchronized (_lock)
     {
-      LongStats waitTimeStats = _waitTimeTracker.getStats();
-      PoolStats.LifecycleStats lifecycleStats = _lifecycle.getStats();
-      AsyncPoolStats stats = new AsyncPoolStats(
-        _totalCreated,
-        _totalDestroyed,
-        _totalCreateErrors,
-        _totalDestroyErrors,
-        _totalBadDestroyed,
-        _totalTimedOut,
-        _checkedOut,
-        _maxSize,
-        _minSize,
-        _poolSize,
-        _sampleMaxCheckedOut,
-        _sampleMaxPoolSize,
-        _idle.size(),
-        waitTimeStats.getAverage(),
-        waitTimeStats.get50Pct(),
-        waitTimeStats.get95Pct(),
-        waitTimeStats.get99Pct(),
-        lifecycleStats
-      );
-      _sampleMaxCheckedOut = _checkedOut;
-      _sampleMaxPoolSize = _poolSize;
-      _waitTimeTracker.reset();
-      return stats;
+      return _statsTracker.getStats();
     }
   }
 
@@ -484,7 +534,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
     {
       synchronized(_lock)
       {
-        _totalBadDestroyed++;
+        _statsTracker.incrementBadDestroyed();
       }
     }
     trc("disposing a pooled object");
@@ -494,7 +544,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
         boolean create;
         synchronized (_lock)
         {
-          _totalDestroyed++;
+          _statsTracker.incrementDestroyed();
           create = objectDestroyed();
         }
         if (create)
@@ -507,7 +557,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
       public void onError(Throwable e) {
         boolean create;
         synchronized (_lock) {
-          _totalDestroyErrors++;
+          _statsTracker.incrementDestroyErrors();
           create = objectDestroyed();
         }
         if (create) {
@@ -570,7 +620,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
         else if (_waiters.size() > 0 || _poolSize < _minSize)
         {
           _poolSize++;
-          _sampleMaxPoolSize = Math.max(_poolSize, _sampleMaxPoolSize);
+          _statsTracker.sampleMaxPoolSize();
           result = true;
         }
       }
@@ -589,14 +639,37 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
       @Override
       public void run(final SimpleCallback callback)
       {
-        _lifecycle.create(new Callback<T>()
-        {
+        boolean shouldIgnore;
+        synchronized (_lock) {
+          // Ignore the object creation if no one is waiting for the object and the pool already has _minSize objects
+          int totalObjects = _checkedOut + _idle.size();
+          shouldIgnore = _waiters.size() == 0 && totalObjects >= _minSize;
+          if (shouldIgnore) {
+            _statsTracker.incrementIgnoredCreation();
+            if (_poolSize >= 1)
+            {
+              // _poolSize also include the count of creation requests pending. So we have to make sure the pool size
+              // count is updated when we ignore the creation request.
+              _poolSize--;
+            }
+          }
+        }
+
+        if (shouldIgnore) {
+          callback.onDone();
+          return;
+        }
+
+        // Lets not trust the _lifecycle to timely return a response here.
+        // Embedding the callback inside a timeout callback (ObjectCreationTimeoutCallback)
+        // to force a response within creationTimeout deadline to reclaim the object slot in the pool
+        _lifecycle.create(new TimeoutCallback<>(_timeoutExecutor, _creationTimeout, TimeUnit.MILLISECONDS, new Callback<T>() {
           @Override
           public void onSuccess(T t)
           {
             synchronized (_lock)
             {
-              _totalCreated++;
+              _statsTracker.incrementCreated();
               _lastCreateError = null;
             }
             add(t);
@@ -606,7 +679,6 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
           @Override
           public void onError(final Throwable e)
           {
-            _rateLimiter.incrementPeriod();
             // Note we drain all waiters and cancel all pending creates if a create fails.
             // When a create fails, rate-limiting logic will be applied.  In this case,
             // we may be initiating creations at a lower rate than incoming requests.  While
@@ -618,9 +690,10 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
             boolean create;
             synchronized (_lock)
             {
-              _totalCreateErrors++;
+              _statsTracker.incrementCreateErrors();
               _lastCreateError = e;
-              create = objectDestroyed(1 + cancelledCreate.size());
+
+              // Cancel all waiters in the rate limiter
               if (!_waiters.isEmpty())
               {
                 waitersDenied = cancelWaiters();
@@ -629,53 +702,72 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
               {
                 waitersDenied = Collections.<Callback<T>>emptyList();
               }
+
+              // reclaim the slot in the pool
+              create = objectDestroyed(1 + cancelledCreate.size());
             }
+
+            // lets fail all the waiters with the object creation error
             for (Callback<T> denied : waitersDenied)
             {
-              denied.onError(e);
+              try
+              {
+                denied.onError(e);
+              }
+              catch (Exception ex)
+              {
+                LOG.error("Encountered error while invoking error waiter callback", ex);
+              }
             }
+
+            // Now after cancelling all the pending tasks, lets make sure to back off on the creation
+            _rateLimiter.incrementPeriod();
+
+            // if we still need to create a new object, lets initiate that now
+            // since all waiters are cancelled, the only condition that makes this true is when the pool is below
+            // the min poolSize
             if (create)
             {
               create();
             }
-            LOG.error(_poolName + ": object creation failed", e);
+            LOG.debug(_poolName + ": object creation failed", e);
             callback.onDone();
           }
-        });
+        }, () -> new ObjectCreationTimeoutException(
+            "Exceeded creation timeout of " + _creationTimeout + "ms: in Pool: "+ _poolName)));
       }
     });
-
   }
 
   private void timeoutObjects()
   {
-    Collection<T> idle = reap(_idle, _idleTimeout);
-    if (idle.size() > 0)
+    Collection<T> expiredObjects = getExpiredObjects();
+    if (expiredObjects.size() > 0)
     {
-      LOG.debug("{}: disposing {} objects due to idle timeout", _poolName, idle.size());
-      for (T obj : idle)
+      LOG.debug("{}: disposing {} objects due to idle timeout", _poolName, expiredObjects.size());
+      for (T obj : expiredObjects)
       {
         destroy(obj, false);
       }
     }
   }
 
-  private <U> Collection<U> reap(Queue<TimedObject<U>> queue, long timeout)
+  private Collection<T> getExpiredObjects()
   {
-    List<U> toReap = new ArrayList<U>();
-    long now = System.currentTimeMillis();
-    long target = now - timeout;
+    List<T> expiredObjects = new ArrayList<>();
+    long now = _clock.currentTimeMillis();
 
     synchronized (_lock)
     {
+      long deadline = now - _idleTimeout;
       int excess = _poolSize - _minSize;
-      for (TimedObject<U> p; (p = queue.peek()) != null && p.getTime() < target && excess > 0; excess--)
+      for (TimedObject<T> p; (p = _idle.peek()) != null && p.getTime() < deadline && excess > 0; excess--)
       {
-        toReap.add(queue.poll().get());
-        _totalTimedOut++;
+        expiredObjects.add(_idle.poll().get());
+        _statsTracker.incrementTimedOut();
       }
     }
-    return toReap;
+    return expiredObjects;
   }
 
   private void shutdownIfNeeded()
@@ -730,7 +822,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
     shutdown.onSuccess(None.none());
   }
 
-  private static class TimedObject<T>
+  private class TimedObject<T>
   {
     private final T _obj;
     private final long _time;
@@ -738,7 +830,7 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
     public TimedObject(T obj)
     {
       _obj = obj;
-      _time = System.currentTimeMillis();
+      _time = _clock.currentTimeMillis();
     }
 
     public T get()
@@ -752,6 +844,47 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
     }
   }
 
+  private class WaiterTimeoutCallback implements Callback<T>
+  {
+    private final SingleTimeout<Callback<T>> _timeout;
+
+    private WaiterTimeoutCallback(final Callback<T> callback)
+    {
+      _timeout = new SingleTimeout<>(_timeoutExecutor, _waiterTimeout, TimeUnit.MILLISECONDS, callback, (callbackIfTimeout) -> {
+
+        synchronized (_lock)
+        {
+          _waiters.remove(this);
+          _statsTracker.incrementWaiterTimedOut();
+        }
+        LOG.debug("{}: failing waiter due to waiter timeout", _poolName);
+        callbackIfTimeout.onError(
+            new WaiterTimeoutException(
+                "Exceeded waiter timeout of " + _waiterTimeout + "ms: in Pool: "+ _poolName));
+      });
+    }
+
+    @Override
+    public void onError(Throwable e)
+    {
+      Callback<T> callback = _timeout.getItem();
+      if (callback != null)
+      {
+        callback.onError(e);
+      }
+    }
+
+    @Override
+    public void onSuccess(T result)
+    {
+      Callback<T> callback = _timeout.getItem();
+      if (callback != null)
+      {
+        callback.onSuccess(result);
+      }
+    }
+  }
+
   private class TimeTrackingCallback<T> implements Callback<T>
   {
     private final long _startTime;
@@ -760,15 +893,17 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
     public TimeTrackingCallback(Callback<T> callback)
     {
       _callback = callback;
-      _startTime = System.currentTimeMillis();
+      _startTime = _clock.currentTimeMillis();
     }
 
     @Override
     public void onError(Throwable e)
     {
+      long waitTime = _clock.currentTimeMillis() - _startTime;
       synchronized (_lock)
       {
-        _waitTimeTracker.addValue(System.currentTimeMillis() - _startTime);
+        _statsTracker.trackWaitTime(waitTime);
+        _statsTracker.sampleMaxWaitTime(waitTime);
       }
       _callback.onError(e);
     }
@@ -776,11 +911,18 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
     @Override
     public void onSuccess(T result)
     {
+      long waitTime = _clock.currentTimeMillis() - _startTime;
       synchronized (_lock)
       {
-        _waitTimeTracker.addValue(System.currentTimeMillis() - _startTime);
+        _statsTracker.trackWaitTime(waitTime);
+        _statsTracker.sampleMaxWaitTime(waitTime);
       }
       _callback.onSuccess(result);
+    }
+
+    public long getTime()
+    {
+      return _startTime;
     }
   }
 
@@ -788,5 +930,4 @@ public class AsyncPoolImpl<T> implements AsyncPool<T>
   {
     LOG.trace("{}: {}", _poolName, toLog);
   }
-
 }

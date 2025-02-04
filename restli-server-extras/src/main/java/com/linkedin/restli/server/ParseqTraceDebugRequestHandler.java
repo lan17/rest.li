@@ -18,6 +18,10 @@ package com.linkedin.restli.server;
 
 
 import com.linkedin.common.callback.Callback;
+import com.linkedin.data.ByteString;
+import com.linkedin.parseq.Task;
+import com.linkedin.parseq.promise.Promise;
+import com.linkedin.parseq.promise.PromiseListener;
 import com.linkedin.parseq.trace.Trace;
 import com.linkedin.parseq.trace.codec.json.JsonTraceCodec;
 import com.linkedin.r2.message.RequestContext;
@@ -26,6 +30,7 @@ import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.message.rest.RestResponseBuilder;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.common.RestConstants;
+import com.linkedin.restli.internal.server.RestLiMethodInvoker;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -82,41 +87,58 @@ public class ParseqTraceDebugRequestHandler implements RestLiDebugRequestHandler
 
   @Override
   public void handleRequest(final RestRequest request,
-                            final RequestContext context,
-                            final ResourceDebugRequestHandler resourceDebugRequestHandler,
-                            final Callback<RestResponse> callback)
+      final RequestContext context,
+      final ResourceDebugRequestHandler resourceDebugRequestHandler,
+      final Callback<RestResponse> callback)
   {
     //Find out the path coming after the "__debug" path segment
     String fullPath = request.getURI().getPath();
-    int debugSegmentIndex = fullPath.indexOf(RestLiServer.DEBUG_PATH_SEGMENT);
+    int debugSegmentIndex = fullPath.indexOf(DelegatingDebugRequestHandler.DEBUG_PATH_SEGMENT);
     final String debugHandlerPath = fullPath.substring(
-        debugSegmentIndex + RestLiServer.DEBUG_PATH_SEGMENT.length() + 1);
+        debugSegmentIndex + DelegatingDebugRequestHandler.DEBUG_PATH_SEGMENT.length() + 1);
 
     assert (debugHandlerPath.startsWith(HANDLER_ID));
 
     //Decide whether this is a user issued debug request or a follow up static content request for tracevis html.
-    if (debugHandlerPath.equals(TRACEVIS_PATH) ||
-        debugHandlerPath.equals(RAW_PATH))
+    if (debugHandlerPath.equals(TRACEVIS_PATH) || debugHandlerPath.equals(RAW_PATH))
     {
-      //Execute the request as if it was a regular Rest.li request through resource debug request handler.
-      //By using the returned execution report shape the response accordingly.
-      resourceDebugRequestHandler.handleRequest(request, context,
-                                           new RequestExecutionCallback<RestResponse>(){
+      if (context.getLocalAttr(RestLiMethodInvoker.ATTRIBUTE_PROMISE_LISTENER) != null)
+      {
+        callback.onError(new Exception("Unexpected PromiseListener in local attributes: " + context.getLocalAttr(RestLiMethodInvoker.ATTRIBUTE_PROMISE_LISTENER)));
+      }
 
-                                             @Override
-                                             public void onError(Throwable e,
-                                                                 RequestExecutionReport executionReport)
-                                             {
-                                               sendDebugResponse(callback, executionReport, debugHandlerPath);
-                                             }
+      // This listener is registered to the resource execution task in RestLiMethodInvoker. Upon resolution of the task,
+      // this listener gets the trace for the task and send it through the callback.
+      context.putLocalAttr(RestLiMethodInvoker.ATTRIBUTE_PROMISE_LISTENER, new PromiseListener<Object>()
+      {
+        @Override
+        public void onResolved(Promise<Object> promise)
+        {
+          try
+          {
+            sendDebugResponse(callback, ((Task<?>) promise).getTrace(), debugHandlerPath);
+          }
+          catch (Throwable e)
+          {
+            callback.onError(e);
+          }
+        }
+      });
 
-                                             @Override
-                                             public void onSuccess(RestResponse result,
-                                                                   RequestExecutionReport executionReport)
-                                             {
-                                               sendDebugResponse(callback, executionReport, debugHandlerPath);
-                                             }
-                                           });
+      resourceDebugRequestHandler.handleRequest(request, context, new Callback<RestResponse>()
+      {
+        @Override
+        public void onError(Throwable e)
+        {
+          // No-op. We only care about the ParSeq trace but not the execution result, be it successful or not.
+        }
+
+        @Override
+        public void onSuccess(RestResponse result)
+        {
+          // No-op. We only care about the ParSeq trace but not the execution result, be it successful or not.
+        }
+      });
     }
     else
     {
@@ -159,30 +181,28 @@ public class ParseqTraceDebugRequestHandler implements RestLiDebugRequestHandler
     return HANDLER_ID;
   }
 
-  private void sendDebugResponse(Callback<RestResponse> callback,
-                                 RequestExecutionReport executionReport,
-                                 String path)
+  private void sendDebugResponse(final Callback<RestResponse> callback,
+                                 final Trace trace,
+                                 final String path)
   {
     if (path.equals(TRACEVIS_PATH))
     {
-      sendTracevisEntryPageAsResponse(callback, executionReport);
+      sendTracevisEntryPageAsResponse(callback, trace);
     }
     else
     {
-      sendTraceRawAsResponse(callback, executionReport);
+      sendTraceRawAsResponse(callback, trace);
     }
   }
 
-  private void sendTraceRawAsResponse(Callback<RestResponse> callback,
-                                       RequestExecutionReport executionReport)
+  private void sendTraceRawAsResponse(final Callback<RestResponse> callback,
+                                      final Trace trace)
   {
     String mediaType = HEADER_VALUE_APPLICATION_JSON;
     ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
 
     try
     {
-      Trace trace = executionReport.getParseqTrace();
-
       if (trace != null)
       {
         //Serialize the Parseq trace into JSON.
@@ -198,8 +218,8 @@ public class ParseqTraceDebugRequestHandler implements RestLiDebugRequestHandler
     sendByteArrayAsResponse(callback, outputStream.toByteArray(), mediaType);
   }
 
-  private void sendTracevisEntryPageAsResponse(Callback<RestResponse> callback,
-                                               RequestExecutionReport executionReport)
+  private void sendTracevisEntryPageAsResponse(final Callback<RestResponse> callback,
+                                               final Trace trace)
   {
     String mediaType = HEADER_VALUE_TEXT_HTML;
 
@@ -212,7 +232,6 @@ public class ParseqTraceDebugRequestHandler implements RestLiDebugRequestHandler
     try
     {
       IOUtils.copy(resourceStream, outputStream);
-      Trace trace = executionReport.getParseqTrace();
 
       if (trace != null)
       {
@@ -232,14 +251,14 @@ public class ParseqTraceDebugRequestHandler implements RestLiDebugRequestHandler
     sendByteArrayAsResponse(callback, outputStream.toByteArray(), mediaType);
   }
 
-  private void sendByteArrayAsResponse(Callback<RestResponse> callback,
-                                    byte[] responseBytes,
-                                    String mediaType)
+  private void sendByteArrayAsResponse(final Callback<RestResponse> callback,
+                                       final byte[] responseBytes,
+                                       final String mediaType)
   {
     RestResponse staticContentResponse = new RestResponseBuilder().
                                           setStatus(HttpStatus.S_200_OK.getCode()).
                                           setHeader(RestConstants.HEADER_CONTENT_TYPE, mediaType).
-                                          setEntity(responseBytes).
+                                          setEntity(ByteString.unsafeWrap(responseBytes)).
                                           build();
     callback.onSuccess(staticContentResponse);
   }

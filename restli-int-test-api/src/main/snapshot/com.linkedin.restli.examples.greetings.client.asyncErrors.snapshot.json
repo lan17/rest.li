@@ -1,10 +1,5 @@
 {
   "models" : [ {
-    "type" : "enum",
-    "name" : "Tone",
-    "namespace" : "com.linkedin.restli.examples.greetings.api",
-    "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
-  }, {
     "type" : "record",
     "name" : "Greeting",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -17,18 +12,32 @@
       "type" : "string"
     }, {
       "name" : "tone",
-      "type" : "Tone",
+      "type" : {
+        "type" : "enum",
+        "name" : "Tone",
+        "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
+      },
       "doc" : "tone"
+    }, {
+      "name" : "senders",
+      "type" : {
+        "type" : "array",
+        "items" : "string"
+      },
+      "doc" : "Sender(s) of the message",
+      "optional" : true
     } ]
-  } ],
+  }, "com.linkedin.restli.examples.greetings.api.Tone" ],
   "schema" : {
     "name" : "asyncErrors",
     "namespace" : "com.linkedin.restli.examples.greetings.client",
     "path" : "/asyncErrors",
     "doc" : "generated from: com.linkedin.restli.examples.greetings.server.AsyncErrorResource",
+    "resourceClass" : "com.linkedin.restli.examples.greetings.server.AsyncErrorResource",
     "actionsSet" : {
       "actions" : [ {
         "name" : "callback",
+        "javaMethodName" : "callback",
         "parameters" : [ {
           "name" : "id",
           "type" : "string"
@@ -36,6 +45,7 @@
         "returns" : "com.linkedin.restli.examples.greetings.api.Greeting"
       }, {
         "name" : "promise",
+        "javaMethodName" : "promise",
         "parameters" : [ {
           "name" : "id",
           "type" : "string"
@@ -43,6 +53,7 @@
         "returns" : "com.linkedin.restli.examples.greetings.api.Greeting"
       }, {
         "name" : "task",
+        "javaMethodName" : "task",
         "parameters" : [ {
           "name" : "id",
           "type" : "string"

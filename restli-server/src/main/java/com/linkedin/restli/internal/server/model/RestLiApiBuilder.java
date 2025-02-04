@@ -17,9 +17,15 @@
 package com.linkedin.restli.internal.server.model;
 
 
+import com.linkedin.data.codec.symbol.DefaultSymbolTableProvider;
 import com.linkedin.restli.server.ResourceConfigException;
 import com.linkedin.restli.server.RestLiConfig;
 
+import com.linkedin.restli.server.annotations.RestAnnotations;
+import com.linkedin.restli.server.annotations.RestLiAssociation;
+import com.linkedin.restli.server.annotations.RestLiCollection;
+import com.linkedin.restli.server.annotations.RestLiSimpleResource;
+import java.lang.annotation.Annotation;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -29,6 +35,7 @@ import org.slf4j.LoggerFactory;
 
 
 /**
+ * Builds a REST API model by reading the annotations on a Rest.li resource class.
  *
  * @author dellamag
  */
@@ -72,51 +79,78 @@ public class RestLiApiBuilder implements RestApiBuilder
     return buildResourceModels(annotatedClasses);
   }
 
-  public static Map<String, ResourceModel> buildResourceModels(
-          final Set<Class<?>> restliAnnotatedClasses)
+  private static Class<?> getParentResourceClass(Class<?> resourceClass)
   {
-    Map<Class<?>, ResourceModel> resourceModels = new HashMap<Class<?>, ResourceModel>();
-
-    for (Class<?> annotatedClass : restliAnnotatedClasses)
+    for (Annotation a : resourceClass.getAnnotations())
     {
-      ResourceModel resourceModel = RestLiAnnotationReader.processResource(annotatedClass);
-      resourceModels.put(annotatedClass, resourceModel);
+      if (a instanceof RestLiAssociation)
+      {
+        return ((RestLiAssociation)a).parent();
+      }
+      else if (a instanceof RestLiCollection)
+      {
+        return ((RestLiCollection)a).parent();
+      }
+      else if (a instanceof RestLiSimpleResource)
+      {
+        return ((RestLiSimpleResource)a).parent();
+      }
     }
 
-    Map<String, ResourceModel> rootResourceModels = new HashMap<String, ResourceModel>();
+    return RestAnnotations.ROOT.class;
+  }
+
+  private static void processResourceInOrder(Class<?> annotatedClass, Map<Class<?>, ResourceModel> resourceModels, Map<String, ResourceModel> rootResourceModels)
+  {
+    if (resourceModels.containsKey(annotatedClass))
+    {
+      return;
+    }
+
+    Class<?> parentClass = getParentResourceClass(annotatedClass);
+
+    // If we need to create the parent class, do it before the child class. Recurse, in case of grandparents.
+    if (parentClass != RestAnnotations.ROOT.class)
+    {
+      processResourceInOrder(parentClass, resourceModels, rootResourceModels);
+    }
+
+    ResourceModel model = RestLiAnnotationReader.processResource(annotatedClass, resourceModels.get(parentClass));
+
+    if (model.isRoot())
+    {
+      String path = "/" + model.getName();
+      if (model.getName().equals(DefaultSymbolTableProvider.SYMBOL_TABLE_URI_PATH))
+      {
+        String errorMessage = String.format("Resource class \"%s\" API name \"symbolTable\" is reserved for internal use",
+            model.getResourceClass().getCanonicalName());
+        throw new ResourceConfigException(errorMessage);
+      }
+      final ResourceModel existingResource = rootResourceModels.get(path);
+      if (existingResource != null)
+      {
+        String errorMessage = String.format("Resource classes \"%s\" and \"%s\" clash on the resource name \"%s\".",
+                                            existingResource.getResourceClass().getCanonicalName(),
+                                            model.getResourceClass().getCanonicalName(),
+                                            existingResource.getName());
+        throw new ResourceConfigException(errorMessage);
+      }
+      rootResourceModels.put(path, model);
+    }
+
+    resourceModels.put(annotatedClass, model);
+  }
+
+  public static Map<String, ResourceModel> buildResourceModels(final Set<Class<?>> restliAnnotatedClasses)
+  {
+    Map<String, ResourceModel> rootResourceModels = new HashMap<>();
+    Map<Class<?>, ResourceModel> resourceModels = new HashMap<>();
 
     for (Class<?> annotatedClass : restliAnnotatedClasses)
     {
-      ResourceModel resourceModel = resourceModels.get(annotatedClass);
-      if (resourceModel.isRoot())
-      {
-        String path = "/" + resourceModel.getName();
-        final ResourceModel existingResource = rootResourceModels.get(path);
-        if (existingResource != null)
-        {
-          String errorMessage = String.format("Resource classes \"%s\" and \"%s\" clash on the resource name \"%s\".",
-                                        existingResource.getResourceClass().getCanonicalName(),
-                                        resourceModel.getResourceClass().getCanonicalName(),
-                                        existingResource.getName());
-          throw new ResourceConfigException(errorMessage);
-        }
-        rootResourceModels.put(path, resourceModel);
-      }
-      else
-      {
-        ResourceModel parentModel = resourceModels.get(resourceModel.getParentResourceClass());
-        if (parentModel == null)
-        {
-          throw new ResourceConfigException("Could not find model for parent class'"
-              + resourceModel.getParentResourceClass().getName() + "'for: "
-              + resourceModel.getName());
-        }
-        resourceModel.setParentResourceModel(parentModel);
-        parentModel.addSubResource(resourceModel.getName(), resourceModel);
-      }
+      processResourceInOrder(annotatedClass, resourceModels, rootResourceModels);
     }
 
     return rootResourceModels;
   }
-
 }

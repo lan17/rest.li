@@ -16,26 +16,31 @@
 
 package com.linkedin.restli.server.twitter;
 
+import com.linkedin.restli.common.EmptyRecord;
 import com.linkedin.restli.common.PatchRequest;
+import com.linkedin.restli.common.attachments.RestLiAttachmentReader;
 import com.linkedin.restli.server.BatchCreateRequest;
 import com.linkedin.restli.server.BatchCreateResult;
 import com.linkedin.restli.server.BatchDeleteRequest;
+import com.linkedin.restli.server.BatchFinderResult;
 import com.linkedin.restli.server.BatchPatchRequest;
 import com.linkedin.restli.server.BatchUpdateRequest;
 import com.linkedin.restli.server.BatchUpdateResult;
+import com.linkedin.restli.server.CreateResponse;
+import com.linkedin.restli.server.PagingContext;
+import com.linkedin.restli.server.ResourceLevel;
+import com.linkedin.restli.server.UpdateResponse;
 import com.linkedin.restli.server.altkey.AltStatusKeyCoercer;
 import com.linkedin.restli.server.annotations.Action;
 import com.linkedin.restli.server.annotations.ActionParam;
 import com.linkedin.restli.server.annotations.AlternativeKey;
-import com.linkedin.restli.server.annotations.Optional;
-import com.linkedin.restli.server.CreateResponse;
-import com.linkedin.restli.server.PagingContext;
-import com.linkedin.restli.server.ResourceLevel;
-import com.linkedin.restli.server.annotations.PagingContextParam;
+import com.linkedin.restli.server.annotations.BatchFinder;
 import com.linkedin.restli.server.annotations.Finder;
+import com.linkedin.restli.server.annotations.Optional;
+import com.linkedin.restli.server.annotations.PagingContextParam;
 import com.linkedin.restli.server.annotations.QueryParam;
+import com.linkedin.restli.server.annotations.RestLiAttachmentsParam;
 import com.linkedin.restli.server.annotations.RestLiCollection;
-import com.linkedin.restli.server.UpdateResponse;
 import com.linkedin.restli.server.resources.CollectionResourceTemplate;
 import com.linkedin.restli.server.twitter.TwitterTestDataModels.Status;
 import com.linkedin.restli.server.twitter.TwitterTestDataModels.StatusType;
@@ -82,6 +87,30 @@ public class StatusCollectionResource extends CollectionResourceTemplate<Long,St
   public List<Status> search(@QueryParam("keywords") String keywords,
                              @QueryParam("since") @Optional("-1") long since,
                              @QueryParam("type") @Optional StatusType type)
+  {
+    return null;
+  }
+
+  /** * find status by a parameter named "action"
+   *
+   */
+  @Finder("findByAction")
+  public List<Status> findByAction(@QueryParam("action") String  actionName,
+      @QueryParam("bq") String bqParameterValue
+  )
+  {
+    return null;
+  }
+
+  /** * Batchfinder by a parameter named "action"
+   *    This is an invalid method since the parameter name cannot be named "q"
+   *    in batchFinder
+   */
+  @BatchFinder(value="batchFinderByAction",  batchParam="action")
+  public BatchFinderResult<Status, Status, EmptyRecord> batchFinderByAction(
+      @QueryParam("action") Status[]  actionNames,
+      @QueryParam("q") @Optional String qParam
+  )
   {
     return null;
   }
@@ -172,8 +201,16 @@ public class StatusCollectionResource extends CollectionResourceTemplate<Long,St
    * Ambiguous action binding test case
    */
   @Action(name="forward",
-          resourceLevel= ResourceLevel.ENTITY)
+          resourceLevel = ResourceLevel.ENTITY)
   public void forward(@ActionParam("to") long userID)
   {
+  }
+
+  @Action(name="streamingAction",
+          resourceLevel = ResourceLevel.COLLECTION)
+  public Long streamingAction(@ActionParam("metadata") String metadata,
+                              @RestLiAttachmentsParam RestLiAttachmentReader attachmentReader)
+  {
+    return null;
   }
 }

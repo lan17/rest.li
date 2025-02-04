@@ -33,17 +33,22 @@ public enum AllowedClientPropertyKeys
   HTTP_POOL_SIZE(PropertyKeys.HTTP_POOL_SIZE),
   HTTP_REQUEST_TIMEOUT(PropertyKeys.HTTP_REQUEST_TIMEOUT),
   HTTP_IDLE_TIMEOUT(PropertyKeys.HTTP_IDLE_TIMEOUT),
+  HTTP_SSL_IDLE_TIMEOUT(PropertyKeys.HTTP_SSL_IDLE_TIMEOUT),
   HTTP_MAX_RESPONSE_SIZE(PropertyKeys.HTTP_MAX_RESPONSE_SIZE),
   HTTP_SHUTDOWN_TIMEOUT(PropertyKeys.HTTP_SHUTDOWN_TIMEOUT),
   HTTP_RESPONSE_COMPRESSION_OPERATIONS(PropertyKeys.HTTP_RESPONSE_COMPRESSION_OPERATIONS),
   HTTP_USE_RESPONSE_COMPRESSION(PropertyKeys.HTTP_USE_RESPONSE_COMPRESSION),
   HTTP_POOL_WAITER_SIZE(PropertyKeys.HTTP_POOL_WAITER_SIZE),
-  HTTP_POOL_MIN_SIZE(PropertyKeys.HTTP_POOL_MIN_SIZE);
+  HTTP_POOL_MIN_SIZE(PropertyKeys.HTTP_POOL_MIN_SIZE),
+  HTTP_POOL_STATS_NAME_PREFIX(PropertyKeys.HTTP_POOL_STATS_NAME_PREFIX),
+  HTTP_REQUEST_CONTENT_ENCODINGS(PropertyKeys.HTTP_REQUEST_CONTENT_ENCODINGS),
+  HTTP_PROTOCOL_VERSION(PropertyKeys.HTTP_PROTOCOL_VERSION),
+  HTTP_STREAMING_TIMEOUT(PropertyKeys.HTTP_STREAMING_TIMEOUT);
 
   private static final Set<String> _allowedKeys;
   static
   {
-    _allowedKeys = new HashSet<String>();
+    _allowedKeys = new HashSet<>();
     for (AllowedClientPropertyKeys propertyKey: AllowedClientPropertyKeys.values())
     {
       _allowedKeys.add(propertyKey._keyName);

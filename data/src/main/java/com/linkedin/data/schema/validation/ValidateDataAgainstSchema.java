@@ -23,7 +23,6 @@ import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.Null;
 import com.linkedin.data.element.DataElement;
-import com.linkedin.data.element.DataElementUtil;
 import com.linkedin.data.element.MutableDataElement;
 import com.linkedin.data.element.SimpleDataElement;
 import com.linkedin.data.it.IterationOrder;
@@ -44,8 +43,11 @@ import com.linkedin.data.schema.validator.Validator;
 import com.linkedin.data.schema.validator.ValidatorContext;
 import com.linkedin.data.template.DataTemplate;
 
+import com.linkedin.data.template.DataTemplateUtil;
+import com.linkedin.data.template.TemplateOutputCastException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.ConcurrentModificationException;
@@ -125,7 +127,7 @@ public final class ValidateDataAgainstSchema
     private Object _fixed = null;
     private boolean _valid = true;
     private final Context _context;
-    private List<FieldToTrim> _toTrim = new ArrayList<FieldToTrim>(0);
+    private List<FieldToTrim> _toTrim = new ArrayList<>(0);
 
     private State(ValidationOptions options, Validator validator)
     {
@@ -166,9 +168,22 @@ public final class ValidateDataAgainstSchema
       _fixed = element.getValue();
       UnrecognizedFieldMode unrecognizedFieldMode = _options.getUnrecognizedFieldMode();
       ObjectIterator it = new ObjectIterator(element, IterationOrder.POST_ORDER);
-      DataElement nextElement;
-      while ((nextElement = it.next()) != null)
+      DataElement nextElement = null;
+      while (true)
       {
+        try
+        {
+          if ((nextElement = it.next()) == null)
+          {
+            break;
+          }
+        }
+        catch (IllegalArgumentException e)
+        {
+          addMessage(nextElement, e.getMessage());
+          return;
+        }
+
         DataSchema nextElementSchema = nextElement.getSchema();
         if (nextElementSchema != null)
         {
@@ -468,7 +483,7 @@ public final class ValidateDataAgainstSchema
     {
       if (object == Data.NULL)
       {
-        if (schema.getType(DataSchemaConstants.NULL_TYPE) == null)
+        if (schema.getTypeByMemberKey(DataSchemaConstants.NULL_TYPE) == null)
         {
           addMessage(element, "null is not a member type of union %1$s", schema);
         }
@@ -476,14 +491,14 @@ public final class ValidateDataAgainstSchema
       else if (_options.isAvroUnionMode())
       {
         // Avro union default value does not include member type discriminator
-        List<DataSchema> memberTypes = schema.getTypes();
-        if (memberTypes.isEmpty())
+        List<UnionDataSchema.Member> members = schema.getMembers();
+        if (members.isEmpty())
         {
           addMessage(element, "value %1$s is not valid for empty union", object.toString());
         }
         else
         {
-          DataSchema memberSchema = memberTypes.get(0);
+          DataSchema memberSchema = members.get(0).getType();
           assert(_recursive);
           validate(element, memberSchema, object);
         }
@@ -492,15 +507,16 @@ public final class ValidateDataAgainstSchema
       {
         // Pegasus mode
         DataMap map = (DataMap) object;
-        if (map.size() != 1)
+        // we allow empty union
+        if (map.size() > 1)
         {
-          addMessage(element, "DataMap should have exactly one entry for a union type");
+          addMessage(element, "DataMap should have no more than one entry for a union type");
         }
-        else
+        else if (map.size() == 1)
         {
           Map.Entry<String, Object> entry = map.entrySet().iterator().next();
           String key = entry.getKey();
-          DataSchema memberSchema = schema.getType(key);
+          DataSchema memberSchema = schema.getTypeByMemberKey(key);
           if (memberSchema == null)
           {
             addMessage(element, "\"%1$s\" is not a member type of union %2$s", key, schema);
@@ -511,6 +527,10 @@ public final class ValidateDataAgainstSchema
             MutableDataElement memberElement = new MutableDataElement(value, key, memberSchema, element);
             validate(memberElement, memberSchema, value);
           }
+        }
+        else if (!schema.isPartialSchema())
+        {
+          addMessage(element, "DataMap should have at least one entry for a union type");
         }
       }
       else
@@ -609,11 +629,45 @@ public final class ValidateDataAgainstSchema
         boolean error = false;
         if (str.length() != size)
         {
-          addMessage(element,
-                     "\"%1$s\" length (%2$d) is inconsistent with expected fixed size of %3$d",
-                     str,
-                     str.length(),
-                     size);
+          // If the length doesn't match and fixing base64 encoded values is enabled, then try decoding the string
+          // as base64 to check if there is a size match.
+          if (_options.shouldFixBase64EncodedFixedValues())
+          {
+            try
+            {
+              byte[] decodedValue = Base64.getDecoder().decode(str);
+              if (decodedValue.length == size)
+              {
+                _hasFix = true;
+                fixed = ByteString.unsafeWrap(decodedValue);
+              }
+              else
+              {
+                addMessage(element,
+                    "Both encoded \"%1$s\" length (%2$d) and Base64 decoded length (%3$d) are inconsistent with expected fixed size of %4$d",
+                    str,
+                    str.length(),
+                    decodedValue.length,
+                    size);
+              }
+            }
+            catch (IllegalArgumentException e)
+            {
+              addMessage(element,
+                  "\"%1$s\" length (%2$d) is inconsistent with expected fixed size of %3$d. Base64 decoding failed.",
+                  str,
+                  str.length(),
+                  size);
+            }
+          }
+          else
+          {
+            addMessage(element,
+                "\"%1$s\" length (%2$d) is inconsistent with expected fixed size of %3$d",
+                str,
+                str.length(),
+                size);
+          }
         }
         else
         {
@@ -724,34 +778,23 @@ public final class ValidateDataAgainstSchema
         switch (schemaType)
         {
           case INT:
-            return
-              (object instanceof Number) ?
-                (((Number) object).intValue()) :
-                (object.getClass() == String.class && _options.getCoercionMode() == CoercionMode.STRING_TO_PRIMITIVE) ?
-                  (new BigDecimal((String) object)).intValue() :
-                  object;
+          return (object instanceof String && _options.getCoercionMode() == CoercionMode.STRING_TO_PRIMITIVE) ?
+              (new BigDecimal((String) object)).intValue() :
+              DataTemplateUtil.coerceIntOutput(object);
           case LONG:
-            return
-              (object instanceof Number) ?
-                (((Number) object).longValue()) :
-                (object.getClass() == String.class && _options.getCoercionMode() == CoercionMode.STRING_TO_PRIMITIVE) ?
-                  (new BigDecimal((String) object)).longValue() :
-                  object;
+          return (object instanceof String && _options.getCoercionMode() == CoercionMode.STRING_TO_PRIMITIVE) ?
+              (new BigDecimal((String) object)).longValue() :
+              DataTemplateUtil.coerceLongOutput(object);
           case FLOAT:
-            return
-              (object instanceof Number) ?
-                (((Number) object).floatValue()) :
-                (object.getClass() == String.class && _options.getCoercionMode() == CoercionMode.STRING_TO_PRIMITIVE) ?
-                  (new BigDecimal((String) object)).floatValue() :
-                  object;
+            return (object instanceof String && _options.getCoercionMode() == CoercionMode.STRING_TO_PRIMITIVE) ?
+                Float.valueOf((String) object) :
+                DataTemplateUtil.coerceFloatOutput(object);
           case DOUBLE:
-            return
-              (object instanceof Number) ?
-                (((Number) object).doubleValue()) :
-                (object.getClass() == String.class && _options.getCoercionMode() == CoercionMode.STRING_TO_PRIMITIVE) ?
-                  (new BigDecimal((String) object)).doubleValue() :
-                  object;
+            return (object instanceof String && _options.getCoercionMode() == CoercionMode.STRING_TO_PRIMITIVE) ?
+                Double.valueOf((String) object) :
+                DataTemplateUtil.coerceDoubleOutput(object);
           case BOOLEAN:
+            // Note that Boolean#parseBoolean cannot be used because it coerces invalid strings into "false"
             if (object.getClass() == String.class && _options.getCoercionMode() == CoercionMode.STRING_TO_PRIMITIVE)
             {
               String string = (String) object;
@@ -771,7 +814,7 @@ public final class ValidateDataAgainstSchema
             return object;
         }
       }
-      catch (NumberFormatException exc)
+      catch (NumberFormatException | TemplateOutputCastException exc)
       {
         return object;
       }
@@ -789,7 +832,7 @@ public final class ValidateDataAgainstSchema
       _valid = false;
     }
 
-    private MessageList<Message> _messages = new MessageList<Message>();
+    private MessageList<Message> _messages = new MessageList<>();
 
     @Override
     public boolean hasFix()

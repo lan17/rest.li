@@ -19,11 +19,11 @@ package com.linkedin.pegasus.generator;
 
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.DataSchemaResolver;
-import com.linkedin.data.schema.SchemaParserFactory;
 import com.linkedin.data.schema.TyperefDataSchema;
 import com.linkedin.data.schema.resolver.DefaultDataSchemaResolver;
-import com.linkedin.data.schema.resolver.FileDataSchemaResolver;
 
+import com.linkedin.data.schema.resolver.MultiFormatDataSchemaResolver;
+import com.linkedin.pegasus.generator.spec.UnionTemplateSpec;
 import java.util.EnumSet;
 import java.util.Set;
 
@@ -71,7 +71,7 @@ public class CodeUtil
     }
     else
     {
-      return new FileDataSchemaResolver(SchemaParserFactory.instance(), resolverPath);
+      return MultiFormatDataSchemaResolver.withBuiltinFormats(resolverPath);
     }
   }
 
@@ -94,6 +94,24 @@ public class CodeUtil
   }
 
   /**
+   * Uncapitalize the input name.
+   *
+   * @param name the string whose first character will be converted to lowercase
+   * @return the converted name
+   */
+  public static String uncapitalize(String name)
+  {
+    if (name == null || name.isEmpty())
+    {
+      return name;
+    }
+    else
+    {
+      return Character.toLowerCase(name.charAt(0)) + name.substring(1);
+    }
+  }
+
+  /**
    * Determine if the {@link DataSchema} requires wrapping or not.
    *
    * @param schema to be tested
@@ -105,10 +123,11 @@ public class CodeUtil
   }
 
   /**
-   * Return the union member name for the specified member {@link DataSchema}.
+   * Return the union member name for the specified member {@link DataSchema}. The returned
+   * member name is capitalized using {@link #capitalize(String)}.
    *
    * @param memberType {@link DataSchema} for the member
-   * @return result union member name
+   * @return Capitalized union member name
    */
   public static String getUnionMemberName(DataSchema memberType)
   {
@@ -127,5 +146,19 @@ public class CodeUtil
       }
     }
     return capitalize(name);
+  }
+
+  /**
+   * Return the union member name for the specified member {@link UnionTemplateSpec.Member}.
+   * The returned member name is capitalized using {@link #capitalize(String)}.
+   *
+   * @param member {@link UnionTemplateSpec.Member} for the member
+   * @return Capitalized union member name
+   */
+  public static String getUnionMemberName(UnionTemplateSpec.Member member)
+  {
+    return (member.getAlias() != null) ?
+        capitalize(member.getAlias()) :
+        getUnionMemberName(member.getSchema());
   }
 }

@@ -14,29 +14,22 @@
    limitations under the License.
 */
 
-/**
- * $Id: LongTracking.java 151859 2010-11-19 21:43:47Z slim $
- */
 package com.linkedin.common.stats;
 
 import java.util.Arrays;
 
-import com.linkedin.common.util.ConfigHelper;
-
 
 /**
- * @author Swee Lim
- * @version $Rev: 151859 $
- */
-
-/**
- * Maintain a collection of values and provide the count, average, standard deviation,
- * minimum, maximum, percentile values for the collection.
+ * Extends {@link SimpleLongTracking} with additional percentile information.
+ *
+ * To calculate the percentiles, all values added are recorded in a resizable
+ * long array buffer. For memory efficiency, use {@link SimpleLongTracking}
+ * when percentile information is nonessential.
  *
  * This class implementation is not synchronized. If concurrent access is required, it
  * must be synchronized externally.
  */
-public class LongTracking
+public class LongTracking implements LongTracker
 {
   private static final int    DEFAULT_INITIAL_CAPACITY = 1000;
   private static final double DEFAULT_GROWTH_FACTOR    = 2.0;
@@ -48,26 +41,15 @@ public class LongTracking
   private final double        _growthFactor;
   private final int           _maxCapacity;
 
-  private int                 _count;
-  private long                _min;
-  private long                _max;
-  private long                _sum;
-  private long                _sumOfSquares;                  // Running sum of squares
-                                                               // for call times, used for
-                                                               // std deviation.
-
   private int                 _sortedEnd;
   private int                 _nextIndex;
   private int                 _keepRatio;
 
+  private final SimpleLongTracking _simpleLongTracking;
+
   public LongTracking()
   {
     this(DEFAULT_MAX_CAPACITY, DEFAULT_INITIAL_CAPACITY, DEFAULT_GROWTH_FACTOR);
-  }
-
-  public LongTracking(final Config config)
-  {
-    this(config.getMaxCapacity(), config.getInitialCapacity(), config.getGrowthFactor());
   }
 
   public LongTracking(final int maxCapacity, int initialCapacity, double growthFactor)
@@ -80,46 +62,33 @@ public class LongTracking
     {
       growthFactor = DEFAULT_GROWTH_FACTOR;
     }
+
     _buffer = new long[initialCapacity];
     _bufferSize = initialCapacity;
     _initialCapacity = initialCapacity;
     _growthFactor = growthFactor;
     _maxCapacity = maxCapacity;
+    _simpleLongTracking = new SimpleLongTracking();
+
     reset();
   }
 
+  @Override
   public void reset()
   {
-    _count = 0;
-    _min = 0;
-    _max = 0;
-    _sum = 0;
-    _sumOfSquares = 0;
+    _simpleLongTracking.reset();
 
     _sortedEnd = 0;
     _nextIndex = 0;
     _keepRatio = 1;
   }
 
+  @Override
   public void addValue(long value)
   {
-    if (_count == 0)
-    {
-      _min = _max = value;
-    }
-    else if (value < _min)
-    {
-      _min = value;
-    }
-    else if (value > _max)
-    {
-      _max = value;
-    }
-    _sum += value;
-    _sumOfSquares += value * value;
-    _count++;
+    _simpleLongTracking.addValue(value);
 
-    if (_keepRatio > 1 && (_count % _keepRatio) != 0)
+    if (_keepRatio > 1 && (_simpleLongTracking.getCount() % _keepRatio) != 0)
     {
       return;
     }
@@ -137,6 +106,15 @@ public class LongTracking
     }
     _buffer[_nextIndex] = value;
     _nextIndex++;
+  }
+
+  @Override
+  public LongStats getStats()
+  {
+    return new LongStats(_simpleLongTracking.getCount(), _simpleLongTracking.getAverage(),
+        _simpleLongTracking.getStandardDeviation(),
+        _simpleLongTracking.getMinimum(), _simpleLongTracking.getMaximum(),
+        get50Pct(), get90Pct(), get95Pct(), get99Pct());
   }
 
   public int getBufferSize()
@@ -159,40 +137,6 @@ public class LongTracking
     return _maxCapacity;
   }
 
-  public LongStats getStats()
-  {
-    return new LongStats(getCount(), getAverage(), getStandardDeviation(),
-                         getMinimum(), getMaximum(),
-                         get50Pct(), get90Pct(), get95Pct(), get99Pct());
-  }
-
-  private int getCount()
-  {
-    return _count;
-  }
-
-  private double getAverage()
-  {
-    return safeDivide(_sum, _count);
-  }
-
-  private double getStandardDeviation()
-  {
-    double variation;
-    variation = safeDivide(_sumOfSquares - _sum * getAverage(), getCount());
-    return Math.sqrt(variation);
-  }
-
-  private long getMinimum()
-  {
-    return _min;
-  }
-
-  private long getMaximum()
-  {
-    return _max;
-  }
-
   private long get50Pct()
   {
     return getPercentile(0.50);
@@ -213,9 +157,9 @@ public class LongTracking
     return getPercentile(0.99);
   }
 
-  private long getPercentile(double pct)
+  public long getPercentile(double pct)
   {
-    if (_count == 0)
+    if (_simpleLongTracking.getCount() == 0)
     {
       return 0;
     }
@@ -268,51 +212,4 @@ public class LongTracking
     _buffer = newBuffer;
     _bufferSize = newBufferSize;
   }
-
-  private static double safeDivide(final double numerator, final double denominator)
-  {
-    return denominator != 0 ? numerator / denominator : 0;
-  }
-
-  public static class Config
-  {
-    private Integer _maxCapacity = DEFAULT_MAX_CAPACITY;
-    private Integer _initialCapacity = DEFAULT_INITIAL_CAPACITY;
-    private Double _growthFactor = DEFAULT_GROWTH_FACTOR;
-
-    Config()
-    {
-    }
-
-    public int getMaxCapacity()
-    {
-      return ConfigHelper.getRequired(_maxCapacity);
-    }
-
-    public void setMaxCapacity(final int maxCapacity)
-    {
-      _maxCapacity = maxCapacity;
-    }
-
-    public int getInitialCapacity()
-    {
-      return ConfigHelper.getRequired(_initialCapacity);
-    }
-
-    public void setInitialCapacity(final int initialCapacity)
-    {
-      _initialCapacity = initialCapacity;
-    }
-
-    public double getGrowthFactor()
-    {
-      return ConfigHelper.getRequired(_growthFactor);
-    }
-
-    public void setGrowthFactor(final double growthFactor)
-    {
-      _growthFactor = growthFactor;
-    }
-  }
 }
-

@@ -28,7 +28,13 @@ public class CompatibilityInfo
   public enum Level
   {
     INCOMPATIBLE,
-    COMPATIBLE
+    COMPATIBLE,
+
+    /**
+     * Old readers can deserialize changes serialized by new writers, but may not be able to handle them correctly.
+     * Currently only used for adding new enum values.
+     **/
+    WIRE_COMPATIBLE
   }
 
   public enum Type
@@ -48,6 +54,7 @@ public class CompatibilityInfo
     TYPE_UNKNOWN(Level.INCOMPATIBLE, "Type cannot be resolved: %s"),
     VALUE_NOT_EQUAL(Level.INCOMPATIBLE, "Current value \"%2$s\" does not match the previous value \"%1$s\""),
     VALUE_WRONG_OPTIONALITY(Level.INCOMPATIBLE, "\"%s\" may not be removed because it exists in the previous version"),
+    ENUM_VALUE_ADDED(Level.WIRE_COMPATIBLE, "%s, new enum value may break old readers"),
     TYPE_BREAKS_OLD_READER(Level.INCOMPATIBLE, "%s, breaks old readers"),
     TYPE_BREAKS_NEW_READER(Level.INCOMPATIBLE, "%s, breaks new readers"),
     TYPE_BREAKS_NEW_AND_OLD_READERS(Level.INCOMPATIBLE, "%s, breaks new and old readers"),
@@ -61,7 +68,21 @@ public class CompatibilityInfo
     RESOURCE_NEW(Level.COMPATIBLE, "New resource is created in \"%s\""),
     SUPERSET(Level.COMPATIBLE, "Current values have these extra values: %s"),
     VALUE_DIFFERENT(Level.COMPATIBLE, "Previous value \"%s\" is changed to \"%s\""),
-    TYPE_INFO(Level.COMPATIBLE, "%s"); // data type related information or warning, reported by com.linkedin.data.schema.compatibility.CompatibilityChecker
+    TYPE_INFO(Level.COMPATIBLE, "%s"), // data type related information or warning, reported by com.linkedin.data.schema.compatibility.CompatibilityChecker
+    PAGING_ADDED(Level.COMPATIBLE, "Method added paging support"),
+    PAGING_REMOVED(Level.INCOMPATIBLE, "Method removed paging support"),
+    SERVICE_ERROR_ADDED(Level.INCOMPATIBLE, "Service error \"%s\" now applies"),
+    SERVICE_ERROR_REMOVED(Level.COMPATIBLE, "Service error \"%s\" no longer applies"),
+    BREAK_OLD_CLIENTS(Level.INCOMPATIBLE, "Deleting a schema is incompatible change, it breaks old clients"),
+    SCHEMA_ANNOTATION_INCOMPATIBLE_CHANGE(Level.INCOMPATIBLE, "Schema annotation incompatible change: %s"),
+    MAX_BATCH_SIZE_ADDED_WITH_VALIDATION_ON(Level.INCOMPATIBLE, "Method added MaxBatchSize with validation"),
+    MAX_BATCH_SIZE_ADDED_WITH_VALIDATION_OFF(Level.COMPATIBLE, "Method added MaxBatchSize without validation"),
+    MAX_BATCH_SIZE_REMOVED(Level.COMPATIBLE, "Method removed MaxBatchSize"),
+    MAX_BATCH_SIZE_VALUE_INCREASED(Level.COMPATIBLE, "Method increased MaxBatchSize value"),
+    MAX_BATCH_SIZE_VALUE_DECREASED_WITH_VALIDATION_OFF(Level.COMPATIBLE, "Method decreased MaxBatchSize value when validation is off"),
+    MAX_BATCH_SIZE_VALUE_DECREASED_WITH_VALIDATION_ON(Level.INCOMPATIBLE, "Method decreased MaxBatchSize value when validation is on"),
+    MAX_BATCH_SIZE_TURN_ON_VALIDATION(Level.INCOMPATIBLE, "Method updated MaxBatchSize validation from off to on"),
+    MAX_BATCH_SIZE_TURN_OFF_VALIDATION(Level.COMPATIBLE, "Method updated MaxBatchSize validation from on to off");
 
     public String getDescription(Object[] parameters)
     {

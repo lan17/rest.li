@@ -16,21 +16,26 @@
 
 package com.linkedin.d2.balancer.strategies.degrader;
 
-
 import com.linkedin.common.callback.Callback;
+import com.linkedin.common.callback.Callbacks;
 import com.linkedin.common.util.None;
 import com.linkedin.d2.balancer.KeyMapper;
 import com.linkedin.d2.balancer.LoadBalancerClient;
+import com.linkedin.d2.balancer.clients.DegraderTrackerClient;
+import com.linkedin.d2.balancer.clients.DegraderTrackerClientImpl;
 import com.linkedin.d2.balancer.clients.TrackerClient;
-import com.linkedin.d2.balancer.clients.TrackerClientTest;
+import com.linkedin.d2.balancer.clients.DegraderTrackerClientTest;
 import com.linkedin.d2.balancer.properties.PartitionData;
 import com.linkedin.d2.balancer.properties.PropertyKeys;
+import com.linkedin.d2.balancer.strategies.DelegatingRingFactory;
+import com.linkedin.d2.balancer.strategies.LoadBalancerQuarantine;
 import com.linkedin.d2.balancer.strategies.LoadBalancerStrategy;
+import com.linkedin.d2.balancer.strategies.RingFactory;
 import com.linkedin.d2.balancer.util.URIRequest;
-import com.linkedin.d2.balancer.util.hashing.ConsistentHashRing;
-import com.linkedin.d2.balancer.util.hashing.ConsistentHashRing.Point;
+import com.linkedin.d2.balancer.util.hashing.HashFunction;
 import com.linkedin.d2.balancer.util.hashing.Ring;
 import com.linkedin.d2.balancer.util.hashing.URIRegexHash;
+import com.linkedin.d2.balancer.util.healthcheck.TransportHealthCheck;
 import com.linkedin.d2.balancer.util.partitions.DefaultPartitionAccessor;
 import com.linkedin.r2.message.Request;
 import com.linkedin.r2.message.RequestContext;
@@ -41,6 +46,7 @@ import com.linkedin.r2.message.stream.StreamRequest;
 import com.linkedin.r2.message.stream.StreamResponse;
 import com.linkedin.r2.transport.common.bridge.client.TransportClient;
 import com.linkedin.r2.transport.common.bridge.common.TransportCallback;
+import com.linkedin.test.util.retry.SingleRetry;
 import com.linkedin.util.clock.Clock;
 import com.linkedin.util.clock.SettableClock;
 import com.linkedin.util.clock.SystemClock;
@@ -48,7 +54,6 @@ import com.linkedin.util.degrader.CallCompletion;
 import com.linkedin.util.degrader.DegraderControl;
 import com.linkedin.util.degrader.DegraderImpl;
 import com.linkedin.util.degrader.ErrorType;
-
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -69,8 +74,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import javax.annotation.Nonnull;
 
 import org.testng.Assert;
 import org.testng.annotations.DataProvider;
@@ -89,21 +94,16 @@ public class DegraderLoadBalancerTest
 {
   private static final int DEFAULT_PARTITION_ID = DefaultPartitionAccessor.DEFAULT_PARTITION_ID;
 
-  public static void main(String[] args) throws URISyntaxException,
-          InterruptedException
-  {
-    DegraderLoadBalancerTest test = new DegraderLoadBalancerTest();
-
-    test.testWeightedBalancingRing();
-  }
+  private static final List<PartitionDegraderLoadBalancerStateListener.Factory> DEGRADER_STATE_LISTENER_FACTORIES =
+      Collections.emptyList();
 
   public static TrackerClient getTrackerClient(LoadBalancerStrategy strategy,
                                                Request request,
                                                RequestContext requestContext,
                                                long clusterGenerationId,
-                                               List<TrackerClient> trackerClients)
+                                               List<DegraderTrackerClient> degraderTrackerClients)
   {
-    return strategy.getTrackerClient(request, requestContext, clusterGenerationId, DefaultPartitionAccessor.DEFAULT_PARTITION_ID, trackerClients);
+    return strategy.getTrackerClient(request, requestContext, clusterGenerationId, DefaultPartitionAccessor.DEFAULT_PARTITION_ID, toMap(degraderTrackerClients));
   }
 
   public static Map<Integer, PartitionData> getDefaultPartitionData(double weight)
@@ -114,7 +114,7 @@ public class DegraderLoadBalancerTest
   public static Map<Integer, PartitionData> getDefaultPartitionData(double weight, int numberOfPartitions)
   {
     PartitionData data = new PartitionData(weight);
-    Map<Integer, PartitionData> partitionDataMap = new HashMap<Integer, PartitionData>(numberOfPartitions + 1);
+    Map<Integer, PartitionData> partitionDataMap = new HashMap<>(numberOfPartitions + 1);
     for (int p = 0; p < numberOfPartitions; ++p)
       partitionDataMap.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID + p, data);
     return partitionDataMap;
@@ -122,199 +122,41 @@ public class DegraderLoadBalancerTest
 
   @Test(groups = { "small", "back-end" })
   public void testDegraderLoadBalancerStateComparison()
-          throws URISyntaxException
+      throws URISyntaxException
   {
 
     long clusterGenerationId = 1;
     long lastUpdated = 29999;
-    long updateIntervalMs = 5000;
-    DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy strategy =
-            DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy.LOAD_BALANCE;
     long currentAverageClusterLatency = 3000;
-    Map<String, Object> configMap = new HashMap<String, Object>();
+    Map<String, Object> configMap = new HashMap<>();
     configMap.put(PropertyKeys.HTTP_LB_LOW_WATER_MARK, 500d);
     configMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_POINTS_PER_WEIGHT, 120);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(configMap);
     long clusterCallCount = 15;
+    Map<DegraderTrackerClient, LoadBalancerQuarantine> quarantineMap = new HashMap<>();
+    Map<DegraderTrackerClient, LoadBalancerQuarantine> quarantineStore = new HashMap<>();
 
     double currentOverrideDropRate = 0.4;
     boolean initialized = true;
     String name = "degraderV2";
-    Map<URI, Integer> points = new HashMap<URI, Integer>();
-    Map<TrackerClient,Double> recoveryMap = new HashMap<TrackerClient, Double>();
+    Map<URI, Integer> points = new HashMap<>();
+    Map<DegraderTrackerClient,Double> recoveryMap = new HashMap<>();
     URI uri1 = new URI("http://test.linkedin.com:10010/abc0");
     URI uri2 = new URI("http://test.linkedin.com:10010/abc1");
     URI uri3 = new URI("http://test.linkedin.com:10010/abc2");
     points.put(uri1, 100);
     points.put(uri2, 50);
     points.put(uri3, 120);
+    RingFactory<URI> ringFactory = new DelegatingRingFactory<>(config);
     TestClock clock = new TestClock();
 
-    List<TrackerClient> clients = createTrackerClient(3, clock, null);
-    List<TrackerClientUpdater> clientUpdaters = new ArrayList<TrackerClientUpdater>();
-    for (TrackerClient client : clients)
+    List<DegraderTrackerClient> clients = createTrackerClient(3, clock, null);
+    List<DegraderTrackerClientUpdater> clientUpdaters = new ArrayList<>();
+    for (DegraderTrackerClient client : clients)
     {
       recoveryMap.put(client, 0.0);
-      clientUpdaters.add(new TrackerClientUpdater(client, DEFAULT_PARTITION_ID));
+      clientUpdaters.add(new DegraderTrackerClientUpdater(client, DEFAULT_PARTITION_ID));
     }
-
-
-    DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState oldStateV2 =
-            new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-                    clusterGenerationId,
-                    points,
-                    lastUpdated,
-                    strategy,
-                    currentOverrideDropRate,
-                    currentAverageClusterLatency,
-                    initialized,
-                    recoveryMap,
-                    name, null, clusterCallCount);
-
-    DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState newStateV2 =
-            new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-                    clusterGenerationId,
-                    points,
-                    lastUpdated,
-                    strategy,
-                    currentOverrideDropRate,
-                    currentAverageClusterLatency,
-                    initialized,
-                    recoveryMap,
-                    name, null, clusterCallCount);
-
-    assertTrue(DegraderLoadBalancerStrategyV2_1.isOldStateTheSameAsNewState(oldStateV2, newStateV2));
-
-    newStateV2 = new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-            clusterGenerationId + 1,
-            points,
-            lastUpdated,
-            strategy,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            initialized,
-            recoveryMap,
-            name, null,
-            clusterCallCount);
-
-    assertFalse(DegraderLoadBalancerStrategyV2_1.isOldStateTheSameAsNewState(oldStateV2, newStateV2));
-
-    //we don't care about last updated
-    newStateV2 = new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-            clusterGenerationId,
-            points,
-            lastUpdated + 30,
-            strategy,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            initialized,
-            recoveryMap,
-            name, null, clusterCallCount);
-
-    assertTrue(DegraderLoadBalancerStrategyV2_1.isOldStateTheSameAsNewState(oldStateV2, newStateV2));
-
-    points.put(uri1, 30);
-    newStateV2 = new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-            clusterGenerationId,
-            points,
-            lastUpdated,
-            strategy,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            initialized,
-            recoveryMap,
-            name, null, clusterCallCount);
-
-    points.put(uri1, 100);
-
-    newStateV2 = new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-            clusterGenerationId,
-            points,
-            lastUpdated,
-            strategy,
-            currentOverrideDropRate - 0.1,
-            currentAverageClusterLatency,
-            initialized,
-            recoveryMap,
-            name, null, clusterCallCount);
-
-    assertFalse(DegraderLoadBalancerStrategyV2_1.isOldStateTheSameAsNewState(oldStateV2, newStateV2));
-    //we don't care about averageClusterLatency as far as for printing the state
-    newStateV2 = new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-            clusterGenerationId,
-            points,
-            lastUpdated,
-            strategy,
-            currentOverrideDropRate,
-            currentAverageClusterLatency + 3,
-            initialized,
-            recoveryMap,
-            name, null, clusterCallCount);
-    assertTrue(DegraderLoadBalancerStrategyV2_1.isOldStateTheSameAsNewState(oldStateV2, newStateV2));
-    for (TrackerClient client : clients)
-    {
-      recoveryMap.put(client, 0.3);
-    }
-
-    newStateV2 = new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-            clusterGenerationId,
-            points,
-            lastUpdated,
-            strategy,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            initialized,
-            recoveryMap,
-            name, null, clusterCallCount);
-    assertFalse(DegraderLoadBalancerStrategyV2_1.isOldStateTheSameAsNewState(oldStateV2, newStateV2));
-
-    //test state health comparison
-
-    assertFalse(DegraderLoadBalancerStrategyV2_1.isNewStateHealthy(newStateV2, config, clientUpdaters));
-    //make cluster average latency to be 300 to be lower than lowWaterMark but still not healthy because
-    //points map has clients with less than perfect health
-    newStateV2 = new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-            clusterGenerationId,
-            points,
-            lastUpdated,
-            strategy,
-            currentOverrideDropRate,
-            300,
-            initialized,
-            recoveryMap,
-            name, null, clusterCallCount);
-
-    assertFalse(DegraderLoadBalancerStrategyV2_1.isNewStateHealthy(newStateV2, config, clientUpdaters));
-    //make all points to have 120 so the cluster becomes "healthy"
-    points.put(uri1, 120);
-    points.put(uri2, 120);
-    points.put(uri3, 120);
-
-    newStateV2 = new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-            clusterGenerationId,
-            points,
-            lastUpdated,
-            strategy,
-            currentOverrideDropRate,
-            300,
-            initialized,
-            recoveryMap,
-            name, null, clusterCallCount);
-    assertTrue(DegraderLoadBalancerStrategyV2_1.isNewStateHealthy(newStateV2, config, clientUpdaters));
-
-    //if currentAverageClusterLatency is > low water mark then cluster becomes unhealthy
-    newStateV2 = new DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState(updateIntervalMs,
-            clusterGenerationId,
-            points,
-            lastUpdated,
-            strategy,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            initialized,
-            recoveryMap,
-            name, null, clusterCallCount);
-
-    assertFalse(DegraderLoadBalancerStrategyV2_1.isNewStateHealthy(newStateV2, config, clientUpdaters));
 
     //test DegraderLoadBalancerV3
 
@@ -322,112 +164,146 @@ public class DegraderLoadBalancerTest
     points.put(uri2, 50);
     points.put(uri3, 120);
 
-    DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy strategyV3 =
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING;
+    PartitionDegraderLoadBalancerState.Strategy strategyV3 = PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING;
 
-    DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState oldStateV3 = new
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            recoveryMap,
-            name, null,
-            clusterCallCount);
+    PartitionDegraderLoadBalancerState oldStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        currentAverageClusterLatency,
+        recoveryMap,
+        name, null,
+        clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
 
-    DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState newStateV3 = new
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            recoveryMap,
-            name, null,
-            clusterCallCount);
-
-    assertTrue(DegraderLoadBalancerStrategyV3.isOldStateTheSameAsNewState(oldStateV3, newStateV3));
-
-    newStateV3 = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId + 1,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            recoveryMap,
-            name, null,
-            clusterCallCount);
+    PartitionDegraderLoadBalancerState newStateV3 = new
+        PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        currentAverageClusterLatency,
+        recoveryMap,
+        name, null,
+        clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
 
     assertTrue(DegraderLoadBalancerStrategyV3.isOldStateTheSameAsNewState(oldStateV3, newStateV3));
 
-    newStateV3 = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated + 300,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            recoveryMap,
-            name, null, clusterCallCount);
+    newStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId + 1,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        currentAverageClusterLatency,
+        recoveryMap,
+        name, null,
+        clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
+
+    assertTrue(DegraderLoadBalancerStrategyV3.isOldStateTheSameAsNewState(oldStateV3, newStateV3));
+
+    newStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated + 300,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        currentAverageClusterLatency,
+        recoveryMap,
+        name, null, clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
 
     assertTrue(DegraderLoadBalancerStrategyV3.isOldStateTheSameAsNewState(oldStateV3, newStateV3));
 
     points.put(uri2, 77);
-    newStateV3 = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            recoveryMap,
-            name, null,
-            clusterCallCount);
+    newStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        currentAverageClusterLatency,
+        recoveryMap,
+        name, null,
+        clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
+
     assertFalse(DegraderLoadBalancerStrategyV3.isOldStateTheSameAsNewState(oldStateV3, newStateV3));
 
     points.put(uri2, 50);
 
-    newStateV3 = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate + 0.4,
-            currentAverageClusterLatency,
-            recoveryMap,
-            name, null, clusterCallCount);
+    newStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate + 0.4,
+        currentAverageClusterLatency,
+        recoveryMap,
+        name, null, clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
+
     assertFalse(DegraderLoadBalancerStrategyV3.isOldStateTheSameAsNewState(oldStateV3, newStateV3));
 
-    newStateV3 = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            currentAverageClusterLatency + 55,
-            recoveryMap,
-            name, null, clusterCallCount);
+    newStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        currentAverageClusterLatency + 55,
+        recoveryMap,
+        name, null, clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
+
     //we don't care about averageClusterLatency for comparing states
     assertTrue(DegraderLoadBalancerStrategyV3.isOldStateTheSameAsNewState(oldStateV3, newStateV3));
 
-    for (TrackerClient client : clients)
+    for (DegraderTrackerClient client : clients)
     {
       recoveryMap.put(client, 0.5);
     }
 
-    newStateV3 = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            recoveryMap,
-            name, null, clusterCallCount);
+    newStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        currentAverageClusterLatency,
+        recoveryMap,
+        name, null, clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
+
     assertFalse(DegraderLoadBalancerStrategyV3.isOldStateTheSameAsNewState(oldStateV3, newStateV3));
 
     //test state health comparison
@@ -435,16 +311,20 @@ public class DegraderLoadBalancerTest
     assertFalse(DegraderLoadBalancerStrategyV3.isNewStateHealthy(newStateV3, config, clientUpdaters, DEFAULT_PARTITION_ID));
     //make cluster average latency to be 300 to be lower than lowWaterMark but still not healthy because
     //points map has clients with less than perfect health
-    newStateV3 = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            300,
-            recoveryMap,
-            name, null,
-            clusterCallCount);
+    newStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        300,
+        recoveryMap,
+        name, null,
+        clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
 
     assertFalse(DegraderLoadBalancerStrategyV3.isNewStateHealthy(newStateV3, config, clientUpdaters, DEFAULT_PARTITION_ID));
     //make all points to have 120 so the cluster becomes "healthy"
@@ -452,29 +332,39 @@ public class DegraderLoadBalancerTest
     points.put(uri2, 120);
     points.put(uri3, 120);
 
-    newStateV3 = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            300,
-            recoveryMap,
-            name, null,
-            clusterCallCount);
+    newStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        300,
+        recoveryMap,
+        name, null,
+        clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
+
     assertTrue(DegraderLoadBalancerStrategyV3.isNewStateHealthy(newStateV3, config, clientUpdaters, DEFAULT_PARTITION_ID));
 
     //if currentAverageClusterLatency is > low water mark then cluster becomes unhealthy
-    newStateV3 = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(clusterGenerationId,
-            lastUpdated,
-            initialized,
-            points,
-            strategyV3,
-            currentOverrideDropRate,
-            currentAverageClusterLatency,
-            recoveryMap,
-            name, null,
-            clusterCallCount);
+    newStateV3 = new PartitionDegraderLoadBalancerState(clusterGenerationId,
+        lastUpdated,
+        initialized,
+        ringFactory,
+        points,
+        strategyV3,
+        currentOverrideDropRate,
+        currentAverageClusterLatency,
+        recoveryMap,
+        name, null,
+        clusterCallCount,
+        0, 0,
+        quarantineMap,
+        quarantineStore, null, 0);
+
 
     assertFalse(DegraderLoadBalancerStrategyV3.isNewStateHealthy(newStateV3, config, clientUpdaters, DEFAULT_PARTITION_ID));
   }
@@ -523,7 +413,23 @@ public class DegraderLoadBalancerTest
               config.getGlobalStepUp(),
               config.getGlobalStepDown(),
               config.getMinClusterCallCountHighWaterMark(),
-              config.getMinClusterCallCountLowWaterMark());
+              config.getMinClusterCallCountLowWaterMark(),
+              config.getHashRingPointCleanUpRate(),
+              config.getConsistentHashAlgorithm(),
+              config.getNumProbes(),
+              config.getPointsPerHost(),
+              config.getBoundedLoadBalancingFactor(),
+              config.getServicePath(),
+              config.getQuarantineMaxPercent(),
+              config.getExecutorService(),
+              config.getHealthCheckOperations(),
+              config.getHealthCheckMethod(),
+              config.getHealthCheckPath(),
+              config.getQuarantineLatency(),
+              config.getEventEmitter(),
+              config.getLowEventEmittingInterval(),
+              config.getHighEventEmittingInterval(),
+              config.getClusterName());
     }
 
     @Override
@@ -534,7 +440,7 @@ public class DegraderLoadBalancerTest
     }
   }
 
-  private static class BrokenTrackerClient extends TrackerClient
+  private static class BrokenTrackerClient extends DegraderTrackerClientImpl
   {
     public BrokenTrackerClient(URI uri, Map<Integer, PartitionData> partitionDataMap, TransportClient wrappedClient,
                                Clock clock, DegraderImpl.Config config)
@@ -603,10 +509,10 @@ public class DegraderLoadBalancerTest
     }
   }
 
-  private static Map<TrackerClient, TrackerClientMetrics> getTrackerClientMetrics(List<TrackerClient> clients)
+  private static Map<DegraderTrackerClient, TrackerClientMetrics> getTrackerClientMetrics(List<DegraderTrackerClient> clients)
   {
-    Map<TrackerClient, TrackerClientMetrics> map = new HashMap<TrackerClient, TrackerClientMetrics>();
-    for (TrackerClient client : clients)
+    Map<DegraderTrackerClient, TrackerClientMetrics> map = new HashMap<>();
+    for (DegraderTrackerClient client : clients)
     {
       DegraderControl degraderControl = client.getDegraderControl(DEFAULT_PARTITION_ID);
       map.put(client, new TrackerClientMetrics(degraderControl.getOverrideDropRate(),
@@ -616,19 +522,19 @@ public class DegraderLoadBalancerTest
     return map;
   }
 
-  @Test(groups = { "small", "back-end" })
+  @Test(groups = { "small", "back-end" }, retryAnalyzer = SingleRetry.class)
   public void testDegraderLoadBalancerHandlingExceptionInUpdate()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS , timeInterval);
-    Map<String, String> degraderProperties = new HashMap<String,String>();
+    Map<String, String> degraderProperties = degraderDefaultConfig();
     degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
     DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
-    final List<TrackerClient> clients = createTrackerClient(3, clock, degraderConfig);
+    final List<DegraderTrackerClient> clients = createTrackerClient(3, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig unbrokenConfig = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
     DegraderLoadBalancerStrategyConfig brokenConfig = new MockDegraderLoadBalancerStrategyConfig(unbrokenConfig);
 
@@ -639,37 +545,26 @@ public class DegraderLoadBalancerTest
             new TestLoadBalancerClient(uri4), clock, null);
     clients.add(brokenClient);
 
-    //test DegraderLoadBalancerStrategyV2_1 when the strategy is LOAD_BALANCE
-    final DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(brokenConfig, "testStrategyV2", null);
-    DegraderLoadBalancerStrategyAdapter strategyAdapterV2 = new DegraderLoadBalancerStrategyAdapter(strategyV2);
-    //simulate 100 threads trying to get client at the same time. Make sure that they won't be blocked if an exception
-    //occurs during updateState()
-    runMultiThreadedTest(strategyAdapterV2, clients, 100, true);
-    DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState stateV2 = strategyV2.getState();
-    // only one exception would occur and other thread would succeed in initializing immediately after
-    assertTrue(stateV2.isInitialized());
-    assertEquals(stateV2.getStrategy(), DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy.CALL_DROPPING);
-    brokenClient.reset();
-
     //test DegraderLoadBalancerStrategyV3 when the strategy is LOAD_BALANCE
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(brokenConfig, "testStrategyV3", null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(brokenConfig,
+        "testStrategyV3", null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategyAdapterV3 = new DegraderLoadBalancerStrategyAdapter(strategyV3);
     //simulate 100 threads trying to get client at the same time. Make sure that they won't be blocked if an exception
     //occurs during updateState()
     runMultiThreadedTest(strategyAdapterV3, clients, 100, true);
-    DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState stateV3 = strategyV3.getState().
+    PartitionDegraderLoadBalancerState stateV3 = strategyV3.getState().
             getPartitionState(0);
     // only one exception would occur and other thread would succeed in initializing immediately after
     assertTrue(stateV3.isInitialized());
     assertEquals(stateV3.getStrategy(),
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
+            PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
     brokenClient.reset();
 
     // test DegraderLoadBalancerStrategy when the strategy is CALL_DROPPING. We have to make some prepare the
     // environment by simulating lots of high latency calls to the tracker client
     int numberOfCallsPerClient = 10;
-    List<CallCompletion> callCompletions = new ArrayList<CallCompletion>();
-    for (TrackerClient client : clients)
+    List<CallCompletion> callCompletions = new ArrayList<>();
+    for (DegraderTrackerClient client : clients)
     {
       for (int i = 0; i < numberOfCallsPerClient; i++)
       {
@@ -687,21 +582,11 @@ public class DegraderLoadBalancerTest
     }
     clock.addMs(1000);
 
-    Map<TrackerClient, TrackerClientMetrics> beforeStateUpdate = getTrackerClientMetrics(clients);
+    Map<DegraderTrackerClient, TrackerClientMetrics> beforeStateUpdate = getTrackerClientMetrics(clients);
 
-    //test DegraderLoadBalancerStrategyV2_1 when the strategy is CALL_DROPPING
-    strategyV2.setStrategy(DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy.CALL_DROPPING);
-    strategyV3.setStrategy(DEFAULT_PARTITION_ID, DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
-    runMultiThreadedTest(strategyAdapterV2, clients, 100, true);
-    stateV2 = strategyV2.getState();
-
-    //MockDegraderLoadBalancerStrategyConfig getHighWaterMark should have been called and throw an exception every time and update would fail for any thread
-
-    // no side-effects on state when update fails
-    assertEquals(stateV2.getStrategy(), DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy.CALL_DROPPING);
     // no side-effects on tracker clients when update fails
-    Map<TrackerClient, TrackerClientMetrics> afterFailedV2StateUpdate = getTrackerClientMetrics(clients);
-    for (TrackerClient client : clients)
+    Map<DegraderTrackerClient, TrackerClientMetrics> afterFailedV2StateUpdate = getTrackerClientMetrics(clients);
+    for (DegraderTrackerClient client : clients)
     {
       assertEquals(beforeStateUpdate.get(client), afterFailedV2StateUpdate.get(client));
     }
@@ -709,56 +594,18 @@ public class DegraderLoadBalancerTest
     runMultiThreadedTest(strategyAdapterV3, clients, 100, true);
     stateV3 = strategyV3.getState().getPartitionState(0);
     // no side-effects on state when update fails
-    assertEquals(stateV3.getStrategy(), DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
+    assertEquals(stateV3.getStrategy(), PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
     // no side-effects on tracker clients when update fails
-    Map<TrackerClient, TrackerClientMetrics> afterFailedV3StateUpdate = getTrackerClientMetrics(clients);
-    for (TrackerClient client : clients)
+    Map<DegraderTrackerClient, TrackerClientMetrics> afterFailedV3StateUpdate = getTrackerClientMetrics(clients);
+    for (DegraderTrackerClient client : clients)
     {
       assertEquals(beforeStateUpdate.get(client), afterFailedV3StateUpdate.get(client));
     }
 
     brokenClient.reset();
 
-    //this time we'll change the config to the correct one so it won't throw exception when strategy is CALL_DROPPING
-    // update would succeed and state and trackerclients are expected to be mutated
-    callCompletions.clear();
-    for (TrackerClient client : clients)
-    {
-      for (int i = 0; i < numberOfCallsPerClient; i++)
-      {
-        callCompletions.add(client.getCallTracker().startCall());
-      }
-    }
-
-    clock.addMs(brokenConfig.getUpdateIntervalMs() - 1000);
-    for (CallCompletion cc : callCompletions)
-    {
-      for (int i = 0; i < numberOfCallsPerClient; i++)
-      {
-        cc.endCall();
-      }
-    }
-    clock.addMs(1000);
-
-
-    strategyV2.setConfig(unbrokenConfig);
-    beforeStateUpdate = getTrackerClientMetrics(clients);
-    // when we run this, the strategy is CALL_DROPPING, and our clients' latency is 4000 MS so our current override
-    // drop rate is going to be 0.2 That means occasionally some tracker client will be null
-    runMultiThreadedTest(strategyAdapterV2, clients, 100, false);
-    stateV2 = strategyV2.getState();
-    // This time update should succeed, and both state and trackerclients are updated
-    Map<TrackerClient, TrackerClientMetrics> afterV2StateUpdate = getTrackerClientMetrics(clients);
-    for (TrackerClient client : clients)
-    {
-      assertNotEquals(beforeStateUpdate.get(client), afterV2StateUpdate.get(client));
-    }
-    assertEquals(stateV2.getStrategy(), DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy.LOAD_BALANCE);
-
-    brokenClient.reset();
-
     // reset metrics on tracker client's degrader control
-    for(TrackerClient client : clients)
+    for (DegraderTrackerClient client : clients)
     {
       TrackerClientMetrics originalMetrics = beforeStateUpdate.get(client);
       DegraderControl degraderControl = client.getDegraderControl(DEFAULT_PARTITION_ID);
@@ -768,7 +615,7 @@ public class DegraderLoadBalancerTest
     }
 
     callCompletions.clear();
-    for (TrackerClient client : clients)
+    for (DegraderTrackerClient client : clients)
     {
       for (int i = 0; i < numberOfCallsPerClient; i++)
       {
@@ -791,24 +638,24 @@ public class DegraderLoadBalancerTest
     runMultiThreadedTest(strategyAdapterV3, clients, 100, false);
     stateV3 = strategyV3.getState().getPartitionState(0);
     // This time update should succeed, and both state and trackerclients are updated
-    Map<TrackerClient, TrackerClientMetrics> afterV3StateUpdate = getTrackerClientMetrics(clients);
-    for (TrackerClient client : clients)
+    Map<DegraderTrackerClient, TrackerClientMetrics> afterV3StateUpdate = getTrackerClientMetrics(clients);
+    for (DegraderTrackerClient client : clients)
     {
       assertNotEquals(beforeStateUpdate.get(client), afterV3StateUpdate.get(client));
     }
 
-    assertEquals(stateV3.getStrategy(), DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
+    assertEquals(stateV3.getStrategy(), PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
   }
 
   private void runMultiThreadedTest(final DegraderLoadBalancerStrategyAdapter strategyAdapter,
-                                    final List<TrackerClient> clients,
+                                    final List<DegraderTrackerClient> clients,
                                     final int numberOfThread,
                                     final boolean trackerClientMustNotBeNull)
   {
     final CountDownLatch exitLatch = new CountDownLatch(numberOfThread);
     final CountDownLatch startLatch = new CountDownLatch(numberOfThread);
     ExecutorService executorService = Executors.newFixedThreadPool(numberOfThread);
-    List<Future<Boolean>> futures = new ArrayList<Future<Boolean>>();
+    List<Future<Boolean>> futures = new ArrayList<>();
 
     for (int i = 0; i < numberOfThread; i++)
     {
@@ -897,15 +744,15 @@ public class DegraderLoadBalancerTest
     // test empty twice (first time will have no state)
     for (int i = 0; i < 2; ++i)
     {
-      assertNull(getTrackerClient(strategy, null, new RequestContext(), 0, new ArrayList<TrackerClient>()));
+      assertNull(getTrackerClient(strategy, null, new RequestContext(), 0, new ArrayList<>()));
     }
 
     // test same cluster generation id but different client lists
     strategy = getStrategy();
-    List<TrackerClient> clients1 = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients1 = new ArrayList<>();
     SettableClock clock1 = new SettableClock();
     SettableClock clock2 = new SettableClock();
-    List<TrackerClient> clients2 = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients2 = new ArrayList<>();
     SettableClock clock3 = new SettableClock();
     SettableClock clock4 = new SettableClock();
 
@@ -929,8 +776,8 @@ public class DegraderLoadBalancerTest
   {
     DegraderLoadBalancerStrategyV3 strategy =
             new DegraderLoadBalancerStrategyV3(new DegraderLoadBalancerStrategyConfig(5000),
-                    "DegraderLoadBalancerTest", null);
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+                    "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     SettableClock clock1 = new SettableClock();
     SettableClock clock2 = new SettableClock();
 
@@ -944,7 +791,7 @@ public class DegraderLoadBalancerTest
     getTrackerClient(strategy, null, new RequestContext(), 0, clients);
 
     // should not have overridden anything, and default is 0
-    for (TrackerClient client : clients)
+    for (DegraderTrackerClient client : clients)
     {
       assertEquals(client.getDegraderControl(DEFAULT_PARTITION_ID).getOverrideDropRate(), 0d);
     }
@@ -962,8 +809,8 @@ public class DegraderLoadBalancerTest
     // max so we don't time out from lag on testing machine
     DegraderLoadBalancerStrategyV3 strategy =
             new DegraderLoadBalancerStrategyV3(new DegraderLoadBalancerStrategyConfig(5000),
-                    "DegraderLoadBalancerTest", null);
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+                    "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     TestClock clock1 = new TestClock();
     TestClock clock2 = new TestClock();
 
@@ -981,7 +828,7 @@ public class DegraderLoadBalancerTest
     // of 0d
     getTrackerClient(strategy, null, new RequestContext(), -1, clients);
 
-    for (TrackerClient client : clients)
+    for (DegraderTrackerClient client : clients)
     {
       assertEquals(client.getDegraderControl(DEFAULT_PARTITION_ID).getOverrideDropRate(), 0d);
     }
@@ -995,10 +842,8 @@ public class DegraderLoadBalancerTest
     // max so we don't time out from lag on testing machine
     DegraderLoadBalancerStrategyV3 strategy =
             new DegraderLoadBalancerStrategyV3(new DegraderLoadBalancerStrategyConfig(5000),
-                    "DegraderLoadBalancerTest",
-                    null
-            );
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+                "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     TestClock clock1 = new TestClock();
     TestClock clock2 = new TestClock();
 
@@ -1018,7 +863,7 @@ public class DegraderLoadBalancerTest
     // we should not have set the overrideDropRate here, since we only adjust
     // either the state or the global overrideDropRate. Since the state was null,
     // we chose to initialize the state first.
-    for (TrackerClient client : clients)
+    for (DegraderTrackerClient client : clients)
     {
       assertEquals(client.getDegraderControl(DEFAULT_PARTITION_ID).getOverrideDropRate(), 0.0);
     }
@@ -1028,15 +873,15 @@ public class DegraderLoadBalancerTest
   public void testDropDueToDegrader() throws URISyntaxException
   {
     DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
-    List<TrackerClientUpdater> clientUpdaters = new ArrayList<TrackerClientUpdater>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
+    List<DegraderTrackerClientUpdater> clientUpdaters = new ArrayList<>();
 
     clients.add(getClient(URI.create("http://test.linkedin.com:3242/fdsaf"), new TestClock()));
     clients.add(getClient(URI.create("http://test.linkedin.com:3243/fdsaf"), new TestClock()));
 
-    for (TrackerClient client : clients)
+    for (DegraderTrackerClient client : clients)
     {
-      clientUpdaters.add(new TrackerClientUpdater(client, DEFAULT_PARTITION_ID));
+      clientUpdaters.add(new DegraderTrackerClientUpdater(client, DEFAULT_PARTITION_ID));
     }
 
     // first verify that we're getting clients
@@ -1048,7 +893,7 @@ public class DegraderLoadBalancerTest
     // now force drop rate to 100% for entire cluster
     DegraderLoadBalancerStrategyV3.overrideClusterDropRate(DEFAULT_PARTITION_ID, 1d, clientUpdaters);
 
-    for (TrackerClientUpdater clientUpdater : clientUpdaters)
+    for (DegraderTrackerClientUpdater clientUpdater : clientUpdaters)
     {
       clientUpdater.update();
     }
@@ -1067,7 +912,7 @@ public class DegraderLoadBalancerTest
   @Test(groups = { "small", "back-end" })
   public void testLoadBalancerCallDroppingMode()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     double highWaterMark = 1000;
     double lowWaterMark = 500;
@@ -1084,15 +929,10 @@ public class DegraderLoadBalancerTest
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
     //test strategy v3
     DegraderLoadBalancerStrategyAdapter strategyAdapter = new DegraderLoadBalancerStrategyAdapter(
-            new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest", null));
+            new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest", null,
+                DEGRADER_STATE_LISTENER_FACTORIES));
 
-    final List<TrackerClient> clients = createTrackerClient(3, clock, null);
-    testCallDroppingHelper(strategyAdapter, clients, clock, timeInterval);
-
-    //test strategy v2
-    strategyAdapter = new DegraderLoadBalancerStrategyAdapter(
-            new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest", null));
-
+    final List<DegraderTrackerClient> clients = createTrackerClient(3, clock, null);
     testCallDroppingHelper(strategyAdapter, clients, clock, timeInterval);
   }
 
@@ -1102,7 +942,7 @@ public class DegraderLoadBalancerTest
   }
 
   private void testCallDroppingHelper(DegraderLoadBalancerStrategyAdapter strategyAdapter,
-                                      List<TrackerClient> clients, TestClock clock, Long timeInterval)
+                                      List<DegraderTrackerClient> clients, TestClock clock, Long timeInterval)
   {
     //test clusterOverrideDropRate won't increase even though latency is 3000 ms because the traffic is low
     callClients(3000, 0.2, clients, clock, timeInterval, false, false);
@@ -1174,7 +1014,7 @@ public class DegraderLoadBalancerTest
   public void testRandom() throws URISyntaxException
   {
     DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
     URI uri2 = URI.create("http://test.linkedin.com:3243/fdsaf");
 
@@ -1195,7 +1035,7 @@ public class DegraderLoadBalancerTest
   public void testOneTrackerClient() throws URISyntaxException
   {
     DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
 
     clients.add(getClient(uri1, new TestClock()));
@@ -1211,16 +1051,16 @@ public class DegraderLoadBalancerTest
   public void testOneTrackerClientForPartition() throws URISyntaxException
   {
     DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    Map<URI, TrackerClient> clients = new HashMap<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
-    Map<Integer, PartitionData> weightMap = new HashMap<Integer, PartitionData>();
+    Map<Integer, PartitionData> weightMap = new HashMap<>();
     weightMap.put(0, new PartitionData(1d));
-    TrackerClient client = new TrackerClient(uri1,
-            weightMap,
-            new TestLoadBalancerClient(uri1),
-            new TestClock(), null);
+    TrackerClient client = new DegraderTrackerClientImpl(uri1,
+                                                     weightMap,
+                                                     new TestLoadBalancerClient(uri1),
+                                                     new TestClock(), null);
 
-    clients.add(client);
+    clients.put(client.getUri(), client);
 
     // should always get the only client in the list
     for (int i = 0; i < 1000; ++i)
@@ -1232,7 +1072,7 @@ public class DegraderLoadBalancerTest
   @Test(groups = { "small", "back-end" })
   public void testWeightedBalancingWithDeadClient() throws URISyntaxException
   {
-    Map<String,Object> myMap = new HashMap<String, Object>();
+    Map<String,Object> myMap = lbDefaultConfig();
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS, 5000L);
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_MAX_CLUSTER_LATENCY_WITHOUT_DEGRADING, 100.0);
     // this test expected the dead tracker client to not recover through the
@@ -1241,13 +1081,13 @@ public class DegraderLoadBalancerTest
     // a tracker client through the getTrackerClient method.
     myMap.put(PropertyKeys.HTTP_LB_INITIAL_RECOVERY_LEVEL, 0.0);
     DegraderLoadBalancerStrategyV3 strategy = getStrategy(myMap);
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
     URI uri2 = URI.create("http://test.linkedin.com:3243/fdsaf");
     TestClock clock1 = new TestClock();
     TestClock clock2 = new TestClock();
-    TrackerClient client1 = getClient(uri1, clock1);
-    TrackerClient client2 = getClient(uri2, clock2);
+    DegraderTrackerClient client1 = getClient(uri1, clock1);
+    DegraderTrackerClient client2 = getClient(uri2, clock2);
 
     clients.add(client1);
     clients.add(client2);
@@ -1309,46 +1149,35 @@ public class DegraderLoadBalancerTest
     }
   }
 
-  @Test(groups = { "small", "back-end" })
-  public void testWeightedBalancingRing() throws URISyntaxException
+  @DataProvider(name = "consistentHashAlgorithms")
+  Object[][] getConsistentHashAlgorithm()
   {
-    DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    return new Object[][]
+        {
+            { DelegatingRingFactory.POINT_BASED_CONSISTENT_HASH },
+            { DelegatingRingFactory.MULTI_PROBE_CONSISTENT_HASH }
+        };
+  }
+
+  @Test(groups = { "small", "back-end" }, dataProvider = "consistentHashAlgorithms")
+  public void testWeightedBalancingRing(String consistentHashAlgorithm) throws URISyntaxException
+  {
+    DegraderLoadBalancerStrategyV3 strategy = getStrategy(consistentHashAlgorithm);
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
     URI uri2 = URI.create("http://test.linkedin.com:3243/fdsaf");
     TestClock clock1 = new TestClock();
     TestClock clock2 = new TestClock();
-    TrackerClient client1 =
-            new TrackerClient(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock1, null);
-    TrackerClient client2 =
-            new TrackerClient(uri2, getDefaultPartitionData(0.8d), new TestLoadBalancerClient(uri2), clock2, null);
+    DegraderTrackerClient client1 =
+            new DegraderTrackerClientImpl(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock1, null);
+    DegraderTrackerClient client2 =
+            new DegraderTrackerClientImpl(uri2, getDefaultPartitionData(0.8d), new TestLoadBalancerClient(uri2), clock2, null);
 
     clients.add(client1);
     clients.add(client2);
 
-    System.err.println(client2.getDegraderControl(DEFAULT_PARTITION_ID).getCurrentComputedDropRate());
-    System.err.println(client1.getDegraderControl(DEFAULT_PARTITION_ID).getCurrentComputedDropRate());
-
     // trigger a state update
     assertNotNull(getTrackerClient(strategy, null, new RequestContext(), 1, clients));
-
-    // now verify that the ring has degraded client 2 by 20%
-    ConsistentHashRing<URI> ring =
-            (ConsistentHashRing<URI>) strategy.getState().getPartitionState(DEFAULT_PARTITION_ID).getRing();
-
-    Map<URI, AtomicInteger> count = new HashMap<URI, AtomicInteger>();
-
-    count.put(uri1, new AtomicInteger(0));
-    count.put(uri2, new AtomicInteger(0));
-
-    for (Point<URI> point : ring.getPoints())
-    {
-      count.get(point.getT()).incrementAndGet();
-    }
-
-    // .8 weight should degrade the weight of client2 by 20%
-    assertEquals(count.get(uri1).get(), 100);
-    assertEquals(count.get(uri2).get(), 80);
 
     // now do a basic verification to verify getTrackerClient is properly weighting things
     double calls = 10000d;
@@ -1376,17 +1205,17 @@ public class DegraderLoadBalancerTest
     assertTrue(Math.abs((client2Count / calls) - (80 / 180d)) < tolerance);
   }
 
-  @Test(groups = { "small", "back-end" })
-  public void testBalancingRing() throws URISyntaxException
+  @Test(groups = { "small", "back-end" }, dataProvider = "consistentHashAlgorithms")
+  public void testBalancingRing(String consistentHashAlgorithm) throws URISyntaxException
   {
-    DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    DegraderLoadBalancerStrategyV3 strategy = getStrategy(consistentHashAlgorithm);
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://someTestService/someTestUrl");
     URI uri2 = URI.create("http://abcxfweuoeueoueoueoukeueoueoueoueoueouo/2354");
     TestClock clock1 = new TestClock();
     TestClock clock2 = new TestClock();
-    TrackerClient client1 = getClient(uri1, clock1);
-    TrackerClient client2 = getClient(uri2, clock2);
+    DegraderTrackerClient client1 = getClient(uri1, clock1);
+    DegraderTrackerClient client2 = getClient(uri2, clock2);
 
     clients.add(client1);
     clients.add(client2);
@@ -1404,30 +1233,6 @@ public class DegraderLoadBalancerTest
 
     clock1.addMs(15000);
     clock2.addMs(5000);
-
-    System.err.println(dcClient2Default.getCurrentComputedDropRate());
-    System.err.println(client1.getDegraderControl(DEFAULT_PARTITION_ID).getCurrentComputedDropRate());
-
-    // trigger a state update
-    assertNotNull(getTrackerClient(strategy, null, new RequestContext(), 1, clients));
-
-    // now verify that the ring has degraded client 2 by 20%
-    ConsistentHashRing<URI> ring =
-            (ConsistentHashRing<URI>) strategy.getState().getPartitionState(DEFAULT_PARTITION_ID).getRing();
-
-    Map<URI, AtomicInteger> count = new HashMap<URI, AtomicInteger>();
-
-    count.put(uri1, new AtomicInteger(0));
-    count.put(uri2, new AtomicInteger(0));
-
-    for (Point<URI> point : ring.getPoints())
-    {
-      count.get(point.getT()).incrementAndGet();
-    }
-
-    // .4 degradation should degrade the weight of client2 by 40%
-    assertEquals(count.get(uri1).get(), 100);
-    assertEquals(count.get(uri2).get(), 60);
 
     // now do a basic verification to verify getTrackerClient is properly weighting things
     double calls = 10000d;
@@ -1455,13 +1260,13 @@ public class DegraderLoadBalancerTest
     assertTrue(Math.abs((client2Count / calls) - (60 / 160d)) < tolerance);
   }
 
-  @Test(groups = { "small", "back-end" })
-  public void testWeightedAndLatencyDegradationBalancingRingWithPartitions() throws URISyntaxException
+  @Test(groups = { "small", "back-end" }, dataProvider = "consistentHashAlgorithms")
+  public void testWeightedAndLatencyDegradationBalancingRingWithPartitions(String consistentHashAlgorithm) throws URISyntaxException
   {
-    DegraderLoadBalancerStrategyV3 strategy = getStrategy();
+    DegraderLoadBalancerStrategyV3 strategy = getStrategy(consistentHashAlgorithm);
 
-    List<TrackerClient> clientsForPartition0 = new ArrayList<TrackerClient>();
-    List<TrackerClient> clientsForPartition1 = new ArrayList<TrackerClient>();
+    Map<URI, TrackerClient> clientsForPartition0 = new HashMap<>();
+    Map<URI, TrackerClient> clientsForPartition1 = new HashMap<>();
     URI uri1 = URI.create("http://someTestService/someTestUrl");
     URI uri2 = URI.create("http://abcxfweuoeueoueoueoukeueoueoueoueoueouo/2354");
     URI uri3 = URI.create("http://slashdot/blah");
@@ -1472,26 +1277,26 @@ public class DegraderLoadBalancerTest
 
 
     @SuppressWarnings("serial")
-    TrackerClient client1 =  new TrackerClient(uri1,
-            new HashMap<Integer, PartitionData>(){{put(0, new PartitionData(1d));}},
-            new TestLoadBalancerClient(uri1), clock1, null);
+    DegraderTrackerClient client1 =  new DegraderTrackerClientImpl(uri1,
+                                                               new HashMap<Integer, PartitionData>(){{put(0, new PartitionData(1d));}},
+                                                               new TestLoadBalancerClient(uri1), clock1, null);
     @SuppressWarnings("serial")
-    TrackerClient client2 =  new TrackerClient(uri2,
-            new HashMap<Integer, PartitionData>(){{put(0, new PartitionData(0.5d)); put(1, new PartitionData(0.5d));}},
-            new TestLoadBalancerClient(uri2), clock2, null);
+    DegraderTrackerClient client2 =  new DegraderTrackerClientImpl(uri2,
+                                                               new HashMap<Integer, PartitionData>(){{put(0, new PartitionData(0.5d)); put(1, new PartitionData(0.5d));}},
+                                                               new TestLoadBalancerClient(uri2), clock2, null);
     @SuppressWarnings("serial")
-    TrackerClient client3 =  new TrackerClient(uri3,
-            new HashMap<Integer, PartitionData>(){{put(1, new PartitionData(1d));}},
-            new TestLoadBalancerClient(uri3), clock3, null);
+    DegraderTrackerClient client3 =  new DegraderTrackerClientImpl(uri3,
+                                                               new HashMap<Integer, PartitionData>(){{put(1, new PartitionData(1d));}},
+                                                               new TestLoadBalancerClient(uri3), clock3, null);
 
 
     final int partitionId0 = 0;
-    clientsForPartition0.add(client1);
-    clientsForPartition0.add(client2);
+    clientsForPartition0.put(client1.getUri(), client1);
+    clientsForPartition0.put(client2.getUri(), client2);
 
     final int partitionId1 = 1;
-    clientsForPartition1.add(client2);
-    clientsForPartition1.add(client3);
+    clientsForPartition1.put(client2.getUri(), client2);
+    clientsForPartition1.put(client3.getUri(), client3);
 
     // force client2 to be disabled
     DegraderControl dcClient2Partition0 = client2.getDegraderControl(0);
@@ -1531,44 +1336,6 @@ public class DegraderLoadBalancerTest
     assertNotNull(strategy.getTrackerClient(null, new RequestContext(), 1, partitionId1, clientsForPartition1));
     assertNotNull(strategy.getRing(1,partitionId0, clientsForPartition0));
     assertNotNull(strategy.getRing(1, partitionId1, clientsForPartition1));
-
-    ConsistentHashRing<URI> ring0 =
-            (ConsistentHashRing<URI>) strategy.getState().getPartitionState(partitionId0).getRing();
-
-    ConsistentHashRing<URI> ring1 =
-            (ConsistentHashRing<URI>) strategy.getState().getPartitionState(partitionId1).getRing();
-
-    Map<URI, AtomicInteger> count0 = new HashMap<URI, AtomicInteger>();
-
-    count0.put(uri1, new AtomicInteger(0));
-    count0.put(uri2, new AtomicInteger(0));
-
-    for (Point<URI> point : ring0.getPoints())
-    {
-      count0.get(point.getT()).incrementAndGet();
-    }
-
-    // .4 degradation on a .5 weighted node should degrade the weight of client2 by 30
-    assertEquals(count0.get(uri1).get(), 100);
-    assertEquals(count0.get(uri2).get(), 30);
-
-    Map<URI, AtomicInteger> count1 = new HashMap<URI, AtomicInteger>();
-
-    count1.put(uri2, new AtomicInteger(0));
-    count1.put(uri3, new AtomicInteger(0));
-    count1.put(uri4, new AtomicInteger(0));
-
-    for (Point<URI> point : ring1.getPoints())
-    {
-      count1.get(point.getT()).incrementAndGet();
-    }
-
-    // .4 degradation on a .5 weighted node should degrade the weight of client2 by 30
-    // .2 degradation on a 1 weighted node should degrade the weight of client3 by 80
-    assertEquals(count1.get(uri3).get(), 80);
-    assertEquals(count1.get(uri2).get(), 30);
-    // uri4 should be ignored due to non-specified partition weight
-    assertEquals(count1.get(uri4).get(), 0);
 
     // now do a basic verification to verify getTrackerClient is properly weighting things
     int calls = 10000;
@@ -1625,19 +1392,19 @@ public class DegraderLoadBalancerTest
     assertTrue(client4Count == 0);
   }
 
-  @Test(groups = { "small", "back-end" })
-  public void testWeightedAndLatencyDegradationBalancingRing() throws URISyntaxException
+  @Test(groups = { "small", "back-end" }, dataProvider = "consistentHashAlgorithms")
+  public void testWeightedAndLatencyDegradationBalancingRing(String consistentHashAlgorithm) throws URISyntaxException
   {
-    DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    DegraderLoadBalancerStrategyV3 strategy = getStrategy(consistentHashAlgorithm);
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
     URI uri2 = URI.create("http://test.linkedin.com:3243/fdsaf");
     TestClock clock1 = new TestClock();
     TestClock clock2 = new TestClock();
-    TrackerClient client1 =
-            new TrackerClient(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock1, null);
-    TrackerClient client2 =
-            new TrackerClient(uri2, getDefaultPartitionData(0.8d), new TestLoadBalancerClient(uri2), clock2, null);
+    DegraderTrackerClient client1 =
+            new DegraderTrackerClientImpl(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock1, null);
+    DegraderTrackerClient client2 =
+            new DegraderTrackerClientImpl(uri2, getDefaultPartitionData(0.8d), new TestLoadBalancerClient(uri2), clock2, null);
 
     clients.add(client1);
     clients.add(client2);
@@ -1655,32 +1422,8 @@ public class DegraderLoadBalancerTest
     clock1.addMs(15000);
     clock2.addMs(5000);
 
-    System.err.println(dcClient2Default.getCurrentComputedDropRate());
-    System.err.println(client1.getDegraderControl(DEFAULT_PARTITION_ID).getCurrentComputedDropRate());
-
     // trigger a state update
     assertNotNull(getTrackerClient(strategy, null, new RequestContext(), 1, clients));
-
-    // now verify that the ring has degraded client 2 by 20%
-    ConsistentHashRing<URI> ring =
-            (ConsistentHashRing<URI>) strategy.getState().getPartitionState(DEFAULT_PARTITION_ID).getRing();
-
-    Map<URI, AtomicInteger> count = new HashMap<URI, AtomicInteger>();
-
-    count.put(uri1, new AtomicInteger(0));
-    count.put(uri2, new AtomicInteger(0));
-
-    for (Point<URI> point : ring.getPoints())
-    {
-      count.get(point.getT()).incrementAndGet();
-    }
-
-    System.err.println(count);
-
-    // .4 degradation on a .8 weighted node should degrade the weight of client2 by 48
-    // points. 100 * (1 - 0.4) * 0.8 = 48
-    assertEquals(count.get(uri1).get(), 100);
-    assertEquals(count.get(uri2).get(), 48);
 
     // now do a basic verification to verify getTrackerClient is properly weighting things
     double calls = 10000d;
@@ -1708,149 +1451,312 @@ public class DegraderLoadBalancerTest
     assertTrue(Math.abs((client2Count / calls) - (48 / 148d)) < tolerance);
   }
 
+  @Test(groups = { "small", "back-end"}, dataProvider = "consistentHashAlgorithms")
+  public void TestRandomIncreaseReduceTrackerClients(String consistentHashAlgorithm)
+  {
+    final DegraderLoadBalancerStrategyV3 strategy = getStrategy(consistentHashAlgorithm);
+    TestClock testClock = new TestClock();
+    String baseUri = "http://linkedin.com:9999";
+    int numberOfClients = 100;
+    int loopNumber = 100;
+    Map<String, String> degraderProperties = new HashMap<>();
+    degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
+    degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
+    DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
+    Random random = new Random();
+    final List<DegraderTrackerClient> clients = new ArrayList<>();
+
+    random.setSeed(123456789L);
+    for (int i = 0; i < loopNumber; ++i) {
+      int currentSize = clients.size();
+      if (currentSize > numberOfClients) {
+        // need to remove some clients
+        clients.subList(numberOfClients, currentSize).clear();
+      } else {
+        // add more clients
+        for (int j = currentSize; j < numberOfClients; j++) {
+          URI uri = URI.create(baseUri + j);
+          DegraderTrackerClient client =
+              new DegraderTrackerClientImpl(uri, getDefaultPartitionData(1, 1), new TestLoadBalancerClient(uri), testClock,
+                                        degraderConfig);
+          clients.add(client);
+        }
+      }
+
+      TrackerClient client =
+          strategy.getTrackerClient(null, new RequestContext(), i, DefaultPartitionAccessor.DEFAULT_PARTITION_ID, toMap(clients));
+      assertNotNull(client);
+
+      // update the client number
+      if (random.nextBoolean()) {
+        numberOfClients += random.nextInt(numberOfClients / 5);
+      } else {
+        numberOfClients -= random.nextInt(numberOfClients / 5);
+      }
+    }
+  }
+
+  public static Map<URI, TrackerClient> toMap(List<DegraderTrackerClient> trackerClients)
+  {
+    if (trackerClients == null)
+    {
+      return null;
+    }
+
+    Map<URI, TrackerClient> trackerClientMap = new HashMap<>();
+
+    for (TrackerClient trackerClient: trackerClients)
+    {
+      trackerClientMap.put(trackerClient.getUri(), trackerClient);
+    }
+
+    return trackerClientMap;
+  }
+
+  // Performance test, disabled by default
+  @Test(groups = { "small", "back-end"}, enabled = false)
+  public void TestGetTrackerClients()
+  {
+    final DegraderLoadBalancerStrategyV3 strategy = getStrategy();
+    TestClock testClock = new TestClock();
+    String baseUri = "http://linkedin.com:9999";
+    int numberOfClients = 100;
+    int loopNumber = 100000;
+    Map<String, String> degraderProperties = new HashMap<>();
+    degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
+    degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
+    DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
+    RequestContext requestContext = new RequestContext();
+    Random random = new Random();
+    final List<DegraderTrackerClient> clients = new ArrayList<>(numberOfClients);
+    Map<TrackerClient, Integer> clientCount = new HashMap<>();
+
+    // create trackerclients
+    for (int i = 0; i < numberOfClients; i++) {
+      URI uri = URI.create(baseUri + i);
+      DegraderTrackerClient client =
+          new DegraderTrackerClientImpl(uri, getDefaultPartitionData(1, 1), new TestLoadBalancerClient(uri), testClock,
+                                    degraderConfig);
+      clients.add(client);
+    }
+    for (int i = 0; i < loopNumber; ++i) {
+      TrackerClient client =
+          strategy.getTrackerClient(null, requestContext, 1, DefaultPartitionAccessor.DEFAULT_PARTITION_ID, toMap(clients));
+      assertNotNull(client);
+      Integer count = clientCount.get(client);
+      if (count == null) {
+        clientCount.put(client, 1);
+      } else {
+        clientCount.put(client, count + 1);
+      }
+    }
+
+    int i = 0;
+    int avg_count = (loopNumber * 5) / (numberOfClients * 10);
+    for (Integer count : clientCount.values()) {
+      assertTrue(count >= avg_count );
+      i++;
+    }
+    assertTrue(i == numberOfClients);
+  }
+
+
   @Test(groups = { "small", "back-end" })
   public void testshouldUpdatePartition() throws URISyntaxException
   {
-    Map<String,Object> myConfig = new HashMap<String,Object>();
+    Map<String, Object> myConfig = new HashMap<>();
     TestClock testClock = new TestClock();
     myConfig.put(PropertyKeys.CLOCK, testClock);
     myConfig.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS, 5000L);
     myConfig.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_MAX_CLUSTER_LATENCY_WITHOUT_DEGRADING, 100d);
     DegraderLoadBalancerStrategyV3 strategy = getStrategy(myConfig);
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
+    Map<URI, Integer> pointsMap = new HashMap<>();
     long clusterCallCount = 15;
+    RingFactory<URI> ringFactory = new DelegatingRingFactory<>(new DegraderLoadBalancerStrategyConfig(1L));
 
-    clients.add(getClient(URI.create("http://test.linkedin.com:3242/fdsaf")));
-    clients.add(getClient(URI.create("http://test.linkedin.com:3243/fdsaf")));
+    URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
+    URI uri2 = URI.create("http://test.linkedin.com:3243/fdsaf");
+    clients.add(getClient(uri1));
+    clients.add(getClient(uri2));
+    pointsMap.put(uri1, 1);
+    pointsMap.put(uri2, 1);
 
     // state is default initialized, new cluster generation
     assertTrue(DegraderLoadBalancerStrategyV3.shouldUpdatePartition(0,
-            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true));
+            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true, false, clients));
 
 
-    DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState current =
+    PartitionDegraderLoadBalancerState current =
             strategy.getState().getPartitionState(DEFAULT_PARTITION_ID);
 
-    current = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(0,
+    current = new PartitionDegraderLoadBalancerState(0,
             testClock._currentTimeMillis,
             true,
-            new HashMap<URI, Integer>(),
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
+            ringFactory,
+            pointsMap,
+            PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
             0.0,
             -1,
-            new HashMap<TrackerClient, Double>(),
+            new HashMap<>(),
             "Test",
             current.getDegraderProperties(),
-            clusterCallCount);
+            clusterCallCount,
+            0, 0,
+            Collections.emptyMap(),
+            Collections.emptyMap(), null, 0);
     strategy.getState().setPartitionState(DEFAULT_PARTITION_ID, current);
 
     // state is not null, but we're on the same cluster generation id, and 5 seconds
     // haven't gone by
     testClock.addMs(1);
     assertFalse(DegraderLoadBalancerStrategyV3.shouldUpdatePartition(0,
-            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true));
+            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true, false, clients));
 
     // generation Id for the next state is changed
-    current = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(1,
+    current = new PartitionDegraderLoadBalancerState(1,
             testClock._currentTimeMillis,
             true,
-            new HashMap<URI, Integer>(),
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
+            ringFactory,
+            pointsMap,
+            PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
             0.0,
             -1,
-            new HashMap<TrackerClient, Double>(),
+            new HashMap<>(),
             "Test",
             current.getDegraderProperties(),
-            clusterCallCount);
+            clusterCallCount,
+            0, 0,
+            Collections.emptyMap(),
+            Collections.emptyMap(), null, 0);
+
     strategy.getState().setPartitionState(DEFAULT_PARTITION_ID, current);
 
     // state is not null, and cluster generation has changed so we will update
     testClock.addMs(1);
     assertTrue(DegraderLoadBalancerStrategyV3.shouldUpdatePartition(0,
-            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true));
+            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true, false, clients));
 
     // state is not null, and force 5s to go by with the same cluster generation id
-    current = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(1,
+    current = new PartitionDegraderLoadBalancerState(1,
             testClock._currentTimeMillis,
             true,
-            new HashMap<URI, Integer>(),
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
+            ringFactory,
+            pointsMap,
+            PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
             0.0,
             -1,
-            new HashMap<TrackerClient, Double>(),
+            new HashMap<>(),
             "Test",
             current.getDegraderProperties(),
-            clusterCallCount);
+            clusterCallCount,
+            0, 0,
+            Collections.emptyMap(),
+            Collections.emptyMap(), null, 0);
+
     strategy.getState().setPartitionState(DEFAULT_PARTITION_ID, current);
 
     testClock.addMs(5000);
     assertTrue(DegraderLoadBalancerStrategyV3.shouldUpdatePartition(1,
-            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true));
+            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true, false, clients));
 
 
-    current = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(1,
+    current = new PartitionDegraderLoadBalancerState(1,
             testClock._currentTimeMillis,
             true,
-            new HashMap<URI, Integer>(),
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
+            ringFactory,
+            pointsMap,
+            PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
             0.0,
             -1,
-            new HashMap<TrackerClient, Double>(),
+            new HashMap<>(),
             "Test",
             current.getDegraderProperties(),
-            clusterCallCount);
+            clusterCallCount,
+            0, 0,
+            Collections.emptyMap(),
+            Collections.emptyMap(), null, 0);
+
     strategy.getState().setPartitionState(DEFAULT_PARTITION_ID, current);
 
     // now try a new cluster generation id so state will be updated again
     testClock.addMs(15);
     assertTrue(DegraderLoadBalancerStrategyV3.shouldUpdatePartition(2,
-            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true));
+            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true, false, clients));
   }
 
   @Test(groups = { "small", "back-end" })
   public void testshouldUpdatePartitionOnlyAtInterval() throws URISyntaxException
   {
-    Map<String,Object> myConfig = new HashMap<String,Object>();
+    Map<String, Object> myConfig = new HashMap<>();
     TestClock testClock = new TestClock();
     myConfig.put(PropertyKeys.CLOCK, testClock);
     myConfig.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS, 5000L);
     myConfig.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_MAX_CLUSTER_LATENCY_WITHOUT_DEGRADING, 100d);
     myConfig.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_ONLY_AT_INTERVAL, true);
     DegraderLoadBalancerStrategyV3 strategy = getStrategy(myConfig);
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
+    Map<URI, Integer> pointsMap = new HashMap<>();
     long clusterCallCount = 15;
+    RingFactory<URI> ringFactory = new DelegatingRingFactory<>(new DegraderLoadBalancerStrategyConfig(1L));
 
-    clients.add(getClient(URI.create("http://test.linkedin.com:3242/fdsaf")));
-    clients.add(getClient(URI.create("http://test.linkedin.com:3243/fdsaf")));
+    URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
+    URI uri2 = URI.create("http://test.linkedin.com:3243/fdsaf");
+    clients.add(getClient(uri1));
+    clients.add(getClient(uri2));
+    pointsMap.put(uri1, 1);
+    pointsMap.put(uri2, 1);
+
+    PartitionDegraderLoadBalancerState current =
+        strategy.getState().getPartitionState(DEFAULT_PARTITION_ID);
+    current = new PartitionDegraderLoadBalancerState(0,
+        testClock._currentTimeMillis,
+        true,
+        ringFactory,
+        pointsMap,
+        PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
+        0.0,
+        -1,
+        new HashMap<>(),
+        "Test",
+        current.getDegraderProperties(),
+        clusterCallCount,
+        0, 0,
+        Collections.emptyMap(),
+        Collections.emptyMap(), null, 0);
+    strategy.getState().setPartitionState(DEFAULT_PARTITION_ID, current);
 
     // state is default initialized, new cluster generation
     assertFalse(DegraderLoadBalancerStrategyV3.shouldUpdatePartition(0,
-            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true));
+            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true, false, clients));
 
 
     // state is not null, but we're on the same cluster generation id, and 5 seconds
     // haven't gone by
     testClock.addMs(1);
     assertFalse(DegraderLoadBalancerStrategyV3.shouldUpdatePartition(0,
-            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true));
+            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true, false, clients));
 
     testClock.addMs(5000);
     assertTrue(DegraderLoadBalancerStrategyV3.shouldUpdatePartition(1,
-            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true));
+            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID), strategy.getConfig(), true, false, clients));
 
-    DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState current =
-            strategy.getState().getPartitionState(DEFAULT_PARTITION_ID);
-    current = new DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState(1,
+    current = new PartitionDegraderLoadBalancerState(1,
             testClock._currentTimeMillis,
             true,
-            new HashMap<URI, Integer>(),
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
+            new DelegatingRingFactory<>(new DegraderLoadBalancerStrategyConfig(1L)),
+            pointsMap,
+            PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE,
             0.0,
             -1,
-            new HashMap<TrackerClient, Double>(),
+            new HashMap<>(),
             "Test",
             current.getDegraderProperties(),
-            clusterCallCount);
+            clusterCallCount,
+            0, 0,
+            Collections.emptyMap(),
+            Collections.emptyMap(), null, 0);
+
     strategy.getState().setPartitionState(DEFAULT_PARTITION_ID, current);
   }
 
@@ -1858,11 +1764,11 @@ public class DegraderLoadBalancerTest
   public void testOverrideClusterDropRate() throws URISyntaxException
   {
     DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
-    List<TrackerClientUpdater> clientUpdaters = new ArrayList<TrackerClientUpdater>();
-    for (TrackerClient client : clients)
+    List<DegraderTrackerClient> clients = new ArrayList<>();
+    List<DegraderTrackerClientUpdater> clientUpdaters = new ArrayList<>();
+    for (DegraderTrackerClient client : clients)
     {
-      clientUpdaters.add(new TrackerClientUpdater(client, DEFAULT_PARTITION_ID));
+      clientUpdaters.add(new DegraderTrackerClientUpdater(client, DEFAULT_PARTITION_ID));
     }
 
     clients.add(getClient(URI.create("http://test.linkedin.com:3242/fdsaf")));
@@ -1870,9 +1776,9 @@ public class DegraderLoadBalancerTest
 
     DegraderLoadBalancerStrategyV3.overrideClusterDropRate(DEFAULT_PARTITION_ID, 1d, clientUpdaters);
 
-    for (TrackerClientUpdater clientUpdater : clientUpdaters)
+    for (DegraderTrackerClientUpdater clientUpdater : clientUpdaters)
     {
-      TrackerClient client = clientUpdater.getTrackerClient();
+      DegraderTrackerClient client = clientUpdater.getTrackerClient();
       clientUpdater.update();
       assertEquals(client.getDegraderControl(DEFAULT_PARTITION_ID).getOverrideDropRate(), 1d);
       assertTrue(client.getDegrader(DEFAULT_PARTITION_ID).checkDrop());
@@ -1881,9 +1787,9 @@ public class DegraderLoadBalancerTest
     DegraderLoadBalancerStrategyV3.overrideClusterDropRate(DEFAULT_PARTITION_ID, -1d, clientUpdaters);
 
     // if we don't override, the degrader isn't degraded, so should not drop
-    for (TrackerClientUpdater clientUpdater : clientUpdaters)
+    for (DegraderTrackerClientUpdater clientUpdater : clientUpdaters)
     {
-      TrackerClient client = clientUpdater.getTrackerClient();
+      DegraderTrackerClient client = clientUpdater.getTrackerClient();
       clientUpdater.update();
       assertEquals(client.getDegraderControl(DEFAULT_PARTITION_ID).getOverrideDropRate(), -1d);
       assertFalse(client.getDegrader(DEFAULT_PARTITION_ID).checkDrop());
@@ -1891,9 +1797,9 @@ public class DegraderLoadBalancerTest
 
     DegraderLoadBalancerStrategyV3.overrideClusterDropRate(DEFAULT_PARTITION_ID, 0d, clientUpdaters);
 
-    for (TrackerClientUpdater clientUpdater : clientUpdaters)
+    for (DegraderTrackerClientUpdater clientUpdater : clientUpdaters)
     {
-      TrackerClient client = clientUpdater.getTrackerClient();
+      DegraderTrackerClient client = clientUpdater.getTrackerClient();
       clientUpdater.update();
       assertEquals(client.getDegraderControl(DEFAULT_PARTITION_ID).getOverrideDropRate(), 0d);
       assertFalse(client.getDegrader(DEFAULT_PARTITION_ID).checkDrop());
@@ -1917,9 +1823,22 @@ public class DegraderLoadBalancerTest
                     DegraderLoadBalancerStrategyConfig.DEFAULT_GLOBAL_STEP_UP,
                     DegraderLoadBalancerStrategyConfig.DEFAULT_GLOBAL_STEP_DOWN,
                     DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_MIN_CALL_COUNT_HIGH_WATER_MARK,
-                    DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK),
-            "DegraderLoadBalancerTest", null);
-    List<TrackerClient> clients = new ArrayList<TrackerClient>(NUM_SERVERS);
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK,
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_HASHRING_POINT_CLEANUP_RATE, null,
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_NUM_PROBES,
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_POINTS_PER_HOST,
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_BOUNDED_LOAD_BALANCING_FACTOR,
+                    null,
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_QUARANTINE_MAXPERCENT,
+                    null, null,
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_QUARANTINE_METHOD, null,
+                    DegraderImpl.DEFAULT_LOW_LATENCY, null,
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_LOW_EVENT_EMITTING_INTERVAL,
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_HIGH_EVENT_EMITTING_INTERVAL,
+                    DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_NAME),
+               "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
+
+    List<DegraderTrackerClient> clients = new ArrayList<>(NUM_SERVERS);
 
     for (int i = 0; i < NUM_SERVERS; i++)
     {
@@ -1928,7 +1847,7 @@ public class DegraderLoadBalancerTest
 
     final int NUM_URIS = 1000;
     final int NUM_CHECKS = 10;
-    final Map<TrackerClient,Integer> serverCounts = new HashMap<TrackerClient, Integer>();
+    final Map<TrackerClient, Integer> serverCounts = new HashMap<>();
 
     for (int i = 0; i < NUM_URIS; i++)
     {
@@ -1951,13 +1870,6 @@ public class DegraderLoadBalancerTest
       }
       serverCounts.put(lastClient, count + 1);
     }
-
-    // TODO... should check the distribution of hits/server, should be pretty even, but how
-    // even is even?  Also note this depends on pointsPerServer and other configurable parameters.
-
-    // TODO... another test will check that when a TrackerClient is removed, the distribution
-    // doesn't change too much.
-
   }
 
   @Test
@@ -1965,13 +1877,13 @@ public class DegraderLoadBalancerTest
   {
     final int NUM_SERVERS = 10;
     DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>(NUM_SERVERS);
+    List<DegraderTrackerClient> clients = new ArrayList<>(NUM_SERVERS);
     for (int ii=0; ii<NUM_SERVERS; ++ii)
     {
       clients.add(getClient(URI.create("http://server" + ii + ".testing:9876/foobar")));
     }
 
-    Map<TrackerClient, Integer> serverCounts = new HashMap<TrackerClient, Integer>();
+    Map<TrackerClient, Integer> serverCounts = new HashMap<>();
     RestRequestBuilder builder = new RestRequestBuilder(URI.create("d2://fooservice"));
     final int NUM_REQUESTS=100;
     for (int ii=0; ii<NUM_REQUESTS; ++ii)
@@ -2014,7 +1926,7 @@ public class DegraderLoadBalancerTest
   {
     final int NUM_SERVERS = 10;
     DegraderLoadBalancerStrategyV3 strategy = getStrategy();
-    List<TrackerClient> clients = new ArrayList<TrackerClient>(NUM_SERVERS);
+    List<DegraderTrackerClient> clients = new ArrayList<>(NUM_SERVERS);
     for (int ii=0; ii<NUM_SERVERS; ++ii)
     {
       clients.add(getClient(URI.create("http://server" + ii + ".testing:9876/foobar")));
@@ -2035,7 +1947,7 @@ public class DegraderLoadBalancerTest
   @Test(groups = { "small", "back-end" })
   public void testClusterRecoveryFast1TC()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
@@ -2048,26 +1960,17 @@ public class DegraderLoadBalancerTest
 
     //test Strategy V3
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    clusterRecovery1TC(myMap, clock, stepsToFullRecovery, timeInterval, strategy, null,
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
-
-    //test Strategy V2
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     clusterRecovery1TC(myMap, clock, stepsToFullRecovery, timeInterval, strategy,
-            DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy.LOAD_BALANCE,
-            null);
+        PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
   }
 
   @Test(groups = { "small", "back-end" })
   public void testClusterRecoverySlow1TC()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
@@ -2080,20 +1983,11 @@ public class DegraderLoadBalancerTest
 
     //test Strategy V3
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    clusterRecovery1TC(myMap, clock, stepsToFullRecovery, timeInterval, strategy, null,
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
-
-    //test Strategy V2
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     clusterRecovery1TC(myMap, clock, stepsToFullRecovery, timeInterval, strategy,
-            DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy.LOAD_BALANCE,
-            null);
+        PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
   }
 
   @Test(groups = { "small", "back-end"})
@@ -2103,17 +1997,17 @@ public class DegraderLoadBalancerTest
     TestClock testClock = new TestClock();
     String baseUri = "http://linkedin.com:9999";
     int numberOfPartitions = 10;
-    Map<String, String> degraderProperties = new HashMap<String,String>();
+    Map<String, String> degraderProperties = new HashMap<>();
     degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
     DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
-    final List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    final List<DegraderTrackerClient> clients = new ArrayList<>();
     for (int i = 0; i < numberOfPartitions; i++)
     {
       URI uri = URI.create(baseUri + i);
-      TrackerClient client =   new TrackerClient(uri,
-              getDefaultPartitionData(1, numberOfPartitions),
-              new TestLoadBalancerClient(uri), testClock, degraderConfig);
+      DegraderTrackerClient client = new DegraderTrackerClientImpl(uri,
+                                                               getDefaultPartitionData(1, numberOfPartitions),
+                                                               new TestLoadBalancerClient(uri), testClock, degraderConfig);
       clients.add(client);
     }
 
@@ -2142,7 +2036,7 @@ public class DegraderLoadBalancerTest
             {
 
             }
-            strategyV3.getRing(1, partitionId, clients);
+            strategyV3.getRing(1, partitionId, toMap(clients));
             finishLatch.countDown();
           }
         });
@@ -2200,7 +2094,7 @@ public class DegraderLoadBalancerTest
           // thread B swaps in the new array of states for enlarged number of partitions, finishes resize, ignoring thread A's update
 
           // Now with the fix, we expect the above not to happen
-          DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState state = strategy.getState().getPartitionState(0);
+          PartitionDegraderLoadBalancerState state = strategy.getState().getPartitionState(0);
           totalSuccessfulInitialization += state.isInitialized() ? 1 : 0;
         }
         catch (InterruptedException ex)
@@ -2215,7 +2109,51 @@ public class DegraderLoadBalancerTest
     assertEquals(totalSuccessfulInitialization, 20000);
   }
 
-  private static class EvilClient extends TrackerClient
+  /**
+   * The test checks the behavior is consistent with getTrackerClient, avoiding to recalculate the state if
+   * no clients are passed in, since we also already know that it will be an emtpy Ring
+   * This test aims at solving a concurrency problem that would otherwise show up when switching the prioritized
+   * scheme from HTTP_ONLY to HTTPS
+   */
+  @Test(groups = {"small", "back-end"})
+  public void testAvoidUpdatingStateIfGetRingWithEmptyClients()
+  {
+    final int PARTITION_ID = 0;
+    Map<String, Object> myMap = lbDefaultConfig();
+    Long timeInterval = 5000L;
+    TestClock clock = new TestClock();
+    myMap.put(PropertyKeys.CLOCK, clock);
+    DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(null);
+    double qps = 0.3;
+
+    // set up strategy
+    List<DegraderTrackerClient> clients = createTrackerClient(10, clock, degraderConfig);
+    DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+      "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
+    DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
+
+
+    // get tracker passing some clients
+    strategy.getRing(1, PARTITION_ID, toMap(clients));
+    String strategyState = strategyV3.getState().getPartition(PARTITION_ID).toString();
+
+    // making some calls to enable the properties to update the strategy
+    callClients(10, qps, clients, clock, timeInterval, true, false);
+
+    // make another call that should not trigger update state since no clients are passed, even if we made some
+    // calls and the clientGenerationId changed
+    Ring<URI> emptyRing = strategy.getRing(2, PARTITION_ID, Collections.emptyMap());
+
+    String strategyStateEmptyClients = strategyV3.getState().getPartition(PARTITION_ID).toString();
+
+    Assert.assertEquals(strategyStateEmptyClients, strategyState, "We should not update the strategy if we pass" +
+      " an empty client list.");
+    Assert.assertEquals(emptyRing.getIterator(0).hasNext(), false, "It should return an empty Ring" +
+      " since no clients have been passed");
+  }
+
+  private static class EvilClient extends DegraderTrackerClientImpl
   {
     private final CountDownLatch _latch;
     public EvilClient(URI uri, Map<Integer, PartitionData> partitionDataMap, TransportClient wrappedClient,
@@ -2247,16 +2185,17 @@ public class DegraderLoadBalancerTest
   private List<Runnable> createRaceCondition(final URI uri, Clock clock, final DegraderLoadBalancerStrategyV3 strategy, final CountDownLatch joinLatch)
   {
     final CountDownLatch clientLatch = new CountDownLatch(1);
-    TrackerClient evilClient = new EvilClient(uri, getDefaultPartitionData(1, 2), new TrackerClientTest.TestClient(),
-            clock, null, clientLatch);
-    final List<TrackerClient> clients = Collections.singletonList(evilClient);
+    DegraderTrackerClient evilClient = new EvilClient(uri, getDefaultPartitionData(1, 2), new DegraderTrackerClientTest.TestClient(),
+                                                      clock, null, clientLatch);
+    final List<DegraderTrackerClient> clients = Collections.singletonList(evilClient);
+
     final Runnable update = new Runnable()
     {
       @Override
       public void run()
       {
         // getRing will wait for latch in getPartitionWeight
-        strategy.getRing(1, 0, clients);
+        strategy.getRing(1, 0, toMap(clients));
         joinLatch.countDown();
       }
     };
@@ -2269,12 +2208,12 @@ public class DegraderLoadBalancerTest
         // releases latch for partition 0
         clientLatch.countDown();
         // resize
-        strategy.getRing(1, 1, clients);
+        strategy.getRing(1, 1, toMap(clients));
         joinLatch.countDown();
       }
     };
 
-    List<Runnable> actions = new ArrayList<Runnable>();
+    List<Runnable> actions = new ArrayList<>();
     actions.add(update);
     actions.add(resize);
     return actions;
@@ -2288,14 +2227,14 @@ public class DegraderLoadBalancerTest
                                final long timeInterval)
           throws Exception
   {
-    final List<TrackerClient> client = Collections.<TrackerClient>singletonList(new ErrorClient(1, numberOfPartitions, clock));
+    final List<DegraderTrackerClient> client = Collections.singletonList(new ErrorClient(1, numberOfPartitions, clock));
     final int partitionId = DefaultPartitionAccessor.DEFAULT_PARTITION_ID + numberOfPartitions - 1;
     final Callable<Ring<URI>> getRing = new Callable<Ring<URI>>()
     {
       @Override
       public Ring<URI> call()
       {
-        return strategy.getRing(1L, partitionId, client);
+        return strategy.getRing(1L, partitionId, toMap(client));
       }
     };
     try
@@ -2310,7 +2249,7 @@ public class DegraderLoadBalancerTest
     final ExecutorService executor = Executors.newFixedThreadPool(numberOfThreads);
     try
     {
-      final List<Future<Ring<URI>>> results = new ArrayList<Future<Ring<URI>>>();
+      final List<Future<Ring<URI>>> results = new ArrayList<>();
       for (int r = 0; r < numberOfThreads; ++r)
         results.add(executor.submit(getRing));
       clock.addMs(timeInterval);
@@ -2330,34 +2269,27 @@ public class DegraderLoadBalancerTest
   {
     long timeInterval = 10; // msec
     TestClock clock = new TestClock();
-    Map<String, Object> props = new HashMap<String, Object>();
+    Map<String, Object> props = new HashMap<>();
     props.put(PropertyKeys.CLOCK, clock);
     // We want the degrader to re-enter the ring after one cooling off period:
     props.put(PropertyKeys.HTTP_LB_INITIAL_RECOVERY_LEVEL, 0.005);
     props.put(PropertyKeys.HTTP_LB_RING_RAMP_FACTOR, 1.0);
     props.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS, timeInterval);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(props);
-    return new Object[][]{clientGlitchV2(config), clientGlitchV3(1, config), clientGlitchV3(3, config)};
-  }
-
-  private Object[] clientGlitchV2(DegraderLoadBalancerStrategyConfig config)
-  {
-    return new Object[]{1,
-            new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest.V2", null),
-            config.getClock(),
-            config.getUpdateIntervalMs()};
+    return new Object[][]{clientGlitchV3(1, config), clientGlitchV3(3, config)};
   }
 
   private Object[] clientGlitchV3(int numberOfPartitions, DegraderLoadBalancerStrategyConfig config)
   {
     return new Object[]{numberOfPartitions,
-            new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest.V3", null),
+            new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest.V3",
+                null, DEGRADER_STATE_LISTENER_FACTORIES),
             config.getClock(),
             config.getUpdateIntervalMs()};
   }
 
   /** A TrackerClient that throws some DummyCheckedExceptions before starting normal operation. */
-  private static class ErrorClient extends TrackerClient
+  private static class ErrorClient extends DegraderTrackerClientImpl
   {
     private static final URI myURI = URI.create("http://nonexistent.nowhere.linkedin.com:9999/ErrorClient");
     private final AtomicLong _numberOfExceptions;
@@ -2408,97 +2340,69 @@ public class DegraderLoadBalancerTest
   {
 
     final DegraderLoadBalancerStrategyV3 _strategyV3;
-    final DegraderLoadBalancerStrategyV2_1 _strategyV2;
     final LoadBalancerStrategy _strategy;
-
-    private DegraderLoadBalancerStrategyAdapter(DegraderLoadBalancerStrategyV2_1 strategyV2)
-    {
-      _strategyV2 = strategyV2;
-      _strategyV3 = null;
-      _strategy = strategyV2;
-    }
 
     private DegraderLoadBalancerStrategyAdapter(DegraderLoadBalancerStrategyV3 strategyV3)
     {
-      _strategyV2 = null;
       _strategyV3 = strategyV3;
       _strategy = strategyV3;
     }
 
     public double getOverrideDropRate()
     {
-      if (_strategyV2 != null)
-      {
-        return _strategyV2.getCurrentOverrideDropRate();
-      }
-      else
-      {
-        return _strategyV3.getState().getPartitionState(DEFAULT_PARTITION_ID).getCurrentOverrideDropRate();
-      }
+      return _strategyV3.getState().getPartitionState(DEFAULT_PARTITION_ID).getCurrentOverrideDropRate();
     }
 
     public Map<URI, Integer> getPointsMap()
     {
-      if (_strategyV2 != null)
-      {
-        return _strategyV2.getState().getPointsMap();
-      }
-      else
-      {
-        return _strategyV3.getState().getPartitionState(DEFAULT_PARTITION_ID).getPointsMap();
-      }
+      return _strategyV3.getState().getPartitionState(DEFAULT_PARTITION_ID).getPointsMap();
     }
 
+    @Override
+    public String getName()
+    {
+      return "DegraderLoadBalancerStrategyAdapter";
+    }
+
+    @Override
     public TrackerClient getTrackerClient(Request request,
                                           RequestContext requestContext,
                                           long clusterGenerationId,
                                           int partitionId,
-                                          List<TrackerClient> trackerClients)
+                                          Map<URI, TrackerClient> trackerClients)
     {
       return _strategy.getTrackerClient(request, requestContext, clusterGenerationId, partitionId, trackerClients);
     }
 
-    public Ring<URI> getRing(long clusterGenerationId, int partitionId, List<TrackerClient> trackerClients)
+    @Nonnull
+    public Ring<URI> getRing(long clusterGenerationId, int partitionId, Map<URI, TrackerClient> trackerClients)
     {
       return _strategy.getRing(clusterGenerationId, partitionId, trackerClients);
     }
 
-    public void setStrategyV3(int partitionID,
-                              DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy
-                                      strategy)
+    @Override
+    public HashFunction<Request> getHashFunction()
+    {
+      return _strategyV3.getHashFunction();
+    }
+
+    public void setStrategyV3(int partitionID, PartitionDegraderLoadBalancerState.Strategy strategy)
     {
       _strategyV3.setStrategy(partitionID, strategy);
     }
 
-    public void setStrategyV2(DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy strategy)
-    {
-      _strategyV2.setStrategy(strategy);
-    }
-
     public boolean isStrategyCallDrop()
     {
-      if (_strategyV2 != null)
-      {
-        return _strategyV2.getState().getStrategy() ==
-                DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy.CALL_DROPPING;
-      }
-      else
-      {
-        return _strategyV3.getState().getPartitionState(DEFAULT_PARTITION_ID).getStrategy() ==
-                DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING;
-      }
+      return _strategyV3.getState().getPartitionState(DEFAULT_PARTITION_ID).getStrategy() ==
+              PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING;
     }
 
     public void setStrategyToCallDrop()
     {
-      if (_strategyV2 != null)
-      {
-        _strategyV2.setStrategy(DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy.CALL_DROPPING);
-      }
-      else if (_strategyV3 != null)
+      if (_strategyV3 != null)
       {
         _strategyV3.setStrategy(DEFAULT_PARTITION_ID,
-                DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.
+                PartitionDegraderLoadBalancerState.Strategy.
                         CALL_DROPPING);
       }
       else
@@ -2509,21 +2413,15 @@ public class DegraderLoadBalancerTest
 
     public double getCurrentOverrideDropRate()
     {
-      if (_strategyV2 != null)
-      {
-        return _strategyV2.getCurrentOverrideDropRate();
-      }
-      else
-      {
-        return _strategyV3.getState().getPartitionState(DEFAULT_PARTITION_ID).getCurrentOverrideDropRate();
-      }
+      return _strategyV3.getState().getPartitionState(DEFAULT_PARTITION_ID).getCurrentOverrideDropRate();
     }
   }
 
-  @Test(groups = { "small", "back-end" })
+  // disabled since it triggers slowStart + fastRecovery, which is covered by other tests
+  @Test(groups = { "small", "back-end" }, enabled = false)
   public void testClusterRecoveryAfter100PercentDropCall()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
@@ -2539,20 +2437,13 @@ public class DegraderLoadBalancerTest
 
     //test Strategy V3
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
     clusterTotalRecovery1TC(myMap,
             clock,
             timeInterval,
             strategy);
-
-    //test Strategy V2
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
-    clusterTotalRecovery1TC(myMap, clock, timeInterval, strategy);
   }
 
   /**
@@ -2574,12 +2465,12 @@ public class DegraderLoadBalancerTest
 
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
 
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
     URIRequest request = new URIRequest(uri1);
 
-    TrackerClient client1 =
-            new TrackerClient(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
+    DegraderTrackerClient client1 =
+            new DegraderTrackerClientImpl(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
 
     clients.add(client1);
 
@@ -2590,7 +2481,7 @@ public class DegraderLoadBalancerTest
     dcClient1Default.setMaxDropRate(1d);
     dcClient1Default.setUpStep(1.0d);
 
-    List<CallCompletion> ccList = new ArrayList<CallCompletion>();
+    List<CallCompletion> ccList = new ArrayList<>();
     CallCompletion cc;
     for (int j = 0; j < NUM_CHECKS; j++)
 
@@ -2620,7 +2511,7 @@ public class DegraderLoadBalancerTest
 
     // now we mimic the high latency and force the state to drop all calls so to make
     // the overrideClusterDropRate to 1.0
-    ccList = new ArrayList<CallCompletion>();
+    ccList = new ArrayList<>();
     for (int j = 0; j < NUM_CHECKS; j++)
     {
       cc = client1.getCallTracker().startCall();
@@ -2689,8 +2580,7 @@ public class DegraderLoadBalancerTest
   public void clusterRecovery1TC(Map<String, Object> myMap, TestClock clock,
                                  int stepsToFullRecovery, Long timeInterval,
                                  DegraderLoadBalancerStrategyAdapter strategy,
-                                 DegraderLoadBalancerStrategyV2_1.DegraderLoadBalancerState.Strategy strategyV2,
-                                 DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy strategyV3)
+                                 PartitionDegraderLoadBalancerState.Strategy strategyV3)
   {
     final int NUM_CHECKS = 5;
     final Long TIME_INTERVAL = timeInterval;
@@ -2698,12 +2588,12 @@ public class DegraderLoadBalancerTest
 
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
 
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
     URIRequest request = new URIRequest(uri1);
 
-    TrackerClient client1 =
-            new TrackerClient(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
+    DegraderTrackerClient client1 =
+            new DegraderTrackerClientImpl(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
 
     clients.add(client1);
 
@@ -2714,7 +2604,7 @@ public class DegraderLoadBalancerTest
     dcClient1Default.setMaxDropRate(1d);
     dcClient1Default.setUpStep(1.0d);
 
-    List<CallCompletion> ccList = new ArrayList<CallCompletion>();
+    List<CallCompletion> ccList = new ArrayList<>();
     CallCompletion cc;
     for (int j = 0; j < NUM_CHECKS; j++)
 
@@ -2761,10 +2651,6 @@ public class DegraderLoadBalancerTest
         {
           strategy.setStrategyV3(DEFAULT_PARTITION_ID, strategyV3);
         }
-        else if (strategyV2 != null)
-        {
-          strategy.setStrategyV2(strategyV2);
-        }
         else
         {
           fail("should set strategy (either LoadBalance or Degrader");
@@ -2779,7 +2665,7 @@ public class DegraderLoadBalancerTest
     // make calls to the tracker client to verify that it's on the road to healthy status.
     for (int j = 0; j < NUM_CHECKS; j++)
     {
-      cc = resultTC.getCallTracker().startCall();
+      cc = ((DegraderTrackerClient) resultTC).getCallTracker().startCall();
       ccList.add(cc);
     }
 
@@ -2805,16 +2691,16 @@ public class DegraderLoadBalancerTest
    * create multiple trackerClients using the same clock
    * @return
    */
-  private List<TrackerClient> createTrackerClient(int n, TestClock clock, DegraderImpl.Config config)
+  private List<DegraderTrackerClient> createTrackerClient(int n, TestClock clock, DegraderImpl.Config config)
   {
     String baseUri = "http://test.linkedin.com:10010/abc";
-    List<TrackerClient> result = new LinkedList<TrackerClient>();
+    List<DegraderTrackerClient> result = new LinkedList<>();
     for (int i = 0; i < n; i++)
     {
       URI uri = URI.create(baseUri + i);
-      TrackerClient client =   new TrackerClient(uri,
-              getDefaultPartitionData(1d),
-              new TestLoadBalancerClient(uri), clock, config);
+      DegraderTrackerClient client =   new DegraderTrackerClientImpl(uri,
+                                                                 getDefaultPartitionData(1d),
+                                                                 new TestLoadBalancerClient(uri), clock, config);
       result.add(client);
     }
     return result;
@@ -2830,14 +2716,14 @@ public class DegraderLoadBalancerTest
    * @param withError calling client with error that we don't use for load balancing (any generic error)
    * @param withQualifiedDegraderError calling client with error that we use for load balancing
    */
-  private void callClients(long milliseconds, double qps, List<TrackerClient> clients, TestClock clock,
+  private void callClients(long milliseconds, double qps, List<DegraderTrackerClient> clients, TestClock clock,
                            long timeInterval, boolean withError, boolean withQualifiedDegraderError)
   {
-    LinkedList<CallCompletion> callCompletions = new LinkedList<CallCompletion>();
+    LinkedList<CallCompletion> callCompletions = new LinkedList<>();
     int callHowManyTimes = (int)((qps * timeInterval) / 1000);
     for (int i = 0; i < callHowManyTimes; i++)
     {
-      for (TrackerClient client : clients)
+      for (DegraderTrackerClient client : clients)
       {
         CallCompletion cc = client.getCallTracker().startCall();
         callCompletions.add(cc);
@@ -2883,7 +2769,7 @@ public class DegraderLoadBalancerTest
   private TrackerClient simulateAndTestOneInterval(long timeInterval,
                                                    TestClock clock,
                                                    double qps,
-                                                   List<TrackerClient> clients,
+                                                   List<DegraderTrackerClient> clients,
                                                    DegraderLoadBalancerStrategyAdapter adapter,
                                                    long clusterGenerationId,
                                                    Integer expectedPointsPerClient,
@@ -2922,7 +2808,7 @@ public class DegraderLoadBalancerTest
   @Test(groups = { "small", "back-end" })
   public void testLowTrafficHighLatency1Client()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
@@ -2932,7 +2818,7 @@ public class DegraderLoadBalancerTest
     //we need to override the min call count to 0 because we're testing a service with low traffic.
     //if we don't do this, the computedDropRate will not change and we will never be able to recover
     //after we degraded the cluster.
-    Map<String,String> degraderImplProperties = new HashMap<String, String>();
+    Map<String,String> degraderImplProperties = degraderDefaultConfig();
     degraderImplProperties.put(PropertyKeys.DEGRADER_MIN_CALL_COUNT, "1");
     degraderImplProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderImplProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
@@ -2940,26 +2826,18 @@ public class DegraderLoadBalancerTest
     double qps = 0.3;
 
     //test Strategy V3
-    List<TrackerClient> clients = createTrackerClient(1, clock, degraderConfig);
+    List<DegraderTrackerClient> clients = createTrackerClient(1, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
-
-    //test Strategy V2
-    clients = createTrackerClient(1, clock, degraderConfig);
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
   }
 
   @Test(groups = { "small", "back-end" })
   public void testLowTrafficHighLatency10Clients()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
@@ -2967,7 +2845,7 @@ public class DegraderLoadBalancerTest
     //we need to override the min call count to 0 because we're testing a service with low traffic.
     //if we don't do this, the computedDropRate will not change and we will never be able to recover
     //after we degraded the cluster.
-    Map<String,String> degraderImplProperties = new HashMap<String, String>();
+    Map<String,String> degraderImplProperties = degraderDefaultConfig();
     degraderImplProperties.put(PropertyKeys.DEGRADER_MIN_CALL_COUNT, "1");
     degraderImplProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderImplProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
@@ -2975,19 +2853,11 @@ public class DegraderLoadBalancerTest
     double qps = 0.3;
 
     //test Strategy V3
-    List<TrackerClient> clients = createTrackerClient(10, clock, degraderConfig);
+    List<DegraderTrackerClient> clients = createTrackerClient(10, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
-
-    //test Strategy V2
-    clients = createTrackerClient(10, clock, degraderConfig);
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
   }
 
@@ -2995,7 +2865,7 @@ public class DegraderLoadBalancerTest
   @Test(groups = { "small", "back-end" })
   public void testLowTrafficHighLatency100Clients()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
@@ -3003,7 +2873,7 @@ public class DegraderLoadBalancerTest
     //we need to override the min call count to 0 because we're testing a service with low traffic.
     //if we don't do this, the computedDropRate will not change and we will never be able to recover
     //after we degraded the cluster.
-    Map<String,String> degraderImplProperties = new HashMap<String, String>();
+    Map<String,String> degraderImplProperties = degraderDefaultConfig();
     degraderImplProperties.put(PropertyKeys.DEGRADER_MIN_CALL_COUNT, "1");
     degraderImplProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderImplProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
@@ -3011,19 +2881,11 @@ public class DegraderLoadBalancerTest
     double qps = 0.3;
 
     //test Strategy V3
-    List<TrackerClient> clients = createTrackerClient(100, clock, degraderConfig);
+    List<DegraderTrackerClient> clients = createTrackerClient(100, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest", null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
-
-    //test Strategy V2
-    clients = createTrackerClient(100, clock, degraderConfig);
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
   }
 
@@ -3031,62 +2893,46 @@ public class DegraderLoadBalancerTest
   @Test(groups = { "small", "back-end" })
   public void testMediumTrafficHighLatency1Client()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS , timeInterval);
-    Map<String, String> degraderProperties = new HashMap<String,String>();
+    Map<String, String> degraderProperties = degraderDefaultConfig();
     degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
     DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
     double qps = 5.7;
 
     //test Strategy V3
-    List<TrackerClient> clients = createTrackerClient(1, clock, degraderConfig);
+    List<DegraderTrackerClient> clients = createTrackerClient(1, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
-
-    //test Strategy V2
-    clients = createTrackerClient(1, clock, degraderConfig);
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
   }
 
   @Test(groups = { "small", "back-end" })
   public void testMediumTrafficHighLatency10Clients()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS , timeInterval);
-    Map<String, String> degraderProperties = new HashMap<String,String>();
+    Map<String, String> degraderProperties = degraderDefaultConfig();
     degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
     DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
     double qps = 6.3;
 
     //test Strategy V3
-    List<TrackerClient> clients = createTrackerClient(10, clock, degraderConfig);
+    List<DegraderTrackerClient> clients = createTrackerClient(10, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
-
-    //test Strategy V2
-    clients = createTrackerClient(10, clock, degraderConfig);
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
   }
 
@@ -3094,32 +2940,23 @@ public class DegraderLoadBalancerTest
   @Test(groups = { "small", "back-end" })
   public void testMediumTrafficHighLatency100Clients()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS , timeInterval);
-    myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS , timeInterval);
-    Map<String, String> degraderProperties = new HashMap<String,String>();
+    Map<String, String> degraderProperties = degraderDefaultConfig();
     degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
     DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
     double qps = 7.3;
 
     //test Strategy V3
-    List<TrackerClient> clients = createTrackerClient(100, clock, degraderConfig);
+    List<DegraderTrackerClient> clients = createTrackerClient(100, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
-
-    //test Strategy V2
-    clients = createTrackerClient(100, clock, degraderConfig);
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
   }
 
@@ -3127,62 +2964,46 @@ public class DegraderLoadBalancerTest
   @Test(groups = { "small", "back-end" })
   public void testHighTrafficHighLatency1Client()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS , timeInterval);
-    Map<String, String> degraderProperties = new HashMap<String,String>();
+    Map<String, String> degraderProperties = degraderDefaultConfig();
     degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
     DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
     double qps = 121;
 
     //test Strategy V3
-    List<TrackerClient> clients = createTrackerClient(1, clock, degraderConfig);
+    List<DegraderTrackerClient> clients = createTrackerClient(1, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
-
-    //test Strategy V2
-    clients = createTrackerClient(1, clock, degraderConfig);
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
   }
 
   @Test(groups = { "small", "back-end" })
   public void testHighTrafficHighLatency10Clients()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS , timeInterval);
-    Map<String, String> degraderProperties = new HashMap<String,String>();
+    Map<String, String> degraderProperties = degraderDefaultConfig();
     degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
     DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
     double qps = 93;
 
     //test Strategy V3
-    List<TrackerClient> clients = createTrackerClient(10, clock, degraderConfig);
+    List<DegraderTrackerClient> clients = createTrackerClient(10, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
-
-    //test Strategy V2
-    clients = createTrackerClient(10, clock, degraderConfig);
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
   }
 
@@ -3190,38 +3011,30 @@ public class DegraderLoadBalancerTest
   @Test(groups = { "small", "back-end" })
   public void testHighTrafficHighLatency100Clients()
   {
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS , timeInterval);
-    Map<String, String> degraderProperties = new HashMap<String,String>();
+    Map<String, String> degraderProperties = degraderDefaultConfig();
     degraderProperties.put(PropertyKeys.DEGRADER_HIGH_ERROR_RATE, "0.5");
     degraderProperties.put(PropertyKeys.DEGRADER_LOW_ERROR_RATE, "0.2");
     DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(degraderProperties);
     double qps = 88;
 
     //test Strategy V3
-    List<TrackerClient> clients = createTrackerClient(100, clock, degraderConfig);
+    List<DegraderTrackerClient> clients = createTrackerClient(100, clock, degraderConfig);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategyV3 = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
     DegraderLoadBalancerStrategyAdapter strategy = new DegraderLoadBalancerStrategyAdapter(strategyV3);
-    testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
-
-    //test Strategy V2
-    clients = createTrackerClient(100, clock, degraderConfig);
-    config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV2_1 strategyV2 = new DegraderLoadBalancerStrategyV2_1(config, "DegraderLoadBalancerTest",
-            null);
-    strategy = new DegraderLoadBalancerStrategyAdapter(strategyV2);
     testDegraderLoadBalancerSimulator(strategy, clock, timeInterval, clients, qps, degraderConfig);
   }
 
   private void testDegraderLoadBalancerSimulator(DegraderLoadBalancerStrategyAdapter adapter,
                                                  TestClock clock,
                                                  long timeInterval,
-                                                 List<TrackerClient> clients,
+                                                 List<DegraderTrackerClient> clients,
                                                  double qps,
                                                  DegraderImpl.Config degraderConfig)
   {
@@ -3302,13 +3115,13 @@ public class DegraderLoadBalancerTest
 
     //we'll simulate the client dying one by one until all the clients are gone
     int numberOfClients = clients.size();
-    HashSet<URI> uris = new HashSet<URI>();
-    HashSet<URI> removedUris = new HashSet<URI>();
+    HashSet<URI> uris = new HashSet<>();
+    HashSet<URI> removedUris = new HashSet<>();
     for (TrackerClient client : clients)
     {
       uris.add(client.getUri());
     }
-    LinkedList<TrackerClient> removedClients = new LinkedList<TrackerClient>();
+    LinkedList<TrackerClient> removedClients = new LinkedList<>();
     //loadBalancing strategy will always be picked because there is no hash ring changes
     boolean isLoadBalancingStrategyTurn = true;
     for(int i = numberOfClients; i > 0; i--)
@@ -3346,9 +3159,9 @@ public class DegraderLoadBalancerTest
       //we have to create a new client. The old client has a degraded DegraderImpl. And in production enviroment
       //when a new client join a cluster, it should be in good state. This means there should be 100 points
       //in the hash ring for this client
-      TrackerClient newClient = new TrackerClient(added.getUri(),
-              getDefaultPartitionData(1d),
-              new TestLoadBalancerClient(added.getUri()), clock, degraderConfig);
+      DegraderTrackerClient newClient = new DegraderTrackerClientImpl(added.getUri(),
+                                                                  getDefaultPartitionData(1d),
+                                                                  new TestLoadBalancerClient(added.getUri()), clock, degraderConfig);
       clients.add(newClient);
       uris.add(added.getUri());
       removedUris.remove(added.getUri());
@@ -3437,7 +3250,7 @@ public class DegraderLoadBalancerTest
   public void testHighLowWatermarks()
   {
     final int NUM_CHECKS = 5;
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     Long timeInterval = 5000L;
     double globalStepUp = 0.4;
     double globalStepDown = 0.4;
@@ -3454,15 +3267,15 @@ public class DegraderLoadBalancerTest
     myMap.put(PropertyKeys.HTTP_LB_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK, 1l);
 
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategy = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategy = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
 
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
     URIRequest request = new URIRequest(uri1);
 
-    TrackerClient client1 =
-            new TrackerClient(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
+    DegraderTrackerClient client1 =
+            new DegraderTrackerClientImpl(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
 
     clients.add(client1);
 
@@ -3470,7 +3283,7 @@ public class DegraderLoadBalancerTest
     dcClient1Default.setOverrideMinCallCount(5);
     dcClient1Default.setMinCallCount(5);
 
-    List<CallCompletion> ccList = new ArrayList<CallCompletion>();
+    List<CallCompletion> ccList = new ArrayList<>();
     CallCompletion cc;
 
     TrackerClient resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
@@ -3497,8 +3310,7 @@ public class DegraderLoadBalancerTest
     clock.addMs(timeInterval);
 
     // try call dropping on the next updateState
-    strategy.setStrategy(DEFAULT_PARTITION_ID,
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
+    strategy.setStrategy(DEFAULT_PARTITION_ID, PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
     resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
     // we now expect that the override drop rate stepped up because updateState
     // made that decision.
@@ -3527,8 +3339,7 @@ public class DegraderLoadBalancerTest
     double previousOverrideDropRate = dcClient1Default.getOverrideDropRate();
 
     // try call dropping on the next updateState
-    strategy.setStrategy(DEFAULT_PARTITION_ID,
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
+    strategy.setStrategy(DEFAULT_PARTITION_ID, PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
     resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
     assertEquals(dcClient1Default.getOverrideDropRate(), previousOverrideDropRate );
 
@@ -3552,10 +3363,9 @@ public class DegraderLoadBalancerTest
     clock.addMs(timeInterval);
 
     // try Call dropping on this updateState
-    strategy.setStrategy(DEFAULT_PARTITION_ID,
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
+    strategy.setStrategy(DEFAULT_PARTITION_ID, PartitionDegraderLoadBalancerState.Strategy.CALL_DROPPING);
     resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
-    assertEquals(resultTC.getDegraderControl(DEFAULT_PARTITION_ID).getOverrideDropRate(), 0.0 );
+    assertEquals(((DegraderTrackerClient) resultTC).getDegraderControl(DEFAULT_PARTITION_ID).getOverrideDropRate(), 0.0 );
   }
 
   @Test(groups = { "small", "back-end" })
@@ -3563,7 +3373,7 @@ public class DegraderLoadBalancerTest
   {
     final int NUM_CHECKS = 5;
     final Long TIME_INTERVAL = 5000L;
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     // 1,2,4,8,16,32,64,100% steps, given a 2x recovery step coefficient
     int localStepsToFullRecovery = 8;
     myMap.put(PropertyKeys.HTTP_LB_INITIAL_RECOVERY_LEVEL, 0.005);
@@ -3573,21 +3383,21 @@ public class DegraderLoadBalancerTest
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategy = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategy = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
 
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
     URI uri2 = URI.create("http://test.linkedin.com:3243/fdsaf");
     URIRequest request = new URIRequest(uri1);
 
-    List<CallCompletion> ccList = new ArrayList<CallCompletion>();
+    List<CallCompletion> ccList = new ArrayList<>();
     CallCompletion cc;
 
-    TrackerClient client1 =
-            new TrackerClient(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
-    TrackerClient client2 =
-            new TrackerClient(uri2, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri2), clock, null);
+    DegraderTrackerClient client1 =
+            new DegraderTrackerClientImpl(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
+    DegraderTrackerClient client2 =
+            new DegraderTrackerClientImpl(uri2, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri2), clock, null);
 
     clients.add(client1);
     clients.add(client2);
@@ -3606,8 +3416,7 @@ public class DegraderLoadBalancerTest
     // Have one cycle of successful calls to verify valid tracker clients returned.
     // try load balancing on this updateState, need to updateState before forcing the strategy.
     TrackerClient resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
-    strategy.setStrategy(DEFAULT_PARTITION_ID,
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
+    strategy.setStrategy(DEFAULT_PARTITION_ID, PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
     resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
     assertNotNull(resultTC, "expected non-null trackerclient");
     for (int j = 0; j < NUM_CHECKS; j++)
@@ -3627,8 +3436,7 @@ public class DegraderLoadBalancerTest
     clock.addMs(5000);
 
     // try Load balancing on this updateState
-    strategy.setStrategy(DEFAULT_PARTITION_ID,
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
+    strategy.setStrategy(DEFAULT_PARTITION_ID, PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
     resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
     assertNotNull(resultTC,"expected non-null trackerclient");
 
@@ -3658,8 +3466,7 @@ public class DegraderLoadBalancerTest
     // trigger a state update, the returned TrackerClient should be client2
     // because client 1 should have gone up to a 1.0 drop rate, and the cluster should
     // be unhealthy
-    strategy.setStrategy(DEFAULT_PARTITION_ID,
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
+    strategy.setStrategy(DEFAULT_PARTITION_ID, PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
     resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
     assertEquals(resultTC, client2);
 
@@ -3672,8 +3479,7 @@ public class DegraderLoadBalancerTest
       // go to next time interval.
       clock.addMs(TIME_INTERVAL);
       // adjust the hash ring this time.
-      strategy.setStrategy(DEFAULT_PARTITION_ID,
-              DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
+      strategy.setStrategy(DEFAULT_PARTITION_ID, PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
       resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
       localStepsToFullRecovery--;
     }
@@ -3701,7 +3507,7 @@ public class DegraderLoadBalancerTest
   {
     final int NUM_CHECKS = 5;
     final Long TIME_INTERVAL = 5000L;
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     //myMap.put(PropertyKeys.LB_INITIAL_RECOVERY_LEVEL, 0.01);
     //myMap.put("rampFactor", 2d);
     myMap.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_INTERVAL_MS, TIME_INTERVAL);
@@ -3709,18 +3515,18 @@ public class DegraderLoadBalancerTest
     TestClock clock = new TestClock();
     myMap.put(PropertyKeys.CLOCK, clock);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategy = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-            null);
+    DegraderLoadBalancerStrategyV3 strategy = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
 
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
     URI uri1 = URI.create("http://test.linkedin.com:3242/fdsaf");
     URIRequest request = new URIRequest(uri1);
 
-    List<CallCompletion> ccList = new ArrayList<CallCompletion>();
+    List<CallCompletion> ccList = new ArrayList<>();
     CallCompletion cc;
 
-    TrackerClient client1 =
-            new TrackerClient(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
+    DegraderTrackerClient client1 =
+            new DegraderTrackerClientImpl(uri1, getDefaultPartitionData(1d), new TestLoadBalancerClient(uri1), clock, null);
 
     clients.add(client1);
 
@@ -3737,7 +3543,7 @@ public class DegraderLoadBalancerTest
     assertNotNull(resultTC, "expected non-null trackerclient");
     for (int j = 0; j < NUM_CHECKS; j++)
     {
-      cc = resultTC.getCallTracker().startCall();
+      cc = ((DegraderTrackerClient) resultTC).getCallTracker().startCall();
 
       ccList.add(cc);
     }
@@ -3752,8 +3558,7 @@ public class DegraderLoadBalancerTest
     clock.addMs(5000);
 
     // because we want to test out the adjusted min drop rate, force the hash ring adjustment now.
-    strategy.setStrategy(DEFAULT_PARTITION_ID,
-            DegraderLoadBalancerStrategyV3.PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
+    strategy.setStrategy(DEFAULT_PARTITION_ID, PartitionDegraderLoadBalancerState.Strategy.LOAD_BALANCE);
     resultTC = getTrackerClient(strategy, request, new RequestContext(), 1, clients);
     // client1 should be reduced to 1 hash point, but since it is the only TC, it should be the
     // TC returned.
@@ -3773,19 +3578,20 @@ public class DegraderLoadBalancerTest
             "client1 drop rate not less than 1.");
   }
 
-  @Test(groups = { "small", "back-end" })
-    public void testInconsistentHashAndTrackerclients() throws URISyntaxException,
+  @Test(groups = { "small", "back-end" }, dataProvider = "consistentHashAlgorithms")
+    public void testInconsistentHashAndTrackerclients(String consistentHashAlgorithm) throws URISyntaxException,
                                                                InterruptedException
   {
     // check if the inconsistent Hash ring and trackerlients can be handled
     TestClock clock = new TestClock();
-    Map<String, Object> myMap = new HashMap<String, Object>();
+    Map<String, Object> myMap = lbDefaultConfig();
     myMap.put(PropertyKeys.CLOCK, clock);
+    myMap.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM, consistentHashAlgorithm);
     DegraderLoadBalancerStrategyConfig config = DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(myMap);
-    DegraderLoadBalancerStrategyV3 strategy = new DegraderLoadBalancerStrategyV3(config, "DegraderLoadBalancerTest",
-                                                                                 null);
+    DegraderLoadBalancerStrategyV3 strategy = new DegraderLoadBalancerStrategyV3(config,
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
 
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
+    List<DegraderTrackerClient> clients = new ArrayList<>();
 
     clients.add(getClient(URI.create("http://test.linkedin.com:3242/fdsaf"), clock));
     clients.add(getClient(URI.create("http://test.linkedin.com:3243/fdsaf"), clock));
@@ -3801,38 +3607,189 @@ public class DegraderLoadBalancerTest
     assertNotNull(getTrackerClient(strategy, null, new RequestContext(), 1, clients));
   }
 
-    public static DegraderLoadBalancerStrategyV3 getStrategy()
+  /**
+   * DegraderLoadBalancerQuarantineTest
+   */
+  @Test(groups = { "small", "back-end" })
+  public void DegraderLoadBalancerQuarantineTest()
+  {
+    DegraderLoadBalancerStrategyConfig config = new DegraderLoadBalancerStrategyConfig(1000);
+    TestClock clock = new TestClock();
+    DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(Collections.emptyMap());
+    List<DegraderTrackerClient> trackerClients = createTrackerClient(3, clock, degraderConfig);
+    DegraderTrackerClientUpdater degraderTrackerClientUpdater = new DegraderTrackerClientUpdater(trackerClients.get(0), DEFAULT_PARTITION_ID);
+
+    LoadBalancerQuarantine quarantine = new LoadBalancerQuarantine(degraderTrackerClientUpdater.getTrackerClient(), config, "abc0");
+    TransportHealthCheck healthCheck = (TransportHealthCheck) quarantine.getHealthCheckClient();
+    RestRequest restRequest = healthCheck.getRestRequest();
+
+    Assert.assertTrue(restRequest.getURI().equals(URI.create("http://test.linkedin.com:10010/abc0")));
+    Assert.assertTrue(restRequest.getMethod().equals("OPTIONS"));
+
+    DegraderLoadBalancerStrategyConfig config1 = new DegraderLoadBalancerStrategyConfig(
+        1000, DegraderLoadBalancerStrategyConfig.DEFAULT_UPDATE_ONLY_AT_INTERVAL,
+        100, null, Collections.<String, Object>emptyMap(),
+        DegraderLoadBalancerStrategyConfig.DEFAULT_CLOCK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_INITIAL_RECOVERY_LEVEL,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_RAMP_FACTOR,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_HIGH_WATER_MARK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_LOW_WATER_MARK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_GLOBAL_STEP_UP,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_GLOBAL_STEP_DOWN,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_MIN_CALL_COUNT_HIGH_WATER_MARK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_HASHRING_POINT_CLEANUP_RATE, null,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_NUM_PROBES,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_POINTS_PER_HOST,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_BOUNDED_LOAD_BALANCING_FACTOR,
+        null,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_QUARANTINE_MAXPERCENT,
+        null, null, "GET", "/test/admin",
+        DegraderImpl.DEFAULT_LOW_LATENCY, null,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_LOW_EVENT_EMITTING_INTERVAL,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_HIGH_EVENT_EMITTING_INTERVAL,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_NAME);
+
+    DegraderTrackerClientUpdater updater1 = new DegraderTrackerClientUpdater(trackerClients.get(1), DEFAULT_PARTITION_ID);
+    quarantine = new LoadBalancerQuarantine(updater1.getTrackerClient(), config1, "abc0");
+    healthCheck = (TransportHealthCheck) quarantine.getHealthCheckClient();
+    restRequest = healthCheck.getRestRequest();
+
+    Assert.assertTrue(restRequest.getURI().equals(URI.create("http://test.linkedin.com:10010/test/admin")));
+    Assert.assertTrue(restRequest.getMethod().equals("GET"));
+
+    DegraderLoadBalancerStrategyConfig config2 = new DegraderLoadBalancerStrategyConfig(
+        1000, DegraderLoadBalancerStrategyConfig.DEFAULT_UPDATE_ONLY_AT_INTERVAL,
+        100, null, Collections.<String, Object>emptyMap(),
+        DegraderLoadBalancerStrategyConfig.DEFAULT_CLOCK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_INITIAL_RECOVERY_LEVEL,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_RAMP_FACTOR,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_HIGH_WATER_MARK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_LOW_WATER_MARK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_GLOBAL_STEP_UP,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_GLOBAL_STEP_DOWN,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_MIN_CALL_COUNT_HIGH_WATER_MARK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_HASHRING_POINT_CLEANUP_RATE, null,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_NUM_PROBES,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_POINTS_PER_HOST,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_BOUNDED_LOAD_BALANCING_FACTOR,
+        null,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_QUARANTINE_MAXPERCENT,
+        null, null, "OPTIONS", null,
+        DegraderImpl.DEFAULT_LOW_LATENCY, null,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_LOW_EVENT_EMITTING_INTERVAL,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_HIGH_EVENT_EMITTING_INTERVAL,
+        DegraderLoadBalancerStrategyConfig.DEFAULT_CLUSTER_NAME);
+
+    DegraderTrackerClientUpdater updater2 = new DegraderTrackerClientUpdater(trackerClients.get(2), DEFAULT_PARTITION_ID);
+    quarantine = new LoadBalancerQuarantine(updater2.getTrackerClient(), config2, "abc0");
+    healthCheck = (TransportHealthCheck) quarantine.getHealthCheckClient();
+    restRequest = healthCheck.getRestRequest();
+
+    Assert.assertTrue(restRequest.getURI().equals(URI.create("http://test.linkedin.com:10010/abc2")));
+    Assert.assertTrue(restRequest.getMethod().equals("OPTIONS"));
+  }
+
+  @Test
+  public void testHealthCheckRequestContextNotShared()
+  {
+    final DegraderLoadBalancerStrategyConfig config = new DegraderLoadBalancerStrategyConfig(1000);
+    final TestClock clock = new TestClock();
+    final DegraderImpl.Config degraderConfig = DegraderConfigFactory.toDegraderConfig(Collections.emptyMap());
+    final DegraderTrackerClient trackerClient = createTrackerClient(1, clock, degraderConfig).get(0);
+    final TestLoadBalancerClient testLoadBalancerClient = (TestLoadBalancerClient) trackerClient.getTransportClient();
+    final DegraderTrackerClientUpdater degraderTrackerClientUpdater = new DegraderTrackerClientUpdater(trackerClient, DEFAULT_PARTITION_ID);
+
+    final LoadBalancerQuarantine quarantine = new LoadBalancerQuarantine(degraderTrackerClientUpdater.getTrackerClient(), config, "abc0");
+    final TransportHealthCheck healthCheck = (TransportHealthCheck) quarantine.getHealthCheckClient();
+
+    healthCheck.checkHealth(Callbacks.empty());
+    final RequestContext requestContext1 = testLoadBalancerClient._requestContext;
+    final Map<String, String> wireAttrs1 = testLoadBalancerClient._wireAttrs;
+
+    healthCheck.checkHealth(Callbacks.empty());
+    final RequestContext requestContext2 = testLoadBalancerClient._requestContext;
+    final Map<String, String> wireAttrs2 = testLoadBalancerClient._wireAttrs;
+
+    Assert.assertEquals(requestContext1, requestContext2);
+    Assert.assertNotSame(requestContext1, requestContext2, "RequestContext should not be shared between requests.");
+
+    Assert.assertEquals(wireAttrs1, wireAttrs2);
+    Assert.assertNotSame(wireAttrs1, wireAttrs2, "Wire attributes should not be shared between requests.");
+  }
+
+  /**
+   * return the default old default degrader configs that the tests expect
+   */
+  public static Map<String, String> degraderDefaultConfig()
+  {
+    Map<String, String> degraderProperties = new HashMap<>();
+    degraderProperties.put(PropertyKeys.DEGRADER_DOWN_STEP, "0.2");
+    degraderProperties.put(PropertyKeys.DEGRADER_HIGH_LATENCY, "3000");
+    degraderProperties.put(PropertyKeys.DEGRADER_LOW_LATENCY, "500");
+    degraderProperties.put(PropertyKeys.DEGRADER_MIN_CALL_COUNT, "10");
+
+    return degraderProperties;
+  }
+
+  /**
+   * return the default old default loadbalancer configs that the tests expect
+   */
+  public static Map<String, Object> lbDefaultConfig()
+  {
+    Map<String, Object> lbProperties = new HashMap<>();
+
+    lbProperties.put(PropertyKeys.HTTP_LB_HIGH_WATER_MARK, "3000");
+    lbProperties.put(PropertyKeys.HTTP_LB_LOW_WATER_MARK, "500");
+    lbProperties.put(PropertyKeys.HTTP_LB_RING_RAMP_FACTOR, "1.0");
+    lbProperties.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM, "pointBased");
+
+    return lbProperties;
+  }
+
+  public static DegraderLoadBalancerStrategyV3 getStrategy()
   {
     return new DegraderLoadBalancerStrategyV3(new DegraderLoadBalancerStrategyConfig(5000),
-            "DegraderLoadBalancerTest",
-            null);
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
+  }
+
+  public static DegraderLoadBalancerStrategyV3 getStrategy(String consistentHashAlgorithm)
+  {
+    Map<String, Object> configMap = new HashMap<>();
+    configMap.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM, consistentHashAlgorithm);
+    return getStrategy(configMap);
   }
 
   public static DegraderLoadBalancerStrategyV3 getStrategy(Map<String,Object> map)
   {
     return new DegraderLoadBalancerStrategyV3(DegraderLoadBalancerStrategyConfig.createHttpConfigFromMap(map),
-            "DegraderLoadBalancerTest",
-            null);
+        "DegraderLoadBalancerTest",null, DEGRADER_STATE_LISTENER_FACTORIES);
   }
 
-  public static TrackerClient getClient(URI uri)
+  public static DegraderTrackerClient getClient(URI uri)
   {
-    Map<Integer, PartitionData> partitionDataMap = new HashMap<Integer, PartitionData>(2);
-    partitionDataMap.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    return new TrackerClient(uri, partitionDataMap,new TestLoadBalancerClient(uri));
+    return getClient(uri, SystemClock.instance());
   }
 
-  public static TrackerClient getClient(URI uri, Clock clock)
+  public static DegraderTrackerClient getClient(URI uri, Clock clock)
   {
-    Map<Integer, PartitionData> partitionDataMap = new HashMap<Integer, PartitionData>(2);
+    Map<Integer, PartitionData> partitionDataMap = new HashMap<>(2);
     partitionDataMap.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1));
-    return new TrackerClient(uri, partitionDataMap, new TestLoadBalancerClient(uri), clock, null);
+    return new DegraderTrackerClientImpl(uri, partitionDataMap, new TestLoadBalancerClient(uri), clock, null);
   }
 
+  /**
+   * {@link LoadBalancerClient} decorator that captures the last values.
+   */
   public static class TestLoadBalancerClient implements LoadBalancerClient
   {
+    private final URI _uri;
 
-    private URI _uri;
+    private Request _request;
+    private RequestContext _requestContext;
+    private Map<String, String> _wireAttrs;
+    private TransportCallback<?> _callback;
 
     public TestLoadBalancerClient(URI uri)
     {
@@ -3851,7 +3808,7 @@ public class DegraderLoadBalancerTest
                             Map<String, String> wireAttrs,
                             TransportCallback<StreamResponse> callback)
     {
-      // Do nothing
+      captureValues(request, requestContext, wireAttrs, callback);
     }
 
     @Override
@@ -3860,7 +3817,15 @@ public class DegraderLoadBalancerTest
                      Map<String, String> wireAttrs,
                      TransportCallback<RestResponse> callback)
     {
+      captureValues(request, requestContext, wireAttrs, callback);
+    }
 
+    private void captureValues(Request request, RequestContext requestContext, Map<String, String> wireAttrs, TransportCallback<?> callback)
+    {
+      _request = request;
+      _requestContext = requestContext;
+      _wireAttrs = wireAttrs;
+      _callback = callback;
     }
 
     @Override

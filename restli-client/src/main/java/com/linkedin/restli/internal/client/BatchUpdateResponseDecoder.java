@@ -16,7 +16,6 @@
 
 package com.linkedin.restli.internal.client;
 
-
 import com.linkedin.data.DataMap;
 import com.linkedin.restli.client.response.BatchKVResponse;
 import com.linkedin.restli.common.BatchResponse;
@@ -25,16 +24,13 @@ import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.ProtocolVersion;
 import com.linkedin.restli.common.TypeSpec;
 import com.linkedin.restli.common.UpdateStatus;
-
-import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
 
 /**
- * Converts a raw batch update response {@link DataMap} into a {@link BatchKVResponse}.
+ * Converts a raw batch update/partial_update/delete response {@link DataMap} into a {@link BatchKVResponse}.
  *
  * @author Keren Jin
  */
@@ -69,49 +65,14 @@ public class BatchUpdateResponseDecoder<K> extends RestResponseDecoder<BatchKVRe
 
   @Override
   public BatchKVResponse<K, UpdateStatus> wrapResponse(DataMap dataMap, Map<String, String> headers, ProtocolVersion version)
-    throws InstantiationException, IllegalAccessException, InvocationTargetException, NoSuchMethodException, IOException
   {
-    final DataMap mergedResults = new DataMap();
-    final DataMap inputResults = dataMap.containsKey(BatchResponse.RESULTS) ? dataMap.getDataMap(BatchResponse.RESULTS)
-                                                                            : new DataMap();
-    final DataMap inputErrors = dataMap.containsKey(BatchResponse.ERRORS) ? dataMap.getDataMap(BatchResponse.ERRORS)
-                                                                          : new DataMap();
-
-    final Set<String> mergedKeys = new HashSet<String>(inputResults.keySet());
-    mergedKeys.addAll(inputErrors.keySet());
-
-    for (String key : mergedKeys)
+    if (dataMap == null)
     {
-      // DataMap for UpdateStatus
-      final DataMap updateData;
-
-      // status field is mandatory
-      if (inputResults.containsKey(key))
-      {
-        updateData = inputResults.getDataMap(key);
-      }
-      else
-      {
-        updateData = new DataMap();
-      }
-
-      // DataMap for ErrorResponse
-      final DataMap errorData = (DataMap) inputErrors.get(key);
-      if (errorData != null)
-      {
-        // The status from ErrorResponse overwrites the one in UpdateResponse. However, results and
-        // errors are not expected to have overlapping key. See BatchUpdateResponseBuilder.
-        updateData.put("status", errorData.get("status"));
-        updateData.put("error", errorData);
-      }
-
-      mergedResults.put(key, updateData);
+      return null;
     }
 
-    final DataMap responseData = new DataMap();
-    responseData.put(BatchKVResponse.RESULTS, mergedResults);
-    responseData.put(BatchKVResponse.ERRORS, inputErrors);
+    DataMap responseData = ResponseDecoderUtil.mergeUpdateStatusResponseData(dataMap);
 
-    return new BatchKVResponse<K, UpdateStatus>(responseData, _keyType, new TypeSpec<UpdateStatus>(UpdateStatus.class), _keyParts, _complexKeyType, version);
+    return new BatchKVResponse<>(responseData, _keyType, new TypeSpec<>(UpdateStatus.class), _keyParts, _complexKeyType, version);
   }
 }

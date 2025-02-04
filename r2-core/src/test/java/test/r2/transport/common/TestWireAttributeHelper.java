@@ -31,14 +31,46 @@ import java.util.Map;
 public class TestWireAttributeHelper
 {
   @Test
-  public void testReversible()
+  public void testNewInstanceCreations()
   {
-    final Map<String, String> attrs = new HashMap<String, String>();
+    final Map<String, String> attrs = new HashMap<>();
+    final Map<String, String> toAttrs = WireAttributeHelper.toWireAttributes(attrs);
+    final Map<String, String> removeAttrs = WireAttributeHelper.removeWireAttributes(attrs);
+
+    Assert.assertNotSame(attrs, toAttrs);
+    Assert.assertNotSame(attrs, removeAttrs);
+    Assert.assertNotSame(toAttrs, removeAttrs);
+  }
+
+  @Test
+  public void testCaseInsensitivity()
+  {
+    Map<String, String> attrs = new HashMap<>();
     attrs.put("key1", "val1");
     attrs.put("key2", "val2");
     attrs.put("key3", "val3");
 
-    final Map<String, String> copy = new HashMap<String, String>(attrs);
+    attrs = WireAttributeHelper.toWireAttributes(attrs);
+    Assert.assertTrue(attrs.containsKey("X-LI-R2-W-KEY1"));
+    Assert.assertTrue(attrs.containsKey("x-li-r2-w-key2"));
+    Assert.assertTrue(attrs.containsKey("X-LI-R2-W-Key3"));
+
+    attrs = WireAttributeHelper.removeWireAttributes(attrs);
+
+    Assert.assertTrue(attrs.containsKey("KeY1"));
+    Assert.assertTrue(attrs.containsKey("KEY2"));
+    Assert.assertTrue(attrs.containsKey("KEY3"));
+  }
+
+  @Test
+  public void testReversible()
+  {
+    final Map<String, String> attrs = new HashMap<>();
+    attrs.put("key1", "val1");
+    attrs.put("key2", "val2");
+    attrs.put("key3", "val3");
+
+    final Map<String, String> copy = new HashMap<>(attrs);
     final Map<String, String> actual =
             WireAttributeHelper.removeWireAttributes(WireAttributeHelper.toWireAttributes(copy));
     Assert.assertEquals(actual, attrs);
@@ -47,7 +79,7 @@ public class TestWireAttributeHelper
   @Test
   public void testRemoveWireAttributes()
   {
-    final Map<String, String> headers = new HashMap<String, String>();
+    final Map<String, String> headers = new HashMap<>();
     headers.put("key1", "val1");
     headers.put("X-LI-R2-W-key2", "val2");
 
@@ -67,7 +99,7 @@ public class TestWireAttributeHelper
   @Test
   public void testRemoveWireAttributesCaseInsensitive()
   {
-    final Map<String, String> headers = new HashMap<String, String>();
+    final Map<String, String> headers = new HashMap<>();
     headers.put("X-LI-R2-W-key2", "val2");
     headers.put("x-li-r2-w-key3", "val3");
     headers.put("x-li-r2-w-kEY4", "val4");
@@ -88,7 +120,7 @@ public class TestWireAttributeHelper
   @Test
   public void testToWireAttributes()
   {
-    final Map<String, String> headers = new HashMap<String, String>();
+    final Map<String, String> headers = new HashMap<>();
     headers.put("key1", "val1");
     headers.put("key2", "val2");
 
@@ -104,7 +136,7 @@ public class TestWireAttributeHelper
   @Test
   public void testToWireAttributesCaseInsensitive()
   {
-    final Map<String, String> headers = new HashMap<String, String>();
+    final Map<String, String> headers = new HashMap<>();
     headers.put("key1", "val1");
     headers.put("key2", "val2");
 

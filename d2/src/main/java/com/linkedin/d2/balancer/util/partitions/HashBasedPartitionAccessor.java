@@ -19,6 +19,8 @@ package com.linkedin.d2.balancer.util.partitions;
 import com.linkedin.d2.balancer.properties.HashBasedPartitionProperties;
 import com.linkedin.d2.balancer.util.hashing.HashFunction;
 import com.linkedin.d2.balancer.util.hashing.MD5Hash;
+import com.linkedin.d2.balancer.util.hashing.XXHash;
+
 
 public class HashBasedPartitionAccessor extends AbstractPartitionAccessor
 {
@@ -39,6 +41,9 @@ public class HashBasedPartitionAccessor extends AbstractPartitionAccessor
       case MD5:
         _hashFunction = new MD5Hash();
         break;
+      case XXHASH:
+        _hashFunction = new XXHash();
+        break;
       default:
         // impossible to happen
         throw new IllegalArgumentException("Unsupported hash algorithm: " + hashAlgorithm);
@@ -57,7 +62,10 @@ public class HashBasedPartitionAccessor extends AbstractPartitionAccessor
     }
     catch (Exception ex)
     {
-      throw new PartitionAccessException("Failed to getPartitionId", ex);
+      throw new PartitionAccessException("Failed to getPartitionId for " +
+        "algorithm = '" + _properties.getHashAlgorithm().toString() + "', " +
+        "key = '" + key + "', " +
+        "partitionCount = '" + _properties.getPartitionCount() + "' ", ex);
     }
   }
 

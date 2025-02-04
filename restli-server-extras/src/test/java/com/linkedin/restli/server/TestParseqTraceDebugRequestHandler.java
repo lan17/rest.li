@@ -18,6 +18,8 @@ package com.linkedin.restli.server;
 
 
 import com.linkedin.common.callback.Callback;
+import com.linkedin.parseq.Task;
+import com.linkedin.parseq.promise.PromiseListener;
 import com.linkedin.parseq.trace.Trace;
 import com.linkedin.parseq.trace.codec.json.JsonTraceCodec;
 import com.linkedin.r2.message.RequestContext;
@@ -25,6 +27,7 @@ import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestRequestBuilder;
 import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.restli.common.RestConstants;
+import com.linkedin.restli.internal.server.RestLiMethodInvoker;
 
 import java.io.IOException;
 import java.net.JarURLConnection;
@@ -38,15 +41,18 @@ import java.util.List;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
-import junit.framework.Assert;
-import org.easymock.EasyMock;
 import org.testng.annotations.Test;
+
+import org.junit.Assert;
+import org.easymock.EasyMock;
 
 
 public class TestParseqTraceDebugRequestHandler
 {
   private static final String TEST_TRACE =
       "{" +
+          "\"planId\":0," +
+          "\"planClass\":\"pclass\"," +
           "\"traces\":" +
             "[" +
               "{" +
@@ -76,22 +82,21 @@ public class TestParseqTraceDebugRequestHandler
   public void testTracevisRequest()
   {
     executeRequestThroughParseqDebugHandler(
-        URI.create("http://host/abc/12/__debug/parseqtrace/tracevis"),
-        new Callback<RestResponse>()
-        {
-          @Override
-          public void onError(Throwable e)
-          {
-            Assert.fail("Request execution failed unexpectedly.");
-          }
+            URI.create("http://host/abc/12/__debug/parseqtrace/tracevis"),
+            new Callback<RestResponse>()
+            {
+              @Override
+              public void onError(Throwable e)
+              {
+                Assert.fail("Request execution failed unexpectedly.");
+              }
 
-          @Override
-          public void onSuccess(RestResponse result)
-          {
-            Assert.assertEquals(result.getHeader(RestConstants.HEADER_CONTENT_TYPE), HEADER_VALUE_TEXT_HTML);
-          }
-        });
-
+              @Override
+              public void onSuccess(RestResponse result)
+              {
+                Assert.assertEquals(result.getHeader(RestConstants.HEADER_CONTENT_TYPE), HEADER_VALUE_TEXT_HTML);
+              }
+            });
   }
 
   /**
@@ -101,23 +106,23 @@ public class TestParseqTraceDebugRequestHandler
   public void testRawRequest()
   {
     executeRequestThroughParseqDebugHandler(
-        URI.create("http://host/abc/12/__debug/parseqtrace/raw"),
-        new Callback<RestResponse>()
-        {
-          @Override
-          public void onError(Throwable e)
-          {
-            Assert.fail("Request execution failed unexpectedly.");
-          }
+            URI.create("http://host/abc/12/__debug/parseqtrace/raw"),
+            new Callback<RestResponse>()
+            {
+              @Override
+              public void onError(Throwable e)
+              {
+                Assert.fail("Request execution failed unexpectedly.");
+              }
 
-          @Override
-          public void onSuccess(RestResponse result)
-          {
-            Assert.assertEquals(result.getHeader(RestConstants.HEADER_CONTENT_TYPE), HEADER_VALUE_APPLICATION_JSON);
-            String traceJson = result.getEntity().asString(Charset.forName("UTF-8"));
-            Assert.assertEquals(traceJson, TEST_TRACE);
-          }
-        });
+              @Override
+              public void onSuccess(RestResponse result)
+              {
+                Assert.assertEquals(result.getHeader(RestConstants.HEADER_CONTENT_TYPE), HEADER_VALUE_APPLICATION_JSON);
+                String traceJson = result.getEntity().asString(Charset.forName("UTF-8"));
+                Assert.assertEquals(TEST_TRACE, traceJson);
+              }
+            });
   }
 
   /**
@@ -135,7 +140,7 @@ public class TestParseqTraceDebugRequestHandler
     //Collect all files under tracevis folder in the jar containing the parseq trace debug request handler.
     Enumeration<URL> resources = classLoader.getResources(
         ParseqTraceDebugRequestHandler.class.getName().replace('.', '/') + ".class");
-    List<String> files = new ArrayList<String>();
+    List<String> files = new ArrayList<>();
 
     while (resources.hasMoreElements())
     {
@@ -175,21 +180,21 @@ public class TestParseqTraceDebugRequestHandler
                                file.substring(file.indexOf('/') + 1));
 
       executeRequestThroughParseqDebugHandler(
-          uri,
-          new Callback<RestResponse>()
-          {
-            @Override
-            public void onError(Throwable e)
-            {
-              Assert.fail("Static content cannot be retrieved for " + uri.toString());
-            }
+              uri,
+              new Callback<RestResponse>()
+              {
+                @Override
+                public void onError(Throwable e)
+                {
+                  Assert.fail("Static content cannot be retrieved for " + uri.toString());
+                }
 
-            @Override
-            public void onSuccess(RestResponse result)
-            {
-              Assert.assertEquals(result.getHeader(RestConstants.HEADER_CONTENT_TYPE), mimeType);
-            }
-          });
+                @Override
+                public void onSuccess(RestResponse result)
+                {
+                  Assert.assertEquals(result.getHeader(RestConstants.HEADER_CONTENT_TYPE), mimeType);
+                }
+              });
     }
   }
 
@@ -200,35 +205,36 @@ public class TestParseqTraceDebugRequestHandler
     RestRequest request = requestBuilder.build();
     RequestContext requestContext = new RequestContext();
 
-    requestHandler.handleRequest(request,
-                                  requestContext,
-                                  new RestLiDebugRequestHandler.ResourceDebugRequestHandler()
-                                  {
-                                    @Override
-                                    public void handleRequest(RestRequest request,
-                                                               RequestContext requestContext,
-                                                               RequestExecutionCallback<RestResponse> callback)
-                                    {
-                                      RestResponse response = EasyMock.createMock(RestResponse.class);
-                                      RequestExecutionReportBuilder executionReportBuilder =
-                                         new RequestExecutionReportBuilder();
-                                      JsonTraceCodec jsonTraceCodec = new JsonTraceCodec();
-                                      Trace t = null;
+    requestHandler.handleRequest(request, requestContext, new RestLiDebugRequestHandler.ResourceDebugRequestHandler()
+                                 {
+                                   @Override
+                                   @SuppressWarnings("unchecked")
+                                   public void handleRequest(RestRequest request, RequestContext requestContext,
+                                                             Callback<RestResponse> callback)
+                                   {
+                                     RestResponse response = EasyMock.createMock(RestResponse.class);
+                                     JsonTraceCodec jsonTraceCodec = new JsonTraceCodec();
+                                     Trace t = null;
 
-                                      try
-                                      {
-                                        t = jsonTraceCodec.decode(TEST_TRACE);
-                                        executionReportBuilder.setParseqTrace(t);
-                                      }
-                                      catch (IOException exc)
-                                      {
-                                        //test will fail later
-                                      }
+                                     try
+                                     {
+                                       t = jsonTraceCodec.decode(TEST_TRACE);
+                                     }
+                                     catch (IOException exc)
+                                     {
+                                       //test will fail later
+                                     }
 
-                                      callback.onSuccess(response, executionReportBuilder.build());
-                                    }
-                                  },
-                                  callback);
+                                     Task<Object> task = EasyMock.createMock(Task.class);
+                                     EasyMock.expect(task.getTrace()).andReturn(t);
+                                     EasyMock.replay(task);
+                                     PromiseListener<Object> promiseListener =
+                                         (PromiseListener<Object>) requestContext.getLocalAttr(RestLiMethodInvoker.ATTRIBUTE_PROMISE_LISTENER);
+                                     promiseListener.onResolved(task);
+
+                                     callback.onSuccess(response);
+                                   }
+                                 }, callback);
   }
 
   private static String determineMediaType(String path)

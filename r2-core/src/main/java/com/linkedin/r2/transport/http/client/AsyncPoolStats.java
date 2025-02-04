@@ -36,6 +36,8 @@ public class AsyncPoolStats implements PoolStats
   private final int _totalDestroyErrors;
   private final int _totalBadDestroyed;
   private final int _totalTimedOut;
+  private final int _totalWaiterTimedOut;
+  private final int _totalCreationIgnored;
 
   private final int _checkedOut;
   private final int _maxPoolSize;
@@ -44,6 +46,7 @@ public class AsyncPoolStats implements PoolStats
 
   private final int _sampleMaxCheckedOut;
   private final int _sampleMaxPoolSize;
+  private final long _sampleMaxWaitTime;
 
   private final int _idleCount;
   private final double _waitTimeAvg;
@@ -63,6 +66,8 @@ public class AsyncPoolStats implements PoolStats
       int totalDestroyErrors,
       int totalBadDestroyed,
       int totalTimedOut,
+      int totalWaiterTimedOut,
+      int totalCreationsIgnored,
 
       int checkedOut,
       int maxPoolSize,
@@ -71,6 +76,7 @@ public class AsyncPoolStats implements PoolStats
 
       int sampleMaxCheckedOut,
       int sampleMaxPoolSize,
+      long sampleMaxWaitTime,
 
       int idleCount,
       double waitTimeAvg,
@@ -86,6 +92,8 @@ public class AsyncPoolStats implements PoolStats
     _totalDestroyErrors = totalDestroyErrors;
     _totalBadDestroyed = totalBadDestroyed;
     _totalTimedOut = totalTimedOut;
+    _totalCreationIgnored = totalCreationsIgnored;
+    _totalWaiterTimedOut = totalWaiterTimedOut;
 
     _checkedOut = checkedOut;
     _maxPoolSize = maxPoolSize;
@@ -94,6 +102,7 @@ public class AsyncPoolStats implements PoolStats
 
     _sampleMaxCheckedOut = sampleMaxCheckedOut;
     _sampleMaxPoolSize = sampleMaxPoolSize;
+    _sampleMaxWaitTime = sampleMaxWaitTime;
 
     _idleCount = idleCount;
     _waitTimeAvg = waitTimeAvg;
@@ -175,6 +184,27 @@ public class AsyncPoolStats implements PoolStats
   }
 
   /**
+   * Get the total number of timed out pool waiters between the
+   * starting of the Pool and the call to getStats().
+   * @return The total number of timed out objects
+   */
+  @Override
+  public int getTotalWaiterTimedOut()
+  {
+    return _totalWaiterTimedOut;
+  }
+  /**
+   * Get the total number of times the object creation ignored between the
+   * starting of the AsyncPool and the call to getStats().
+   * @return The total number of times the object creation ignored
+   */
+  @Override
+  public int getTotalCreationIgnored()
+  {
+    return _totalCreationIgnored;
+  }
+
+  /**
    * Get the number of pool objects checked out at the time of
    * the call to getStats().
    * @return The number of checked out pool objects
@@ -235,6 +265,12 @@ public class AsyncPoolStats implements PoolStats
   public int getSampleMaxPoolSize()
   {
     return _sampleMaxPoolSize;
+  }
+
+  @Override
+  public long getSampleMaxWaitTime()
+  {
+    return _sampleMaxWaitTime;
   }
 
   /**
@@ -307,6 +343,7 @@ public class AsyncPoolStats implements PoolStats
         "\ntotalDestroyErrors: " + _totalDestroyErrors +
         "\ntotalBadDestroyed: " + _totalBadDestroyed +
         "\ntotalTimeOut: " + _totalTimedOut +
+        "\ntotalWaiterTimedOut: " + _totalWaiterTimedOut +
         "\ncheckedOut: " + _totalTimedOut +
         "\nmaxPoolSize: " + _maxPoolSize +
         "\npoolSize: " + _poolSize +

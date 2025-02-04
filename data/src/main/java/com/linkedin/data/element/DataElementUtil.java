@@ -205,7 +205,7 @@ public class DataElementUtil
             childSchema = ((MapDataSchema) schema).getValues();
             break;
           case UNION:
-            childSchema = ((UnionDataSchema) schema).getType((String) name);
+            childSchema = ((UnionDataSchema) schema).getTypeByMemberKey((String) name);
             break;
           case RECORD:
             RecordDataSchema.Field field = ((RecordDataSchema) schema).getField((String) name);
@@ -231,7 +231,7 @@ public class DataElementUtil
       return Collections.emptyList();
     }
 
-    List<Object> list = new ArrayList<Object>(path.length() / 4);
+    List<Object> list = new ArrayList<>(path.length() / 4);
     int len = path.length();
     int index = 0;
     if (path.charAt(index) != separator)

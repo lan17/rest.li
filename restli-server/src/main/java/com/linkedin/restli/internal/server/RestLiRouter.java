@@ -16,15 +16,13 @@
 
 package com.linkedin.restli.internal.server;
 
-
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.template.InvalidAlternativeKeyException;
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.data.template.TemplateRuntimeException;
 import com.linkedin.r2.filter.R2Constants;
-import com.linkedin.r2.message.RequestContext;
-import com.linkedin.r2.message.rest.RestRequest;
+import com.linkedin.r2.message.Request;
 import com.linkedin.restli.common.ComplexKeySpec;
 import com.linkedin.restli.common.ComplexResourceKey;
 import com.linkedin.restli.common.CompoundKey;
@@ -39,12 +37,11 @@ import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
 import com.linkedin.restli.internal.server.model.ResourceModel;
 import com.linkedin.restli.internal.server.util.AlternativeKeyCoercerException;
 import com.linkedin.restli.internal.server.util.ArgumentUtils;
-import com.linkedin.restli.internal.server.util.RestLiSyntaxException;
 import com.linkedin.restli.server.Key;
 import com.linkedin.restli.server.ResourceLevel;
+import com.linkedin.restli.server.RestLiConfig;
 import com.linkedin.restli.server.RestLiServiceException;
 import com.linkedin.restli.server.RoutingException;
-
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.util.Arrays;
@@ -57,7 +54,6 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.regex.Pattern;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,6 +68,7 @@ public class RestLiRouter
   private static final Logger log = LoggerFactory.getLogger(RestLiRouter.class);
   private static final Map<ResourceMethodMatchKey, ResourceMethod> _resourceMethodLookup = setupResourceMethodLookup();
   private final Map<String, ResourceModel> _pathRootResourceMap;
+  private final RestLiConfig _restLiConfig;
 
   /**
    * Constructor.
@@ -79,23 +76,36 @@ public class RestLiRouter
    * @param pathRootResourceMap a map of resource root paths to corresponding
    *          {@link ResourceModel}s
    */
+  @Deprecated
   public RestLiRouter(final Map<String, ResourceModel> pathRootResourceMap)
   {
     super();
     _pathRootResourceMap = pathRootResourceMap;
+    _restLiConfig = new RestLiConfig();
+  }
+
+  /**
+   * Constructor.
+   *
+   * @param pathRootResourceMap a map of resource root paths to corresponding
+   *          {@link ResourceModel}s
+   * @param restLiConfig Server related configurations
+   */
+  public RestLiRouter(final Map<String, ResourceModel> pathRootResourceMap, RestLiConfig restLiConfig)
+  {
+    super();
+    _pathRootResourceMap = pathRootResourceMap;
+    _restLiConfig = restLiConfig;
   }
 
   private static final Pattern SLASH_PATTERN = Pattern.compile(Pattern.quote("/"));
 
   /**
-   * Processes provided {@link RestRequest}.
-   *
-   * @param req {@link RestRequest}
-   * @return {@link RoutingResult}
+   * Processes provided {@link Request}.
    */
-  public RoutingResult process(final RestRequest req, final RequestContext requestContext)
+  public ResourceMethodDescriptor process(final ServerResourceContext context)
   {
-    String path = req.getURI().getRawPath();
+    String path = context.getRequestURI().getRawPath();
     if (path.length() < 2)
     {
       throw new RoutingException(HttpStatus.S_404_NOT_FOUND.getCode());
@@ -106,8 +116,7 @@ public class RestLiRouter
       path = path.substring(1);
     }
 
-    Queue<String> remainingPath =
-        new LinkedList<String>(Arrays.asList(SLASH_PATTERN.split(path)));
+    Queue<String> remainingPath = new LinkedList<>(Arrays.asList(SLASH_PATTERN.split(path)));
 
     String rootPath = "/" + remainingPath.poll();
 
@@ -129,21 +138,11 @@ public class RestLiRouter
                                                rootPath),
                                  HttpStatus.S_404_NOT_FOUND.getCode());
     }
-    ServerResourceContext context;
-
-    try
-    {
-      context = new ResourceContextImpl(new PathKeysImpl(), req, requestContext);
-    }
-    catch (RestLiSyntaxException e)
-    {
-      throw new RoutingException(e.getMessage(), HttpStatus.S_400_BAD_REQUEST.getCode());
-    }
 
     return processResourceTree(currentResource, context, remainingPath);
   }
 
-  private RoutingResult processResourceTree(final ResourceModel resource,
+  private ResourceMethodDescriptor processResourceTree(final ResourceModel resource,
                                             final ServerResourceContext context,
                                             final Queue<String> remainingPath)
   {
@@ -166,7 +165,6 @@ public class RestLiRouter
       }
       else
       {
-        ResourceModel currentCollectionResource = currentResource;
         if (currentResource.getKeys().isEmpty())
         {
           throw new RoutingException(String.format("Path key not supported on resource '%s' for URI '%s'",
@@ -189,7 +187,7 @@ public class RestLiRouter
           CompoundKey compoundKey;
           try
           {
-            compoundKey = parseCompoundKey(currentCollectionResource, context, currentPathSegment);
+            compoundKey = parseCompoundKey(currentResource, context, currentPathSegment);
           }
           catch (IllegalArgumentException e)
           {
@@ -222,7 +220,7 @@ public class RestLiRouter
   }
 
   /** given path segment, parses subresource name out of it */
-  private static String parseSubresourceName(final String pathSegment)
+  private String parseSubresourceName(final String pathSegment)
   {
     try
     {
@@ -234,26 +232,20 @@ public class RestLiRouter
     }
   }
 
-  private RoutingResult findMethodDescriptor(final ResourceModel resource,
+  private ResourceMethodDescriptor findMethodDescriptor(final ResourceModel resource,
                                              final ResourceLevel resourceLevel,
                                              final ServerResourceContext context)
   {
     ResourceMethod type = mapResourceMethod(context, resourceLevel);
-
-    String methodName = context.getRequestActionName();
-    if (methodName == null)
-    {
-      methodName = context.getRequestFinderName();
-    }
-
+    String methodName = context.getMethodName(type);
     ResourceMethodDescriptor methodDescriptor = resource.matchMethod(type, methodName, resourceLevel);
 
     if (methodDescriptor != null)
     {
       context.getRawRequestContext().putLocalAttr(R2Constants.OPERATION,
                                                   OperationNameGenerator.generate(methodDescriptor.getMethodType(),
-                                                                                  methodName));
-      return new RoutingResult(context, methodDescriptor);
+                                                                                  methodDescriptor.getMethodName()));
+      return methodDescriptor;
     }
 
     String httpMethod = context.getRequestMethod();
@@ -288,42 +280,44 @@ public class RestLiRouter
   // when it's not necessary, as long as it doesn't conflict with the rest of the parameters.
   private static Map<ResourceMethodMatchKey, ResourceMethod> setupResourceMethodLookup()
   {
-    HashMap<ResourceMethodMatchKey, ResourceMethod> result = new HashMap<ResourceMethodMatchKey, ResourceMethod>();
-    //                                 METHOD    RMETHOD                    ACTION   QUERY   BATCH   ENTITY
+    HashMap<ResourceMethodMatchKey, ResourceMethod> result = new HashMap<>();
+    //                                 METHOD    RMETHOD                    ACTION   QUERY BATCHFINDER  BATCH   ENTITY
     Object[] config =
     {
-            new ResourceMethodMatchKey("GET",    "",                        false,   false,  false,  true),  ResourceMethod.GET,
-            new ResourceMethodMatchKey("GET",    "",                        false,   true,   false,  false), ResourceMethod.FINDER,
-            new ResourceMethodMatchKey("PUT",    "",                        false,   false,  false,  true),  ResourceMethod.UPDATE,
-            new ResourceMethodMatchKey("POST",   "",                        false,   false,  false,  true),  ResourceMethod.PARTIAL_UPDATE,
-            new ResourceMethodMatchKey("DELETE", "",                        false,   false,  false,  true),  ResourceMethod.DELETE,
-            new ResourceMethodMatchKey("POST",   "",                        true,    false,  false,  true),  ResourceMethod.ACTION,
-            new ResourceMethodMatchKey("POST",   "",                        true,    false,  false,  false), ResourceMethod.ACTION,
-            new ResourceMethodMatchKey("POST",   "",                        false,   false,  false,  false), ResourceMethod.CREATE,
-            new ResourceMethodMatchKey("GET",    "",                        false,   false,  false,  false), ResourceMethod.GET_ALL,
+            new ResourceMethodMatchKey("GET",    "",                        false,   false, false, false,  true),  ResourceMethod.GET,
+            new ResourceMethodMatchKey("GET",    "",                        false,   true,  false,  false,  false), ResourceMethod.FINDER,
+            new ResourceMethodMatchKey("PUT",    "",                        false,   false, false, false,  true),  ResourceMethod.UPDATE,
+            new ResourceMethodMatchKey("POST",   "",                        false,   false, false, false,  true),  ResourceMethod.PARTIAL_UPDATE,
+            new ResourceMethodMatchKey("DELETE", "",                        false,   false, false, false,  true),  ResourceMethod.DELETE,
+            new ResourceMethodMatchKey("POST",   "",                        true,    false, false,false,  true),  ResourceMethod.ACTION,
+            new ResourceMethodMatchKey("POST",   "",                        true,    false, false, false,  false), ResourceMethod.ACTION,
+            new ResourceMethodMatchKey("POST",   "",                        false,   false, false, false,  false), ResourceMethod.CREATE,
+            new ResourceMethodMatchKey("GET",    "",                        false,   false, false, false,  false), ResourceMethod.GET_ALL,
 
-            new ResourceMethodMatchKey("GET",    "GET",                     false,   false,  false,  true),  ResourceMethod.GET,
-            new ResourceMethodMatchKey("GET",    "FINDER",                  false,   true,   false,  false), ResourceMethod.FINDER,
-            new ResourceMethodMatchKey("PUT",    "UPDATE",                  false,   false,  false,  true),  ResourceMethod.UPDATE,
-            new ResourceMethodMatchKey("POST",   "PARTIAL_UPDATE",          false,   false,  false,  true),  ResourceMethod.PARTIAL_UPDATE,
-            new ResourceMethodMatchKey("DELETE", "DELETE",                  false,   false,  false,  true),  ResourceMethod.DELETE,
-            new ResourceMethodMatchKey("POST",   "ACTION",                  true,    false,  false,  true),  ResourceMethod.ACTION,
-            new ResourceMethodMatchKey("POST",   "ACTION",                  true,    false,  false,  false), ResourceMethod.ACTION,
-            new ResourceMethodMatchKey("POST",   "CREATE",                  false,   false,  false,  false), ResourceMethod.CREATE,
-            new ResourceMethodMatchKey("GET",    "GET_ALL",                 false,   false,  false,  false), ResourceMethod.GET_ALL,
+            new ResourceMethodMatchKey("GET",    "GET",                     false,   false, false, false,  true),  ResourceMethod.GET,
+            new ResourceMethodMatchKey("GET",    "FINDER",                  false,   true,  false, false,  false), ResourceMethod.FINDER,
+            new ResourceMethodMatchKey("PUT",    "UPDATE",                  false,   false, false, false,  true),  ResourceMethod.UPDATE,
+            new ResourceMethodMatchKey("POST",   "PARTIAL_UPDATE",          false,   false, false, false,  true),  ResourceMethod.PARTIAL_UPDATE,
+            new ResourceMethodMatchKey("DELETE", "DELETE",                  false,   false, false, false,  true),  ResourceMethod.DELETE,
+            new ResourceMethodMatchKey("POST",   "ACTION",                  true,    false, false, false,  true),  ResourceMethod.ACTION,
+            new ResourceMethodMatchKey("POST",   "ACTION",                  true,    false, false, false,  false), ResourceMethod.ACTION,
+            new ResourceMethodMatchKey("POST",   "CREATE",                  false,   false, false, false,  false), ResourceMethod.CREATE,
+            new ResourceMethodMatchKey("GET",    "GET_ALL",                 false,   false, false, false,  false), ResourceMethod.GET_ALL,
 
-            new ResourceMethodMatchKey("GET",    "",                        false,   false,  true,   false), ResourceMethod.BATCH_GET,
-            new ResourceMethodMatchKey("DELETE", "",                        false,   false,  true,   false), ResourceMethod.BATCH_DELETE,
-            new ResourceMethodMatchKey("PUT",    "",                        false,   false,  true,   false), ResourceMethod.BATCH_UPDATE,
-            new ResourceMethodMatchKey("POST",   "",                        false,   false,  true,   false), ResourceMethod.BATCH_PARTIAL_UPDATE,
+            new ResourceMethodMatchKey("GET",    "",                        false,   false, false, true,   false), ResourceMethod.BATCH_GET,
+            new ResourceMethodMatchKey("GET",    "",                        false,   false,  true,  false,  false), ResourceMethod.BATCH_FINDER,
+            new ResourceMethodMatchKey("DELETE", "",                        false,   false, false, true,   false), ResourceMethod.BATCH_DELETE,
+            new ResourceMethodMatchKey("PUT",    "",                        false,   false, false, true,   false), ResourceMethod.BATCH_UPDATE,
+            new ResourceMethodMatchKey("POST",   "",                        false,   false, false, true,   false), ResourceMethod.BATCH_PARTIAL_UPDATE,
 
-            new ResourceMethodMatchKey("GET",    "BATCH_GET",               false,   false,  true,   false), ResourceMethod.BATCH_GET,
-            new ResourceMethodMatchKey("DELETE", "BATCH_DELETE",            false,   false,  true,   false), ResourceMethod.BATCH_DELETE,
-            new ResourceMethodMatchKey("PUT",    "BATCH_UPDATE",            false,   false,  true,   false), ResourceMethod.BATCH_UPDATE,
-            new ResourceMethodMatchKey("POST",   "BATCH_PARTIAL_UPDATE",    false,   false,  true,   false), ResourceMethod.BATCH_PARTIAL_UPDATE,
+            new ResourceMethodMatchKey("GET",    "BATCH_GET",               false,   false, false, true,   false), ResourceMethod.BATCH_GET,
+            new ResourceMethodMatchKey("GET",    "BATCH_FINDER",            false,   false, true,  false,  false), ResourceMethod.BATCH_FINDER,
+            new ResourceMethodMatchKey("DELETE", "BATCH_DELETE",            false,   false, false, true,   false), ResourceMethod.BATCH_DELETE,
+            new ResourceMethodMatchKey("PUT",    "BATCH_UPDATE",            false,   false, false, true,   false), ResourceMethod.BATCH_UPDATE,
+            new ResourceMethodMatchKey("POST",   "BATCH_PARTIAL_UPDATE",    false,   false, false,  true,   false), ResourceMethod.BATCH_PARTIAL_UPDATE,
 
             // batch create signature collides with non-batch create. requires RMETHOD header to distinguish
-            new ResourceMethodMatchKey("POST",   "BATCH_CREATE",            false,   false,  false,  false), ResourceMethod.BATCH_CREATE
+            new ResourceMethodMatchKey("POST",   "BATCH_CREATE",            false,   false,  false, false, false), ResourceMethod.BATCH_CREATE
     };
 
     for (int ii = 0; ii < config.length; ii += 2)
@@ -344,11 +338,39 @@ public class RestLiRouter
   private ResourceMethod mapResourceMethod(final ServerResourceContext context,
                                            final ResourceLevel resourceLevel)
   {
+    boolean contextHasActionName = context.getRequestActionName() != null;
+    boolean contextHasFinderName = context.getRequestFinderName() != null;
+    boolean contextHasBatchFinderName = context.getRequestBatchFinderName() != null;
+
+    // Explicitly setting other flags to false if condition meets:
+    if (context.getRequestMethod().equalsIgnoreCase("GET") && contextHasFinderName )
+    {
+      // If "q" in query params for "GET" methods, then this param considered as Finder name
+      // and "bq" and "action" can be used as query param name
+      contextHasActionName = false;
+      contextHasBatchFinderName = false;
+    }
+    else if (context.getRequestMethod().equalsIgnoreCase("GET") && contextHasBatchFinderName)
+    {
+      // If "q" not in query params for "GET" methods but "bq" seen, then this param considered as batchFinder name
+      // and "action" can be used as query param name
+      contextHasActionName = false;
+      contextHasFinderName = false;
+    }
+    else if (context.getRequestMethod().equalsIgnoreCase("POST") && contextHasActionName)
+    {
+      // If "q" in query params for "POST" method, then this param considered as action name
+      // and "b" and "bq" can be used as action param name
+      contextHasBatchFinderName = false;
+      contextHasFinderName= false;
+    }
+
     ResourceMethodMatchKey key =
         new ResourceMethodMatchKey(context.getRequestMethod(),
                                    context.getRestLiRequestMethod(),
-                                   context.getRequestActionName() != null,
-                                   context.getRequestFinderName() != null,
+                                   contextHasActionName,
+                                   contextHasFinderName,
+                                   contextHasBatchFinderName,
                                    context.getPathKeys().getBatchIds() != null,
                                    resourceLevel.equals(ResourceLevel.ENTITY));
 
@@ -376,44 +398,40 @@ public class RestLiRouter
 
   }
 
-  private static CompoundKey parseCompoundKey(final ResourceModel resource,
-                                              final ServerResourceContext context,
-                                              final String pathSegment)
- {
-   CompoundKey compoundKey;
-   try
-   {
-     compoundKey =
-       ArgumentUtils.parseCompoundKey(pathSegment, resource.getKeys(),
-                                      context.getRestliProtocolVersion());
-   }
-   catch (PathSegmentSyntaxException e)
-   {
-     throw new RoutingException(String.format("input %s is not a Compound key", pathSegment),
-                                HttpStatus.S_400_BAD_REQUEST.getCode(),
-                                e);
-   }
-   catch (IllegalArgumentException e)
-   {
-     throw new RoutingException(String.format("input %s is not a Compound key", pathSegment),
-                                HttpStatus.S_400_BAD_REQUEST.getCode(),
-                                e);
-   }
-   catch (TemplateRuntimeException e)
-   {
-     // thrown from DateTemplateUtil.coerceOutput
-     throw new RoutingException(String.format("Compound key parameter value %s is invalid", pathSegment),
-                                HttpStatus.S_400_BAD_REQUEST.getCode(),
-                                e);
-   }
+  private CompoundKey parseCompoundKey(final ResourceModel resource,
+                                       final ServerResourceContext context,
+                                       final String pathSegment)
+  {
+    CompoundKey compoundKey;
+    try
+    {
+      compoundKey = ArgumentUtils.parseCompoundKey(pathSegment, resource.getKeys(), context.getRestliProtocolVersion(),
+          _restLiConfig.shouldValidateResourceKeys());
+    }
+    catch (PathSegmentSyntaxException e)
+    {
+      throw new RoutingException(String.format("input %s is not a Compound key", pathSegment),
+          HttpStatus.S_400_BAD_REQUEST.getCode(), e);
+    }
+    catch (IllegalArgumentException e)
+    {
+      throw new RoutingException(String.format("input %s is not a Compound key", pathSegment),
+          HttpStatus.S_400_BAD_REQUEST.getCode(), e);
+    }
+    catch (TemplateRuntimeException e)
+    {
+      // thrown from DateTemplateUtil.coerceOutput
+      throw new RoutingException(String.format("Compound key parameter value %s is invalid", pathSegment),
+          HttpStatus.S_400_BAD_REQUEST.getCode(), e);
+    }
 
-   for (String simpleKeyName : compoundKey.getPartKeys())
-   {
+    for (String simpleKeyName : compoundKey.getPartKeys())
+    {
       context.getPathKeys().append(simpleKeyName, compoundKey.getPart(simpleKeyName));
-   }
-   context.getPathKeys().append(resource.getKeyName(), compoundKey);
-   return compoundKey;
- }
+    }
+    context.getPathKeys().append(resource.getKeyName(), compoundKey);
+    return compoundKey;
+  }
 
   /**
    * Coercers the alternative key into a primary key and puts it into path keys.
@@ -422,7 +440,7 @@ public class RestLiRouter
    * @param context the {@link com.linkedin.restli.internal.server.ServerResourceContext} of the request.
    * @param currentPathSegment the serialized alternative key.
    */
-  private static <K> void parseAlternativeKey(final ResourceModel resource,
+  private <K> void parseAlternativeKey(final ResourceModel resource,
                                               final ServerResourceContext context,
                                               final String currentPathSegment)
   {
@@ -433,7 +451,8 @@ public class RestLiRouter
       alternativeKey = ArgumentUtils.parseAlternativeKey(currentPathSegment,
                                                        context.getParameter(RestConstants.ALT_KEY_PARAM),
                                                        resource,
-                                                       context.getRestliProtocolVersion());
+                                                       context.getRestliProtocolVersion(),
+                                                       _restLiConfig.shouldValidateResourceKeys());
     }
     catch (IllegalArgumentException e)
     {
@@ -460,13 +479,8 @@ public class RestLiRouter
   /**
    * Instantiate the complex key from the current path segment (treat is as a list of
    * query parameters) and put it into the context.
-   *
-   * @param currentPathSegment
-   * @param context
-   * @param resource
-   * @return
    */
-  private static void parseComplexKey(final ResourceModel resource,
+  private void parseComplexKey(final ResourceModel resource,
                                       final ServerResourceContext context,
                                       final String currentPathSegment)
   {
@@ -476,7 +490,10 @@ public class RestLiRouter
           ComplexKeySpec.forClassesMaybeNull( resource.getKeyKeyClass(), resource.getKeyParamsClass());
       ComplexResourceKey<RecordTemplate, RecordTemplate> complexKey =
           ComplexResourceKey.parseString(currentPathSegment, complexKeyType, context.getRestliProtocolVersion());
-
+      if (_restLiConfig.shouldValidateResourceKeys())
+      {
+        complexKey.validate();
+      }
       context.getPathKeys().append(resource.getKeyName(), complexKey);
     }
     catch (PathSegmentSyntaxException e)
@@ -484,6 +501,11 @@ public class RestLiRouter
       throw new RoutingException(String.format("Complex key query parameters parsing error: '%s'",
                                                e.getMessage()),
                                  HttpStatus.S_400_BAD_REQUEST.getCode());
+    }
+    catch (IllegalArgumentException e)
+    {
+      throw new RoutingException(String.format("Invalid complex key: '%s'", e.getMessage()),
+          HttpStatus.S_400_BAD_REQUEST.getCode());
     }
   }
 
@@ -517,7 +539,7 @@ public class RestLiRouter
         }
         else
         {
-          batchKeys = new HashSet<Object>();
+          batchKeys = new HashSet<>();
 
           // Validate the complex keys and put them into the context batch keys
           for (Object complexKey : batchIds)
@@ -528,7 +550,23 @@ public class RestLiRouter
               context.getBatchKeyErrors().put(complexKey, new RestLiServiceException(HttpStatus.S_400_BAD_REQUEST));
               continue;
             }
-            batchKeys.add(ComplexResourceKey.buildFromDataMap((DataMap) complexKey, ComplexKeySpec.forClassesMaybeNull(resource.getKeyKeyClass(), resource.getKeyParamsClass())));
+            ComplexResourceKey<RecordTemplate, RecordTemplate> finalKey =
+                ComplexResourceKey.buildFromDataMap((DataMap) complexKey,
+                    ComplexKeySpec.forClassesMaybeNull(resource.getKeyKeyClass(), resource.getKeyParamsClass()));
+            if (_restLiConfig.shouldValidateResourceKeys())
+            {
+              try
+              {
+                finalKey.validate();
+              }
+              catch (IllegalArgumentException e)
+              {
+                log.warn("Complex key validation failure '" + complexKey.toString() + "', skipping key.");
+                context.getBatchKeyErrors().put(complexKey, new RestLiServiceException(HttpStatus.S_400_BAD_REQUEST));
+                continue;
+              }
+            }
+            batchKeys.add(finalKey);
           }
         }
       }
@@ -548,7 +586,7 @@ public class RestLiRouter
         }
         else
         {
-          batchKeys = new HashSet<Object>();
+          batchKeys = new HashSet<>();
 
           // Validate the compound keys and put them into the contex batch keys
           for (Object compoundKey : batchIds)
@@ -563,7 +601,8 @@ public class RestLiRouter
             CompoundKey finalKey;
             try
             {
-              finalKey = ArgumentUtils.dataMapToCompoundKey((DataMap) compoundKey, resource.getKeys());
+              finalKey = ArgumentUtils.dataMapToCompoundKey((DataMap) compoundKey, resource.getKeys(),
+                  _restLiConfig.shouldValidateResourceKeys());
             }
             catch (IllegalArgumentException e)
             {
@@ -579,7 +618,7 @@ public class RestLiRouter
       // collection batch get in v2, collection or association batch get in v1
       else if (context.hasParameter(RestConstants.QUERY_BATCH_IDS_PARAM))
       {
-        batchKeys = new HashSet<Object>();
+        batchKeys = new HashSet<>();
 
         List<String> ids = context.getParameterValues(RestConstants.QUERY_BATCH_IDS_PARAM);
         if (version.compareTo(AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion()) >= 0)
@@ -588,9 +627,20 @@ public class RestLiRouter
           {
             Key key = resource.getPrimaryKey();
             Object value;
-            // in v2, compound keys have already been converted and dealt with, so all we need to do here is convert simple values.
-            value = ArgumentUtils.convertSimpleValue(id, key.getDataSchema(), key.getType());
-            batchKeys.add(value);
+            try
+            {
+              // in v2, compound keys have already been converted and dealt with, so all we need to do here is convert simple values.
+              value = ArgumentUtils.convertSimpleValue(id, key.getDataSchema(), key.getType(), _restLiConfig.shouldValidateResourceKeys());
+              batchKeys.add(value);
+            }
+            catch (NumberFormatException e)
+            {
+              throw new RoutingException("NumberFormatException parsing batch key '" + id + "'", HttpStatus.S_400_BAD_REQUEST.getCode(), e);
+            }
+            catch (IllegalArgumentException e)
+            {
+              throw new RoutingException("IllegalArgumentException parsing batch key '" + id + "'", HttpStatus.S_400_BAD_REQUEST.getCode(), e);
+            }
           }
         }
         else
@@ -636,12 +686,12 @@ public class RestLiRouter
     context.getPathKeys().setBatchKeys(batchKeys);
   }
 
-  private static Set<Object> parseAlternativeBatchKeys(final ResourceModel resource,
+  private Set<Object> parseAlternativeBatchKeys(final ResourceModel resource,
                                                        final ServerResourceContext context)
   {
     String altKeyName = context.getParameter(RestConstants.ALT_KEY_PARAM);
     List<String> ids = context.getParameterValues(RestConstants.QUERY_BATCH_IDS_PARAM);
-    Set<Object> batchKeys = new HashSet<Object>();
+    Set<Object> batchKeys = new HashSet<>();
     if (ids == null)
     {
       batchKeys = null;
@@ -661,9 +711,9 @@ public class RestLiRouter
       {
         try
         {
-          batchKeys.add(ArgumentUtils.translateFromAlternativeKey(ArgumentUtils.parseAlternativeKey(id, altKeyName, resource, context.getRestliProtocolVersion()),
-                                                                  altKeyName,
-                                                                  resource));
+          batchKeys.add(ArgumentUtils.translateFromAlternativeKey(
+              ArgumentUtils.parseAlternativeKey(id, altKeyName, resource, context.getRestliProtocolVersion(),
+                  _restLiConfig.shouldValidateResourceKeys()), altKeyName, resource));
         }
         catch (InvalidAlternativeKeyException e)
         {
@@ -680,14 +730,15 @@ public class RestLiRouter
     return batchKeys;
   }
 
-  private static void parseSimpleKey(final ResourceModel resource,
+  private void parseSimpleKey(final ResourceModel resource,
                                      final ServerResourceContext context,
                                      final String pathSegment)
   {
     Object parsedKey;
     try
     {
-      parsedKey = ArgumentUtils.parseSimplePathKey(pathSegment, resource, context.getRestliProtocolVersion());
+      parsedKey = ArgumentUtils.parseSimplePathKey(pathSegment, resource, context.getRestliProtocolVersion(),
+          _restLiConfig.shouldValidateResourceKeys());
     }
     catch (NumberFormatException e)
     {
@@ -717,19 +768,18 @@ public class RestLiRouter
       .append(resource.getKeyName(), parsedKey);
   }
 
-  private static Object parseKeyFromBatchV1(String value, ResourceModel resource)
+  private Object parseKeyFromBatchV1(String value, ResourceModel resource)
     throws PathSegmentSyntaxException, IllegalArgumentException
   {
     ProtocolVersion version = AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion();
     if (CompoundKey.class.isAssignableFrom(resource.getKeyClass()))
     {
-      return ArgumentUtils.parseCompoundKey(value, resource.getKeys(), version);
+      return ArgumentUtils.parseCompoundKey(value, resource.getKeys(), version, _restLiConfig.shouldValidateResourceKeys());
     }
     else
     {
       Key key = resource.getPrimaryKey();
-      return ArgumentUtils.convertSimpleValue(value, key.getDataSchema(), key.getType());
+      return ArgumentUtils.convertSimpleValue(value, key.getDataSchema(), key.getType(), _restLiConfig.shouldValidateResourceKeys());
     }
   }
-
 }

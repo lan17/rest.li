@@ -27,7 +27,6 @@ import com.linkedin.data.schema.NamedDataSchema;
 import com.linkedin.data.schema.PrimitiveDataSchema;
 import com.linkedin.data.schema.TyperefDataSchema;
 import com.linkedin.data.schema.resolver.FileDataSchemaLocation;
-import com.linkedin.data.schema.validation.RequiredMode;
 import com.linkedin.data.schema.validation.ValidateDataAgainstSchema;
 import com.linkedin.data.schema.validation.ValidationOptions;
 import com.linkedin.data.schema.validation.ValidationResult;
@@ -46,21 +45,24 @@ import com.linkedin.pegasus.generator.spec.ClassTemplateSpec;
 import com.linkedin.restli.client.OptionsRequestBuilder;
 import com.linkedin.restli.client.RestliRequestOptions;
 import com.linkedin.restli.client.base.ActionRequestBuilderBase;
-import com.linkedin.restli.client.base.BatchCreateIdRequestBuilderBase;
 import com.linkedin.restli.client.base.BatchCreateIdEntityRequestBuilderBase;
+import com.linkedin.restli.client.base.BatchCreateIdRequestBuilderBase;
 import com.linkedin.restli.client.base.BatchDeleteRequestBuilderBase;
+import com.linkedin.restli.client.base.BatchFindRequestBuilderBase;
 import com.linkedin.restli.client.base.BatchGetEntityRequestBuilderBase;
+import com.linkedin.restli.client.base.BatchPartialUpdateEntityRequestBuilderBase;
 import com.linkedin.restli.client.base.BatchPartialUpdateRequestBuilderBase;
 import com.linkedin.restli.client.base.BatchUpdateRequestBuilderBase;
 import com.linkedin.restli.client.base.BuilderBase;
+import com.linkedin.restli.client.base.CreateIdEntityRequestBuilderBase;
 import com.linkedin.restli.client.base.CreateIdRequestBuilderBase;
 import com.linkedin.restli.client.base.DeleteRequestBuilderBase;
 import com.linkedin.restli.client.base.FindRequestBuilderBase;
 import com.linkedin.restli.client.base.GetAllRequestBuilderBase;
 import com.linkedin.restli.client.base.GetRequestBuilderBase;
+import com.linkedin.restli.client.base.PartialUpdateEntityRequestBuilderBase;
 import com.linkedin.restli.client.base.PartialUpdateRequestBuilderBase;
 import com.linkedin.restli.client.base.UpdateRequestBuilderBase;
-import com.linkedin.restli.client.base.CreateIdEntityRequestBuilderBase;
 import com.linkedin.restli.common.ComplexResourceKey;
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.CompoundKey.TypeInfo;
@@ -71,7 +73,6 @@ import com.linkedin.restli.common.ResourceSpecImpl;
 import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.common.validation.RestLiDataValidator;
 import com.linkedin.restli.internal.common.RestliVersion;
-import com.linkedin.restli.internal.common.TyperefUtils;
 import com.linkedin.restli.internal.common.URIParamUtils;
 import com.linkedin.restli.internal.server.model.ResourceModelEncoder;
 import com.linkedin.restli.internal.tools.RestLiToolsUtils;
@@ -80,17 +81,22 @@ import com.linkedin.restli.restspec.ActionSchemaArray;
 import com.linkedin.restli.restspec.ActionsSetSchema;
 import com.linkedin.restli.restspec.AssocKeySchema;
 import com.linkedin.restli.restspec.AssociationSchema;
+import com.linkedin.restli.restspec.BatchFinderSchema;
+import com.linkedin.restli.restspec.BatchFinderSchemaArray;
 import com.linkedin.restli.restspec.CollectionSchema;
 import com.linkedin.restli.restspec.FinderSchema;
 import com.linkedin.restli.restspec.FinderSchemaArray;
 import com.linkedin.restli.restspec.ParameterSchema;
 import com.linkedin.restli.restspec.ParameterSchemaArray;
+import com.linkedin.restli.restspec.ResourceEntityType;
 import com.linkedin.restli.restspec.ResourceSchema;
 import com.linkedin.restli.restspec.ResourceSchemaArray;
 import com.linkedin.restli.restspec.RestMethodSchema;
 import com.linkedin.restli.restspec.RestMethodSchemaArray;
 import com.linkedin.restli.restspec.RestSpecCodec;
 import com.linkedin.restli.restspec.SimpleSchema;
+import com.linkedin.restli.server.annotations.ReturnEntity;
+import com.linkedin.util.CustomTypeUtil;
 
 import java.io.File;
 import java.io.IOException;
@@ -100,9 +106,12 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -145,13 +154,24 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
   private static final Map<RestliVersion, String> METHOD_BUILDER_SUFFIX;
   static
   {
-    ROOT_BUILDERS_SUFFIX = new HashMap<RestliVersion, String>();
+    ROOT_BUILDERS_SUFFIX = new HashMap<>();
     ROOT_BUILDERS_SUFFIX.put(RestliVersion.RESTLI_1_0_0, "Builders");
     ROOT_BUILDERS_SUFFIX.put(RestliVersion.RESTLI_2_0_0, "RequestBuilders");
 
-    METHOD_BUILDER_SUFFIX = new HashMap<RestliVersion, String>();
+    METHOD_BUILDER_SUFFIX = new HashMap<>();
     METHOD_BUILDER_SUFFIX.put(RestliVersion.RESTLI_1_0_0, "Builder");
     METHOD_BUILDER_SUFFIX.put(RestliVersion.RESTLI_2_0_0, "RequestBuilder");
+  }
+
+  // "Return entity" request builder base classes for each supported method
+  private static final Map<ResourceMethod, Class<?>> RETURN_ENTITY_BUILDER_CLASSES;
+  static
+  {
+    RETURN_ENTITY_BUILDER_CLASSES = new LinkedHashMap<>();
+    RETURN_ENTITY_BUILDER_CLASSES.put(ResourceMethod.CREATE, CreateIdEntityRequestBuilderBase.class);
+    RETURN_ENTITY_BUILDER_CLASSES.put(ResourceMethod.PARTIAL_UPDATE, PartialUpdateEntityRequestBuilderBase.class);
+    RETURN_ENTITY_BUILDER_CLASSES.put(ResourceMethod.BATCH_CREATE, BatchCreateIdEntityRequestBuilderBase.class);
+    RETURN_ENTITY_BUILDER_CLASSES.put(ResourceMethod.BATCH_PARTIAL_UPDATE, BatchPartialUpdateEntityRequestBuilderBase.class);
   }
 
   private final JClass _voidClass = getCodeModel().ref(Void.class);
@@ -162,7 +182,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
   private final JClass _resourceMethodClass = getCodeModel().ref(ResourceMethod.class);
   private final JClass _classClass = getCodeModel().ref(Class.class);
   private final JClass _objectClass = getCodeModel().ref(Object.class);
-  private final HashSet<JClass> _generatedArrayClasses = new HashSet<JClass>();
+  private final HashSet<JClass> _generatedArrayClasses = new HashSet<>();
   private final DataSchemaResolver _schemaResolver;
   private final TemplateSpecGenerator _specGenerator;
   private final JavaDataTemplateGenerator _javaDataTemplateGenerator;
@@ -179,6 +199,32 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
    * @param version {@link RestliVersion} of the generated builder format
    * @param deprecatedByVersion this version of builder format will be generated, but will be annotated as deprecated.
    *                            also will reference to the non-deprecated version.
+   * @param rootPath root path to relativize
+   */
+  public JavaRequestBuilderGenerator(String resolverPath,
+                                     String defaultPackage,
+                                     boolean generateDataTemplates,
+                                     RestliVersion version,
+                                     RestliVersion deprecatedByVersion,
+                                     String rootPath)
+  {
+    super(defaultPackage);
+    _schemaResolver = CodeUtil.createSchemaResolver(resolverPath);
+    _specGenerator = new TemplateSpecGenerator(_schemaResolver);
+    _javaDataTemplateGenerator = new JavaDataTemplateGenerator(defaultPackage, rootPath);
+    _generateDataTemplates = generateDataTemplates;
+    _version = version;
+    _deprecatedByVersion = deprecatedByVersion;
+  }
+
+  /**
+   * @param resolverPath colon-separated string containing all paths of schema source to resolve
+   * @param defaultPackage package to be used when a {@link NamedDataSchema} does not specify a namespace
+   * @param generateDataTemplates true if the related data template source files will be generated as well, false otherwise.
+   *                              if null is assigned to this value, by default it returns true.
+   * @param version {@link RestliVersion} of the generated builder format
+   * @param deprecatedByVersion this version of builder format will be generated, but will be annotated as deprecated.
+   *                            also will reference to the non-deprecated version.
    */
   public JavaRequestBuilderGenerator(String resolverPath,
                                      String defaultPackage,
@@ -186,13 +232,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                      RestliVersion version,
                                      RestliVersion deprecatedByVersion)
   {
-    super(defaultPackage);
-    _schemaResolver = CodeUtil.createSchemaResolver(resolverPath);
-    _specGenerator = new TemplateSpecGenerator(_schemaResolver);
-    _javaDataTemplateGenerator = new JavaDataTemplateGenerator(defaultPackage);
-    _generateDataTemplates = generateDataTemplates;
-    _version = version;
-    _deprecatedByVersion = deprecatedByVersion;
+    this(resolverPath, defaultPackage, generateDataTemplates, version, deprecatedByVersion, null);
   }
 
   public boolean isGeneratedArrayClass(JClass clazz)
@@ -212,10 +252,15 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
 
   public JDefinedClass generate(ResourceSchema resource, File sourceFile)
   {
+    return generate(resource, sourceFile, null);
+  }
+
+  public JDefinedClass generate(ResourceSchema resource, File sourceFile, String rootPath)
+  {
     _currentSourceFile = sourceFile;
     try
     {
-      return generateResourceFacade(resource, sourceFile, new HashMap<String, JClass>(), new HashMap<String, JClass>(), new HashMap<String, List<String>>());
+      return generateResourceFacade(resource, sourceFile, new TreeMap<>(), new TreeMap<>(), new TreeMap<>(), rootPath);
     }
     catch (JClassAlreadyExistsException e)
     {
@@ -244,9 +289,9 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
     if (resourcePath.contains("="))
     {
       // this is an old-style IDL.
-      final List<String> newPathKeys = new ArrayList<String>(pathKeys.size());
+      final List<String> newPathKeys = new ArrayList<>(pathKeys.size());
       final Map<String, String> assocToPathKeys = reverseMap(pathToAssocKeys);
-      final Set<String> prevRealPathKeys = new HashSet<String>();
+      final Set<String> prevRealPathKeys = new TreeSet<>();
       for (String currKey : pathKeys)
       {
         if (assocToPathKeys.containsKey(currKey))
@@ -274,7 +319,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
 
   private static Map<String, String> reverseMap(Map<String, List<String>> toReverse)
   {
-    final Map<String, String> reversed = new HashMap<String, String>();
+    final Map<String, String> reversed = new HashMap<>();
     for (Map.Entry<String, List<String>> entry : toReverse.entrySet())
     {
       for (String element : entry.getValue())
@@ -442,21 +487,6 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
     }
   }
 
-  private static ClassTemplateSpec classSpecFromJavaClass(JDefinedClass clazz)
-  {
-    final ClassTemplateSpec classSpec = new ClassTemplateSpec();
-
-    classSpec.setNamespace(clazz.getPackage().name());
-    classSpec.setClassName(clazz.name());
-
-    if (clazz.outer() instanceof JDefinedClass)
-    {
-      classSpec.setEnclosingClass(classSpecFromJavaClass((JDefinedClass) clazz.outer()));
-    }
-
-    return classSpec;
-  }
-
   private boolean checkVersionAndDeprecateBuilderClass(JDefinedClass clazz, boolean isRootBuilders)
   {
     if (_deprecatedByVersion == null)
@@ -480,15 +510,15 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
     }
   }
 
-  private void annotate(JDefinedClass requestBuilderClass, String sourceFilePath)
+  private void annotate(JDefinedClass requestBuilderClass, String sourceFilePath, String rootPath)
   {
-    JavaCodeUtil.annotate(requestBuilderClass, "Request Builder", sourceFilePath);
+    JavaCodeUtil.annotate(requestBuilderClass, "Request Builder", sourceFilePath, rootPath);
   }
 
-  private JDefinedClass generateResourceFacade(ResourceSchema resource, File sourceFile, Map<String, JClass> pathKeyTypes, Map<String, JClass> assocKeyTypes, Map<String, List<String>> pathToAssocKeys)
+  private JDefinedClass generateResourceFacade(ResourceSchema resource, File sourceFile, Map<String, JClass> pathKeyTypes, Map<String, JClass> assocKeyTypes, Map<String, List<String>> pathToAssocKeys, String rootPath)
       throws JClassAlreadyExistsException, IOException
   {
-    final ValidationResult validationResult = ValidateDataAgainstSchema.validate(resource.data(), resource.schema(), new ValidationOptions(RequiredMode.MUST_BE_PRESENT));
+    final ValidationResult validationResult = ValidateDataAgainstSchema.validate(resource.data(), resource.schema(), new ValidationOptions());
     if (!validationResult.isValid())
     {
       throw new IllegalArgumentException(String.format("Resource validation error.  Resource File '%s', Error Details '%s'", sourceFile, validationResult.toString()));
@@ -507,7 +537,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
       className = getBuilderClassNameByVersion(RestliVersion.RESTLI_1_0_0, null, resource.getName(), true);
     }
     final JDefinedClass facadeClass = clientPackage._class(className);
-    annotate(facadeClass, sourceFile.getAbsolutePath());
+    annotate(facadeClass, sourceFile.getAbsolutePath(), rootPath);
 
     final JFieldVar baseUriField;
     final JFieldVar requestOptionsField;
@@ -626,9 +656,11 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
     StringArray supportsList = null;
     RestMethodSchemaArray restMethods = null;
     FinderSchemaArray finders = null;
+    BatchFinderSchemaArray batchFinders = null;
     ResourceSchemaArray subresources = null;
     ActionSchemaArray resourceActions = null;
     ActionSchemaArray entityActions = null;
+    final JFieldVar resourceSpecField = facadeClass.field(JMod.PRIVATE | JMod.STATIC | JMod.FINAL, _resourceSpecClass, "_resourceSpec");
 
     if (resource.getCollection() != null)
     {
@@ -657,6 +689,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
       supportsList = collection.getSupports();
       restMethods = collection.getMethods();
       finders = collection.getFinders();
+      batchFinders = collection.getBatchFinders();
       subresources = collection.getEntity().getSubresources();
       resourceActions = collection.getActions();
       entityActions = collection.getEntity().getActions();
@@ -669,16 +702,17 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
       supportsList = association.getSupports();
       restMethods = association.getMethods();
       finders = association.getFinders();
+      batchFinders = association.getBatchFinders();
       subresources = association.getEntity().getSubresources();
       resourceActions = association.getActions();
       entityActions = association.getEntity().getActions();
 
-      assocKeyTypeInfos = generateAssociationKey(facadeClass, association);
+      assocKeyTypeInfos = generateAssociationKey(facadeClass, association, resourceSpecField);
 
       final String keyName = getAssociationKey(resource, association);
       pathKeyTypes.put(keyName, keyClass);
 
-      final List<String> assocKeys = new ArrayList<String>(4);
+      final List<String> assocKeys = new ArrayList<>(4);
       for (Map.Entry<String, AssocKeyTypeInfo> entry : assocKeyTypeInfos.entrySet())
       {
         assocKeys.add(entry.getKey());
@@ -711,7 +745,6 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
 
     generateOptions(facadeClass, baseUriGetter, requestOptionsGetter);
 
-    final JFieldVar resourceSpecField = facadeClass.field(JMod.PRIVATE | JMod.STATIC | JMod.FINAL, _resourceSpecClass, "_resourceSpec");
     if (resourceSchemaClass == CollectionSchema.class ||
         resourceSchemaClass == AssociationSchema.class ||
         resourceSchemaClass == SimpleSchema.class)
@@ -774,7 +807,8 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                            assocKeyTypes,
                            pathToAssocKeys,
                            requestOptionsGetter,
-                           resource.data().getDataMap("annotations"));
+                           resource.data().getDataMap("annotations"),
+                           rootPath);
 
       if (resourceSchemaClass == CollectionSchema.class || resourceSchemaClass == AssociationSchema.class)
       {
@@ -790,10 +824,26 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                         pathKeyTypes,
                         assocKeyTypes,
                         pathToAssocKeys,
-                        requestOptionsGetter);
+                        requestOptionsGetter,
+                        rootPath);
+
+        generateBatchFinders(facadeClass,
+                            baseUriGetter,
+                            batchFinders,
+                            keyClass,
+                            schemaClass,
+                            assocKeyTypeInfos,
+                            resourceSpecField,
+                            resourceName,
+                            pathKeys,
+                            pathKeyTypes,
+                            assocKeyTypes,
+                            pathToAssocKeys,
+                            requestOptionsGetter,
+                            rootPath);
       }
 
-      generateSubResources(sourceFile, subresources, pathKeyTypes, assocKeyTypes, pathToAssocKeys);
+      generateSubResources(sourceFile, subresources, pathKeyTypes, assocKeyTypes, pathToAssocKeys, rootPath);
     }
     else //action set
     {
@@ -817,7 +867,8 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                     pathKeyTypes,
                     assocKeyTypes,
                     pathToAssocKeys,
-                    requestOptionsGetter);
+                    requestOptionsGetter,
+                    rootPath);
 
     generateClassJavadoc(facadeClass, resource);
 
@@ -968,7 +1019,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
     finderMethod.body()._return(JExpr._new(builderClass).arg(baseUriExpr).arg(requestOptionsExpr));
   }
 
-  private void generateSubResources(File sourceFile, ResourceSchemaArray subresources, Map<String, JClass> pathKeyTypes, Map<String, JClass> assocKeyTypes, Map<String, List<String>> pathToAssocKeys)
+  private void generateSubResources(File sourceFile, ResourceSchemaArray subresources, Map<String, JClass> pathKeyTypes, Map<String, JClass> assocKeyTypes, Map<String, List<String>> pathToAssocKeys, String rootPath)
       throws JClassAlreadyExistsException, IOException
   {
     if (subresources == null)
@@ -978,7 +1029,12 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
 
     for (ResourceSchema resource : subresources)
     {
-      generateResourceFacade(resource, sourceFile, pathKeyTypes, assocKeyTypes, pathToAssocKeys);
+      // Skip unstructured data resources as client binding for them is not supported yet.
+      if (ResourceEntityType.UNSTRUCTURED_DATA == resource.getEntityType())
+      {
+        continue;
+      }
+      generateResourceFacade(resource, sourceFile, pathKeyTypes, assocKeyTypes, pathToAssocKeys, rootPath);
     }
   }
 
@@ -994,7 +1050,8 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                Map<String, JClass> pathKeyTypes,
                                Map<String, JClass> assocKeyTypes,
                                Map<String, List<String>> pathToAssocKeys,
-                               JExpression requestOptionsExpr)
+                               JExpression requestOptionsExpr,
+                               String rootPath)
       throws JClassAlreadyExistsException
   {
     if (finderSchemas != null)
@@ -1011,13 +1068,14 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                                                                                                                                                                                                           builderName,
                                                                                                                                                                                                                           facadeClass.getPackage(),
                                                                                                                                                                                                                           ResourceMethod.FINDER,
-                                                                                                                                                                                                                          null);
+                                                                                                                                                                                                                          null,
+                                                                                                                                                                                                                          rootPath);
 
         final JMethod finderMethod = facadeClass.method(JMod.PUBLIC, finderBuilderClass, "findBy" + CodeUtil.capitalize(finderName));
 
         finderMethod.body()._return(JExpr._new(finderBuilderClass).arg(baseUriExpr).arg(resourceSpecField).arg(requestOptionsExpr));
 
-        final Set<String> finderKeys = new HashSet<String>();
+        final Set<String> finderKeys = new TreeSet<>();
         if (finder.getAssocKey() != null)
         {
           finderKeys.add(finder.getAssocKey());
@@ -1036,7 +1094,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
 
         if (finder.getParameters() != null)
         {
-          generateQueryParamBindingMethods(facadeClass, finder.getParameters(), finderBuilderClass);
+          generateQueryParamBindingMethods(facadeClass, finder.getParameters(), finderBuilderClass, finder);
         }
 
         //process the metadata schema file
@@ -1052,7 +1110,81 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
     }
   }
 
-  private void generateQueryParamBindingMethods(JDefinedClass facadeClass, ParameterSchemaArray parameters, JDefinedClass derivedBuilderClass)
+  private void generateBatchFinders(JDefinedClass facadeClass,
+                                  JExpression baseUriExpr,
+                                  BatchFinderSchemaArray batchFinderSchemas,
+                                  JClass keyClass,
+                                  JClass valueClass,
+                                  Map<String, AssocKeyTypeInfo> assocKeys,
+                                  JVar resourceSpecField,
+                                  String resourceName,
+                                  List<String> pathKeys,
+                                  Map<String, JClass> pathKeyTypes,
+                                  Map<String, JClass> assocKeyTypes,
+                                  Map<String, List<String>> pathToAssocKeys,
+                                  JExpression requestOptionsExpr,
+                                  String rootPath)
+      throws JClassAlreadyExistsException
+  {
+    if (batchFinderSchemas != null)
+    {
+      final JClass baseBuilderClass = getCodeModel().ref(BatchFindRequestBuilderBase.class).narrow(keyClass, valueClass);
+
+      for (BatchFinderSchema batchFinder : batchFinderSchemas)
+      {
+        final String batchFinderName = batchFinder.getName();
+
+        final String builderName = CodeUtil.capitalize(resourceName) + "BatchFindBy" + CodeUtil.capitalize(batchFinderName) + METHOD_BUILDER_SUFFIX.get(_version);
+        JDefinedClass batchFinderBuilderClass = generateDerivedBuilder(baseBuilderClass,
+                                                                      valueClass,
+                                                                      batchFinderName,
+                                                                      builderName,
+                                                                      facadeClass.getPackage(),
+                                                                      ResourceMethod.BATCH_FINDER,
+                                                                      null,
+                                                                      rootPath);
+
+        final JMethod batchFinderMethod = facadeClass.method(JMod.PUBLIC, batchFinderBuilderClass, "batchFindBy" + CodeUtil.capitalize(batchFinderName));
+
+        batchFinderMethod.body()._return(JExpr._new(batchFinderBuilderClass).arg(baseUriExpr).arg(resourceSpecField).arg(requestOptionsExpr));
+
+        final Set<String> batchFinderKeys = new TreeSet<>();
+        if (batchFinder.getAssocKey() != null)
+        {
+          batchFinderKeys.add(batchFinder.getAssocKey());
+        }
+        if (batchFinder.getAssocKeys() != null)
+        {
+          for (String assocKey : batchFinder.getAssocKeys())
+          {
+            batchFinderKeys.add(assocKey);
+          }
+        }
+
+        generatePathKeyBindingMethods(pathKeys, batchFinderBuilderClass, pathKeyTypes, assocKeyTypes, pathToAssocKeys);
+
+        generateAssocKeyBindingMethods(assocKeys, batchFinderBuilderClass, batchFinderKeys);
+
+        if (batchFinder.getParameters() != null)
+        {
+          generateQueryParamBindingMethods(facadeClass, batchFinder.getParameters(), batchFinderBuilderClass, batchFinder);
+        }
+
+
+        //process the metadata schema file
+        if (batchFinder.getMetadata() != null)
+        {
+          final String metadataClass = batchFinder.getMetadata().getType();
+          getJavaBindingType(metadataClass, facadeClass);
+        }
+
+        generateClassJavadoc(batchFinderBuilderClass, batchFinder);
+        generateFactoryMethodJavadoc(batchFinderMethod, batchFinder);
+      }
+    }
+  }
+
+  private void generateQueryParamBindingMethods(JDefinedClass facadeClass, ParameterSchemaArray parameters, JDefinedClass derivedBuilderClass, RecordTemplate methodSchema)
   {
     for (ParameterSchema param : parameters)
     {
@@ -1065,9 +1197,17 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
       }
       else
       {
+
         final DataSchema typeSchema = RestSpecCodec.textToSchema(param.getType(), _schemaResolver);
         final JClass paramClass = getJavaBindingType(typeSchema, facadeClass).valueClass;
-        generateQueryParamSetMethod(derivedBuilderClass, param, paramClass, paramClass);
+
+        // for batchFinder parameter, we do not use the standard way to represent SearchCriteraArray as an input of the set parameter method
+        // since we can not guarantee that SearchCriteraArray is generated
+        if (!(methodSchema instanceof BatchFinderSchema
+            && ((BatchFinderSchema) methodSchema).getBatchParam().equals(param.getName())))
+        {
+          generateQueryParamSetMethod(derivedBuilderClass, param, paramClass, paramClass);
+        }
 
         // we deprecate the "items" field from ParameterSchema, which generates Iterable<Foo> in the builder
         // instead, we use the standard way to represent arrays, which generates FooArray
@@ -1090,13 +1230,14 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                                String derivedBuilderName,
                                                JPackage clientPackage,
                                                ResourceMethod resourceMethod,
-                                               DataMap annotations)
+                                               DataMap annotations,
+                                               String rootPath)
       throws JClassAlreadyExistsException
   {
     // this method applies to REST methods and finder
 
     final JDefinedClass derivedBuilderClass = clientPackage._class(JMod.PUBLIC, derivedBuilderName);
-    annotate(derivedBuilderClass, null);
+    annotate(derivedBuilderClass, null, rootPath);
     checkVersionAndDeprecateBuilderClass(derivedBuilderClass, false);
     derivedBuilderClass._extends(baseBuilderClass.narrow(derivedBuilderClass));
     final JMethod derivedBuilderConstructor = derivedBuilderClass.constructor(JMod.PUBLIC);
@@ -1229,14 +1370,15 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                Map<String, JClass> pathKeyTypes,
                                Map<String, JClass> assocKeyTypes,
                                Map<String, List<String>> pathToAssocKeys,
-                               JExpression requestOptionsExpr)
+                               JExpression requestOptionsExpr,
+                               String rootPath)
       throws JClassAlreadyExistsException
   {
     if (resourceActions != null)
     {
       for (ActionSchema action : resourceActions)
       {
-        generateActionMethod(facadeClass, baseUriExpr, _voidClass, action, resourceSpecField, resourceName, pathKeys, pathKeyTypes, assocKeyTypes, pathToAssocKeys, requestOptionsExpr);
+        generateActionMethod(facadeClass, baseUriExpr, _voidClass, action, resourceSpecField, resourceName, pathKeys, pathKeyTypes, assocKeyTypes, pathToAssocKeys, requestOptionsExpr, rootPath);
       }
     }
 
@@ -1244,7 +1386,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
     {
       for (ActionSchema action : entityActions)
       {
-        generateActionMethod(facadeClass, baseUriExpr, keyClass, action, resourceSpecField, resourceName, pathKeys, pathKeyTypes, assocKeyTypes, pathToAssocKeys, requestOptionsExpr);
+        generateActionMethod(facadeClass, baseUriExpr, keyClass, action, resourceSpecField, resourceName, pathKeys, pathKeyTypes, assocKeyTypes, pathToAssocKeys, requestOptionsExpr, rootPath);
       }
     }
   }
@@ -1259,7 +1401,8 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                     Map<String, JClass> pathKeyTypes,
                                     Map<String, JClass> assocKeysTypes,
                                     Map<String, List<String>> pathToAssocKeys,
-                                    JExpression requestOptionsExpr)
+                                    JExpression requestOptionsExpr,
+                                    String rootPath)
       throws JClassAlreadyExistsException
   {
     final JClass returnType = getActionReturnType(facadeClass, action.getReturns());
@@ -1268,7 +1411,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
 
     final String actionBuilderClassName = CodeUtil.capitalize(resourceName) + "Do" + CodeUtil.capitalize(actionName) + METHOD_BUILDER_SUFFIX.get(_version);
     final JDefinedClass actionBuilderClass = facadeClass.getPackage()._class(JMod.PUBLIC, actionBuilderClassName);
-    annotate(actionBuilderClass, null);
+    annotate(actionBuilderClass, null, rootPath);
     checkVersionAndDeprecateBuilderClass(actionBuilderClass, false);
     actionBuilderClass._extends(vanillaActionBuilderClass.narrow(actionBuilderClass));
     final JMethod actionBuilderConstructor = actionBuilderClass.constructor(JMod.PUBLIC);
@@ -1327,10 +1470,11 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                     Map<String, JClass> assocKeyTypes,
                                     Map<String, List<String>> pathToAssocKeys,
                                     JExpression requestOptionsExpr,
-                                    DataMap annotations)
+                                    DataMap annotations,
+                                    String rootPath)
       throws JClassAlreadyExistsException
   {
-    final Map<ResourceMethod, RestMethodSchema> schemaMap = new HashMap<ResourceMethod, RestMethodSchema>();
+    final Map<ResourceMethod, RestMethodSchema> schemaMap = new TreeMap<>();
     if (restMethods != null)
     {
       for (RestMethodSchema restMethod : restMethods)
@@ -1339,7 +1483,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
       }
     }
 
-    final Map<ResourceMethod, Class<?>> crudBuilderClasses = new HashMap<ResourceMethod, Class<?>>();
+    final Map<ResourceMethod, Class<?>> crudBuilderClasses = new TreeMap<>();
     if (_version == RestliVersion.RESTLI_2_0_0)
     {
       crudBuilderClasses.put(ResourceMethod.CREATE, CreateIdRequestBuilderBase.class);
@@ -1403,27 +1547,39 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                          method,
                                          refModel,
                                          methodName,
-                                         schema);
-        if ((method == ResourceMethod.CREATE || method == ResourceMethod.BATCH_CREATE) && schema != null && schema.getAnnotations() != null && schema.getAnnotations().containsKey("returnEntity"))
+                                         schema,
+                                         rootPath);
+        if (schema != null && schema.getAnnotations() != null && schema.getAnnotations().containsKey(ReturnEntity.NAME))
         {
-          Class<?> newBuildClass = methodName.equals("create") ? CreateIdEntityRequestBuilderBase.class : BatchCreateIdEntityRequestBuilderBase.class;
-          String requestName = methodName.equals("create") ? "createAndGet" : "batchCreateAndGet";
-          generateDerivedBuilderAndJavaDoc(facadeClass,
-                                           baseUriExpr,
-                                           keyClass,
-                                           valueClass,
-                                           resourceSpecField,
-                                           resourceName,
-                                           pathKeys,
-                                           pathKeyTypes,
-                                           assocKeyTypes,
-                                           pathToAssocKeys,
-                                           requestOptionsExpr,
-                                           annotations,
-                                           method,
-                                           newBuildClass,
-                                           requestName,
-                                           schema);
+          if (RETURN_ENTITY_BUILDER_CLASSES.containsKey(method))
+          {
+            final Class<?> newBuildClass = RETURN_ENTITY_BUILDER_CLASSES.get(method);
+            final String requestName = methodName + "AndGet";
+            generateDerivedBuilderAndJavaDoc(facadeClass,
+                                             baseUriExpr,
+                                             keyClass,
+                                             valueClass,
+                                             resourceSpecField,
+                                             resourceName,
+                                             pathKeys,
+                                             pathKeyTypes,
+                                             assocKeyTypes,
+                                             pathToAssocKeys,
+                                             requestOptionsExpr,
+                                             annotations,
+                                             method,
+                                             newBuildClass,
+                                             requestName,
+                                             schema,
+                                             rootPath);
+          }
+          else
+          {
+            throw new UnsupportedOperationException(String.format(
+                "Error while generating request builder for method '%s' in resource '%s'. " +
+                "@ReturnEntity annotation is only supported for methods: %s",
+                method.toString(), resourceName, RETURN_ENTITY_BUILDER_CLASSES.keySet()));
+          }
         }
       }
     }
@@ -1444,7 +1600,8 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                                 ResourceMethod method,
                                                 Class<?> refModel,
                                                 String methodName,
-                                                RestMethodSchema schema) throws JClassAlreadyExistsException
+                                                RestMethodSchema schema,
+                                                String rootPath) throws JClassAlreadyExistsException
   {
     final JClass builderClass = getCodeModel().ref(refModel).narrow(keyClass, valueClass);
     JDefinedClass derivedBuilder = generateDerivedBuilder(builderClass,
@@ -1454,7 +1611,8 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
                                                               METHOD_BUILDER_SUFFIX.get(_version),
                                                           facadeClass.getPackage(),
                                                           method,
-                                                          annotations);
+                                                          annotations,
+                                                          rootPath);
     generatePathKeyBindingMethods(pathKeys, derivedBuilder, pathKeyTypes, assocKeyTypes, pathToAssocKeys);
 
     final JMethod factoryMethod = facadeClass.method(JMod.PUBLIC,
@@ -1467,19 +1625,20 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
     {
       if (schema.hasParameters())
       {
-        generateQueryParamBindingMethods(facadeClass, schema.getParameters(), derivedBuilder);
+        generateQueryParamBindingMethods(facadeClass, schema.getParameters(), derivedBuilder, schema);
       }
       generateClassJavadoc(derivedBuilder, schema);
       generateFactoryMethodJavadoc(factoryMethod, schema);
     }
   }
 
-  private Map<String, AssocKeyTypeInfo> generateAssociationKey(JDefinedClass facadeClass, AssociationSchema associationSchema)
+  private Map<String, AssocKeyTypeInfo> generateAssociationKey(JDefinedClass facadeClass, AssociationSchema associationSchema,
+      JFieldVar resoureSpecField)
       throws JClassAlreadyExistsException
   {
     final JDefinedClass typesafeKeyClass = facadeClass._class(JMod.PUBLIC | JMod.STATIC, "Key");
     typesafeKeyClass._extends(CompoundKey.class);
-    final Map<String, AssocKeyTypeInfo> assocKeyTypeInfos = new HashMap<String, AssocKeyTypeInfo>();
+    final Map<String, AssocKeyTypeInfo> assocKeyTypeInfos = new TreeMap<>();
     for (AssocKeySchema assocKey : associationSchema.getAssocKeys())
     {
       final String name = assocKey.getName();
@@ -1488,7 +1647,8 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
 
       final JMethod typesafeSetter = typesafeKeyClass.method(JMod.PUBLIC, typesafeKeyClass, "set" + RestLiToolsUtils.nameCapsCase(name));
       final JVar setterParam = typesafeSetter.param(clazz, name);
-      typesafeSetter.body().add(JExpr.invoke("append").arg(JExpr.lit(name)).arg(setterParam));
+      final JInvocation typeInfoParam = resoureSpecField.invoke("getKeyParts").invoke("get").arg(JExpr.lit(name));
+      typesafeSetter.body().add(JExpr.invoke("append").arg(JExpr.lit(name)).arg(setterParam).arg(typeInfoParam));
       typesafeSetter.body()._return(JExpr._this());
 
       final JMethod typesafeGetter = typesafeKeyClass.method(JMod.PUBLIC, clazz, "get" + RestLiToolsUtils.nameCapsCase(name));
@@ -1542,7 +1702,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
       final TyperefDataSchema typerefDataSchema = (TyperefDataSchema) schema;
       if (typerefDataSchema.getDereferencedDataSchema().getType() != DataSchema.Type.UNION)
       {
-        final String javaClassNameFromSchema = TyperefUtils.getJavaClassNameFromSchema(typerefDataSchema);
+        final String javaClassNameFromSchema = CustomTypeUtil.getJavaCustomTypeClassNameFromSchema(typerefDataSchema);
         if (javaClassNameFromSchema != null)
         {
           binding.valueClass = getCodeModel().directClass(javaClassNameFromSchema);
@@ -1567,7 +1727,6 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
    */
   private ClassTemplateSpec generateClassSpec(DataSchema schema, JDefinedClass enclosingClass)
   {
-    final ClassTemplateSpec enclosingClassSpec = classSpecFromJavaClass(enclosingClass);
     final DataSchemaLocation location = new FileDataSchemaLocation(_currentSourceFile);
     return _specGenerator.generate(schema, location);
   }
@@ -1576,7 +1735,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
   {
     if (schema instanceof NamedDataSchema)
     {
-      final String fullName = TemplateSpecGenerator.classNameForNamedSchema((NamedDataSchema) schema);
+      final String fullName = ((NamedDataSchema) schema).getBindingName();
       return getCodeModel().ref(fullName);
     }
     else if (schema instanceof PrimitiveDataSchema)
@@ -1587,7 +1746,7 @@ public class JavaRequestBuilderGenerator extends JavaCodeGeneratorBase
     else
     {
       final ClassTemplateSpec classSpec = generateClassSpec(schema, enclosingClass);
-      return getCodeModel().ref(classSpec.getFullName());
+      return getCodeModel().ref(classSpec.getBindingName());
     }
   }
 

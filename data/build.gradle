@@ -1,17 +1,47 @@
+apply plugin: 'antlr'
+
 dependencies {
+  compile project(':entity-stream')
+  compile project(':li-protobuf')
+  compile project(':pegasus-common')
+  compile externalDependency.antlrRuntime
+  compile externalDependency.caffeine
+  compile externalDependency.commonsText
   compile externalDependency.jacksonCore
+  compile externalDependency.jacksonSmile
+  runtime externalDependency.javaxAnnotation
+
+  testCompile project(':data-testutils')
   testCompile externalDependency.commonsIo
   testCompile externalDependency.testng
+  testCompile externalDependency.junit
+  testCompile externalDependency.mockito
+
+  antlr externalDependency.antlr
 }
 
 test {
-  minHeapSize = '128m'
-  maxHeapSize = '512m'
-
-  //MaxPermSize is only for Java 6 and 7. When provided to Java 8, the following warning will be generated, but compilation will continue:
-  //Java HotSpot(TM) 64-Bit Server VM warning: ignoring option MaxPermSize=256m; support was removed in 8.0
-  jvmArgs '-XX:MaxPermSize=256m'
+  maxHeapSize = '4g'
 
   forkEvery = 1
   maxParallelForks = 4
+}
+
+def generatedAntlrDir = file("src/mainGeneratedAntlr")
+def generatedAntlrJavaDir = file("${generatedAntlrDir}/java")
+
+generateGrammarSource {
+  outputDirectory = file("${generatedAntlrJavaDir}/com/linkedin/data/schema/grammar")
+}
+
+sourceSets.main.java {
+  srcDir generatedAntlrJavaDir
+}
+
+idea.module {
+  generatedSourceDirs += generatedAntlrJavaDir
+}
+
+clean {
+  delete generatedAntlrDir
 }

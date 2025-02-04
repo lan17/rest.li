@@ -21,6 +21,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static com.linkedin.data.schema.DataSchemaConstants.FIELD_NAME_PATTERN;
 
@@ -45,7 +46,7 @@ public final class RecordDataSchema extends NamedDataSchema
    *
    * @author slim
    */
-  public static class Field
+  public static class Field implements Cloneable
   {
 
     public static enum Order
@@ -257,6 +258,18 @@ public final class RecordDataSchema extends NamedDataSchema
     }
 
     /**
+     * Return the resolved properties of the field.
+     *
+     * also see {@link DataSchema#getResolvedProperties}
+     *
+     * @return the resolved properties of the field.
+     */
+    public Map<String, Object> getResolvedProperties()
+    {
+      return _resolvedProperties;
+    }
+
+    /**
      * Return the aliases of the field.
      *
      * @return the aliases of the field.
@@ -309,6 +322,24 @@ public final class RecordDataSchema extends NamedDataSchema
       return _record;
     }
 
+    /**
+     * Sets if the record field type is declared inline in the schema.
+     * @param declaredInline true if the record field type is declared inline, false if it is referenced by name.
+     */
+    public void setDeclaredInline(boolean declaredInline)
+    {
+      _declaredInline = declaredInline;
+    }
+
+    /**
+     * Checks if record field type is declared inline.
+     * @return true if the record field type is declared inline, false if it is referenced by name.
+     */
+    public boolean isDeclaredInline()
+    {
+      return _declaredInline;
+    }
+
     @Override
     public boolean equals(Object object)
     {
@@ -331,7 +362,8 @@ public final class RecordDataSchema extends NamedDataSchema
                  _optional == other._optional &&
                  _order == other._order &&
                  _aliases.equals(other._aliases) &&
-                 _properties.equals(other._properties);
+                 _properties.equals(other._properties) &&
+                 _resolvedProperties.equals(other._resolvedProperties);
       }
       else
       {
@@ -352,7 +384,14 @@ public final class RecordDataSchema extends NamedDataSchema
              (_optional ? 0xAAAAAAAA : 0x55555555) ^
              _order.hashCode() ^
              _aliases.hashCode() ^
-             _properties.hashCode();
+             _properties.hashCode() ^
+             _resolvedProperties.hashCode();
+    }
+
+    @Override
+    public Field clone() throws CloneNotSupportedException
+    {
+      return (Field) super.clone();
     }
 
     /**
@@ -376,6 +415,8 @@ public final class RecordDataSchema extends NamedDataSchema
     private RecordDataSchema _record = null;
     private List<String> _aliases = _emptyAliases;
     private Map<String, Object> _properties = _emptyProperties;
+    private Map<String, Object> _resolvedProperties = new HashMap<>(0);
+    private boolean _declaredInline = false;
 
     static private final Map<String, Object> _emptyProperties = Collections.emptyMap();
     static private final List<String> _emptyAliases = Collections.emptyList();
@@ -469,7 +510,7 @@ public final class RecordDataSchema extends NamedDataSchema
   {
     boolean ok = true;
     _fields = Collections.unmodifiableList(fields);
-    Map<String, Integer> map = new HashMap<String, Integer>();
+    Map<String, Integer> map = new HashMap<>();
     int index = 0;
     for (Field field : _fields)
     {
@@ -477,7 +518,7 @@ public final class RecordDataSchema extends NamedDataSchema
           field.getType().getDereferencedType() == DataSchema.Type.UNION)
       {
         UnionDataSchema unionDataSchema = (UnionDataSchema) field.getType().getDereferencedDataSchema();
-        if (field.getOptional() == true && unionDataSchema.getType(DataSchemaConstants.NULL_TYPE) != null)
+        if (field.getOptional() == true && unionDataSchema.getTypeByMemberKey(DataSchemaConstants.NULL_TYPE) != null)
         {
           errorMessageBuilder.append("Field \"").append(field.getName());
           errorMessageBuilder.append("\" is optional and its type is a union with null.\n");
@@ -528,6 +569,17 @@ public final class RecordDataSchema extends NamedDataSchema
   }
 
   /**
+   * Get the Set of {@link NamedDataSchema} declared as inline includes.
+   * The order of declared inline includes can be obtained by calling {@link #getInclude()}.
+   *
+   * @return the set of included {@link NamedDataSchema}s declared as inlined.
+   */
+  public Set<NamedDataSchema> getIncludesDeclaredInline()
+  {
+    return _includesDeclaredInline;
+  }
+
+  /**
    * Set the list of included {@link RecordDataSchema}'s.
    *
    * The schema's must resolve to a record. The type is {@link NamedDataSchema}
@@ -538,6 +590,25 @@ public final class RecordDataSchema extends NamedDataSchema
   public void setInclude(List<NamedDataSchema> include)
   {
     _include = Collections.unmodifiableList(include);
+  }
+
+
+  public void setIncludesDeclaredInline(Set<NamedDataSchema> includesDeclaredInline) {
+    _includesDeclaredInline = Collections.unmodifiableSet(includesDeclaredInline);
+  }
+
+  public boolean isIncludeDeclaredInline(NamedDataSchema type) {
+    return _includesDeclaredInline.contains(type);
+  }
+
+  public void setFieldsBeforeIncludes(boolean fieldsBeforeIncludes)
+  {
+    _fieldsBeforeIncludes = fieldsBeforeIncludes;
+  }
+
+  public boolean isFieldsBeforeIncludes()
+  {
+    return _fieldsBeforeIncludes;
   }
 
   @Override
@@ -562,7 +633,7 @@ public final class RecordDataSchema extends NamedDataSchema
       {
         if (startTracking)
         {
-          trackingMap = new IdentityHashMap<RecordDataSchema, RecordDataSchema>();
+          trackingMap = new IdentityHashMap<>();
           _equalsTracking.set(trackingMap);
         }
         else
@@ -602,7 +673,7 @@ public final class RecordDataSchema extends NamedDataSchema
     {
       if (startTracking)
       {
-        trackingMap = new IdentityHashMap<RecordDataSchema, Boolean>();
+        trackingMap = new IdentityHashMap<>();
         _hashCodeTracking.set(trackingMap);
       }
       if (trackingMap.containsKey(this))
@@ -621,10 +692,21 @@ public final class RecordDataSchema extends NamedDataSchema
     }
   }
 
+  /**
+   * Check the given field is from Includes or not.
+   * @param field
+   * @return boolean
+   */
+  public boolean isFieldFromIncludes(Field field) {
+    return field.getRecord() != this;
+  }
+
   private List<NamedDataSchema> _include = _emptyNamedSchemas;
   private List<Field> _fields = _emptyFields;
   private Map<String, Integer> _fieldNameToIndexMap = _emptyFieldNameToIndexMap;
   private final RecordType _recordType;
+  private Set<NamedDataSchema> _includesDeclaredInline = _emptyIncludesDeclaredInline;
+  private boolean _fieldsBeforeIncludes = false;
 
   private static ThreadLocal<IdentityHashMap<RecordDataSchema, RecordDataSchema>> _equalsTracking =
       new ThreadLocal<IdentityHashMap<RecordDataSchema, RecordDataSchema>>()
@@ -649,4 +731,5 @@ public final class RecordDataSchema extends NamedDataSchema
   private static final List<NamedDataSchema> _emptyNamedSchemas = Collections.emptyList();
   private static final List<Field> _emptyFields = Collections.emptyList();
   private static final Map<String, Integer> _emptyFieldNameToIndexMap = Collections.emptyMap();
+  private static final Set<NamedDataSchema> _emptyIncludesDeclaredInline = Collections.emptySet();
 }

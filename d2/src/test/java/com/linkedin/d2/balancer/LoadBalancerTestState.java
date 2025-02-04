@@ -18,9 +18,11 @@ package com.linkedin.d2.balancer;
 
 import com.linkedin.common.callback.Callback;
 import com.linkedin.common.util.None;
+import com.linkedin.d2.balancer.clients.DegraderTrackerClientImpl;
+import com.linkedin.d2.balancer.clients.TestClient;
 import com.linkedin.d2.balancer.clients.TrackerClient;
-import com.linkedin.d2.balancer.clients.TrackerClientTest.TestClient;
 import com.linkedin.d2.balancer.properties.ClusterProperties;
+import com.linkedin.d2.balancer.properties.FailoutProperties;
 import com.linkedin.d2.balancer.properties.PartitionData;
 import com.linkedin.d2.balancer.properties.ServiceProperties;
 import com.linkedin.d2.balancer.properties.UriProperties;
@@ -30,6 +32,7 @@ import com.linkedin.d2.balancer.util.partitions.DefaultPartitionAccessor;
 import com.linkedin.d2.balancer.util.partitions.PartitionAccessor;
 import com.linkedin.d2.discovery.event.PropertyEventThread.PropertyEventShutdownCallback;
 import com.linkedin.r2.transport.common.bridge.client.TransportClient;
+import com.linkedin.util.clock.SystemClock;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -56,9 +59,9 @@ public class LoadBalancerTestState implements LoadBalancerState
   @Override
   public TrackerClient getClient(String clusterName, URI uri)
   {
-    Map<Integer, PartitionData> partitionDataMap = new HashMap<Integer, PartitionData>(2);
+    Map<Integer, PartitionData> partitionDataMap = new HashMap<>(2);
     partitionDataMap.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1));
-    return (getClient) ? new TrackerClient(uri, partitionDataMap, new TestClient()) : null;
+    return (getClient) ? new DegraderTrackerClientImpl(uri, partitionDataMap, new TestClient(), SystemClock.instance(), null) : null;
   }
 
   @Override
@@ -71,37 +74,41 @@ public class LoadBalancerTestState implements LoadBalancerState
   public LoadBalancerStateItem<ClusterProperties> getClusterProperties(String clusterName)
   {
     return (getClusterProperties)
-        ? new LoadBalancerStateItem<ClusterProperties>(new ClusterProperties("cluster-1"),
-                                                       0,
-                                                       0) : null;
+        ? new LoadBalancerStateItem<>(new ClusterProperties("cluster-1"), 0, 0) : null;
+  }
+
+  @Override
+  public LoadBalancerStateItem<FailoutProperties> getFailoutProperties(String clusterName)
+  {
+    return null;
   }
 
   @Override
   public LoadBalancerStateItem<PartitionAccessor> getPartitionAccessor(String clusterName)
   {
     return getPartitionAccessor
-        ? new LoadBalancerStateItem<PartitionAccessor>(DefaultPartitionAccessor.getInstance(), 0, 0) : null;
+        ? new LoadBalancerStateItem<>(DefaultPartitionAccessor.getInstance(), 0, 0) : null;
   }
 
   @Override
   public LoadBalancerStateItem<ServiceProperties> getServiceProperties(String serviceName)
   {
-    List<String> prioritizedSchemes = new ArrayList<String>();
+    List<String> prioritizedSchemes = new ArrayList<>();
 
     prioritizedSchemes.add("http");
 
     return (getServiceProperties)
-        ? new LoadBalancerStateItem<ServiceProperties>(new ServiceProperties("service-1",
-                                                                             "cluster-1",
-                                                                             "/foo",
-                                                                             Arrays.asList("rr"),
-                                                                             Collections.<String, Object>emptyMap(),
-                                                                             null,
-                                                                             null,
-                                                                             prioritizedSchemes,
-                                                                             null),
-                                                       0,
-                                                       0) : null;
+        ? new LoadBalancerStateItem<>(new ServiceProperties("service-1",
+                                                            "cluster-1",
+                                                            "/foo",
+                                                            Arrays.asList("rr"),
+                                                            Collections.emptyMap(),
+                                                            null,
+                                                            null,
+                                                            prioritizedSchemes,
+                                                            null),
+                                      0,
+                                      0) : null;
   }
 
   @Override
@@ -113,16 +120,16 @@ public class LoadBalancerTestState implements LoadBalancerState
       URI uri2 = URI.create("http://test.qa2.com:2345");
       URI uri3 = URI.create("http://test.qa3.com:6789");
 
-      Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+      Map<Integer, PartitionData> partitionData = new HashMap<>(1);
       partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-      Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>(3);
+      Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>(3);
       uriData.put(uri1, partitionData);
       uriData.put(uri2, partitionData);
       uriData.put(uri3, partitionData);
       return (getUriProperties)
-          ? new LoadBalancerStateItem<UriProperties>(new UriProperties("cluster-1", uriData),
-                                                     0,
-                                                     0) : null;
+          ? new LoadBalancerStateItem<>(new UriProperties("cluster-1", uriData),
+                                        0,
+                                        0) : null;
     }
     catch (Exception e)
     {
@@ -159,6 +166,12 @@ public class LoadBalancerTestState implements LoadBalancerState
   }
 
   @Override
+  public void stopListenToCluster(String clusterName, LoadBalancerStateListenerCallback callback)
+  {
+    callback.done(LoadBalancerStateListenerCallback.CLUSTER, clusterName);
+  }
+
+  @Override
   public void listenToService(String serviceName,
                               LoadBalancerStateListenerCallback callback)
   {
@@ -186,7 +199,7 @@ public class LoadBalancerTestState implements LoadBalancerState
   public List<SchemeStrategyPair> getStrategiesForService(String serviceName,
                                                            List<String> prioritizedSchemes)
   {
-    List<SchemeStrategyPair> orderedStrategies = new ArrayList<SchemeStrategyPair>(prioritizedSchemes.size());
+    List<SchemeStrategyPair> orderedStrategies = new ArrayList<>(prioritizedSchemes.size());
     for (String scheme : prioritizedSchemes)
     {
       LoadBalancerStrategy strategy = getStrategy(serviceName, scheme);

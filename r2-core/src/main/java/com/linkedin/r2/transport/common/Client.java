@@ -19,14 +19,15 @@ package com.linkedin.r2.transport.common;
 
 
 import com.linkedin.common.callback.Callback;
+import com.linkedin.common.callback.FutureCallback;
 import com.linkedin.common.util.None;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.message.stream.StreamRequest;
 import com.linkedin.r2.message.stream.StreamResponse;
-
 import java.net.URI;
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.Future;
 
@@ -122,10 +123,49 @@ public interface Client
    * This metadata could be the data returned from the server by making an HTTP OPTIONS request to it, metadata about
    * the {@code uri} stored in a static config file, metadata about the {@code uri} stored in a key-value store etc.
    *
+   * @implNote We declare the default implementation to be backward compatible with
+   *            classes that didn't implement this method yet. Note that at least one
+   *            of the two implementation of getMetadata (async
+   *            or sync) should be implemented
+   *
    * THE MAP RETURNED FROM THIS METHOD MUST NOT BE NULL!
    *
+   * The callback must be guaranteed to return after a certain time
+   *
    * @param uri the URI to get metadata for
+   */
+  default void getMetadata(URI uri, Callback<Map<String, Object>> callback)
+  {
+    callback.onSuccess(getMetadata(uri));
+  }
+
+  // ################## Methods to deprecate Section ##################
+
+  /**
+   * This method is deprecated but kept for backward compatibility.
+   * We need a default implementation since every Client should implement the
+   * asynchronous version of this to fallback {@link #getMetadata(URI, Callback)}
+   * <p>
+   * This method will be removed once all the use cases are moved to the async version
+   *
+   * @implNote The default implementation allows to fallback on the async implementation and therefore delete the
+   * the implementation of this method from inheriting classes
+   *
+   * @deprecated use #getMetadata(uri, callback) instead
    * @return metadata for the URI
    */
-  Map<String, Object> getMetadata(URI uri);
+  @Deprecated
+  default Map<String, Object> getMetadata(URI uri){
+    FutureCallback<Map<String, Object>> callback = new FutureCallback<>();
+    getMetadata(uri, callback);
+    try
+    {
+      // this call is guaranteed to return in a time bounded manner
+      return callback.get();
+    }
+    catch (Exception e)
+    {
+      return Collections.emptyMap();
+    }
+  }
 }

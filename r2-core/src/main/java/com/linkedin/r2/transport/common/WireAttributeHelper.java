@@ -17,7 +17,6 @@
 /* $Id$ */
 package com.linkedin.r2.transport.common;
 
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.TreeMap;
@@ -32,22 +31,31 @@ public class WireAttributeHelper
   private static final String WIRE_ATTR_PREFIX = "X-LI-R2-W-";
 
   /**
+   * Creates a new instance of wire attributes implementation.
+   * @return A new instance of wire attributes
+   */
+  public static Map<String, String> newWireAttributes()
+  {
+    return new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+  }
+
+  /**
    * Removes the wire attributes from the specified map of message attributes (headers)
-   * and returns a case insensitive map of wire attributes with prefix removed.
+   * and returns a new instance of case insensitive map of wire attributes with prefix removed.
    *
    * @param map the map containing wire attributes to be removed.
-   * @return a case insensitive map of the wire attributes from the input map,
+   * @return a new instance of case insensitive map of the wire attributes from the input map,
    *         with any key prefixes removed.
    */
   public static Map<String, String> removeWireAttributes(Map<String, String> map)
   {
-    final Map<String, String> wireAttrs = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+    final Map<String, String> wireAttrs = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
 
     for (Iterator<Map.Entry<String, String>> it = map.entrySet().iterator(); it.hasNext();)
     {
       final Map.Entry<String, String> entry = it.next();
       final String key = entry.getKey();
-      if (key.toUpperCase().startsWith(WIRE_ATTR_PREFIX))
+      if (key.regionMatches(true, 0, WIRE_ATTR_PREFIX, 0, WIRE_ATTR_PREFIX.length()))
       {
         final String value = entry.getValue();
         final String newKey = key.substring(WIRE_ATTR_PREFIX.length());
@@ -60,15 +68,16 @@ public class WireAttributeHelper
   }
 
   /**
-   * Convert the specified map of wire attributes to a case insensitive map of wire attributes of
-   * message attribute format (by adding a namespace prefix).
+   * Convert the specified map of wire attributes to a new instance of case insensitive map of wire
+   * attributes of message attribute format (by adding a namespace prefix).
    *
    * @param attrs wire attributes to be converted.
-   * @return a case insensitive map of message attributes constructed from specified wire attributes.
+   * @return a new instance case insensitive map of message attributes constructed from specified
+   *         wire attributes.
    */
   public static Map<String, String> toWireAttributes(Map<String, String> attrs)
   {
-    final Map<String, String> wireAttrs = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+    final Map<String, String> wireAttrs = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
 
     for (Map.Entry<String, String> entry : attrs.entrySet())
     {

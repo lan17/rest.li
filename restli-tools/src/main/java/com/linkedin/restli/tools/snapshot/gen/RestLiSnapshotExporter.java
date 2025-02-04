@@ -16,7 +16,6 @@
 
 package com.linkedin.restli.tools.snapshot.gen;
 
-
 import com.linkedin.data.schema.DataSchemaResolver;
 import com.linkedin.pegasus.generator.GeneratorResult;
 import com.linkedin.restli.internal.server.model.ResourceModel;
@@ -29,7 +28,6 @@ import com.linkedin.restli.server.util.FileClassNameScanner;
 import com.linkedin.restli.tools.compatibility.CompatibilityUtil;
 import com.linkedin.restli.tools.idlgen.DocletDocsProvider;
 import com.linkedin.restli.tools.idlgen.MultiLanguageDocsProvider;
-
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -38,7 +36,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -91,7 +88,7 @@ public class RestLiSnapshotExporter
       config.addResourcePackageNames(resourcePackages);
     }
 
-    final Map<String, String> classFileNames = new HashMap<String, String>();
+    final Map<String, String> classFileNames = new HashMap<>();
     for (String path : sourcePaths)
     {
       classFileNames.putAll(FileClassNameScanner.scan(path));
@@ -104,7 +101,7 @@ public class RestLiSnapshotExporter
       {
         config.addResourceClassNames(resourceClasses);
 
-        sourceFileNames = new ArrayList<String>(resourceClasses.length);
+        sourceFileNames = new ArrayList<>(resourceClasses.length);
         for (String resourceClass : resourceClasses)
         {
           final String resourceFileName = classFileNames.get(resourceClass);
@@ -124,7 +121,7 @@ public class RestLiSnapshotExporter
       }
     }
 
-    log.info("Executing Rest.li annotation processor...");
+    log.debug("Executing Rest.li annotation processor...");
     final RestLiApiBuilder apiBuilder = new RestLiApiBuilder(config);
     final Map<String, ResourceModel> rootResourceMap = apiBuilder.build();
     if (rootResourceMap.isEmpty())
@@ -132,32 +129,27 @@ public class RestLiSnapshotExporter
       return new SnapshotResult();
     }
 
+    List<DocsProvider> languageSpecificDocsProviders = new ArrayList<>();
+
     // We always include the doc provider for javadoc
-    DocsProvider javadocProvider = new DocletDocsProvider(apiName, classpath, sourcePaths, resourcePackages);
+    languageSpecificDocsProviders.add(new DocletDocsProvider(apiName, classpath, sourcePaths, resourcePackages));
 
-    DocsProvider docsProvider;
-    if(additionalDocProviders == null || additionalDocProviders.isEmpty())
-    {
-      docsProvider = javadocProvider;
-    }
-    else
-    {
-      // dynamically load doc providers for additional language, if available
-      List<DocsProvider> languageSpecificDocsProviders = new ArrayList<DocsProvider>();
-      languageSpecificDocsProviders.add(javadocProvider);
+    // dynamically load doc providers for additional language, if available
+    if (additionalDocProviders != null && !additionalDocProviders.isEmpty()) {
       languageSpecificDocsProviders.addAll(MultiLanguageDocsProvider.loadExternalProviders(additionalDocProviders));
-      docsProvider = new MultiLanguageDocsProvider(languageSpecificDocsProviders);
     }
 
-    log.info("Registering source files with doc providers...");
+    DocsProvider docsProvider = new MultiLanguageDocsProvider(languageSpecificDocsProviders);
+
+    log.debug("Registering source files with doc providers...");
 
     docsProvider.registerSourceFiles(classFileNames.values());
 
-    log.info("Exporting snapshot files...");
+    log.debug("Exporting snapshot files...");
 
     final GeneratorResult result = generateSnapshotFiles(apiName, outdir, rootResourceMap, docsProvider);
 
-    log.info("Done!");
+    log.debug("Done!");
 
     return result;
   }
@@ -189,7 +181,7 @@ public class RestLiSnapshotExporter
 
     final ResourceModelEncoder encoder = new ResourceModelEncoder(docsProvider);
 
-    final List<ResourceSchema> rootResourceNodes = new ArrayList<ResourceSchema>();
+    final List<ResourceSchema> rootResourceNodes = new ArrayList<>();
     for (Map.Entry<String, ResourceModel> entry: rootResourceMap.entrySet())
     {
       final ResourceSchema rootResourceNode = encoder.buildResourceSchema(entry.getValue());
@@ -221,7 +213,7 @@ public class RestLiSnapshotExporter
                                  String fileName,
                                  ResourceSchema rootResourceNode) throws IOException
   {
-    log.info("Writing file '" + fileName + '\'');
+    log.debug("Writing file '" + fileName + '\'');
 
     SnapshotGenerator generator = new SnapshotGenerator(rootResourceNode, _schemaResolver);
     return generator.writeFile(outdirFile, fileName);
@@ -229,8 +221,8 @@ public class RestLiSnapshotExporter
 
   private static class SnapshotResult implements GeneratorResult
   {
-    private List<File> targetFiles = new ArrayList<File>();
-    private List<File> modifiedFiles = new ArrayList<File>();
+    private List<File> targetFiles = new ArrayList<>();
+    private List<File> modifiedFiles = new ArrayList<>();
 
     public void addTargetFile(File file)
     {

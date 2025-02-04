@@ -25,9 +25,8 @@ import com.linkedin.data.schema.EnumDataSchema;
 import com.linkedin.data.schema.FixedDataSchema;
 import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.data.schema.RecordDataSchema;
-import com.linkedin.data.schema.SchemaParserFactory;
 import com.linkedin.data.schema.UnionDataSchema;
-import com.linkedin.data.schema.resolver.FileDataSchemaResolver;
+import com.linkedin.data.schema.resolver.MultiFormatDataSchemaResolver;
 import com.linkedin.data.template.AbstractArrayTemplate;
 import com.linkedin.data.template.AbstractMapTemplate;
 import com.linkedin.data.template.DataTemplate;
@@ -74,6 +73,7 @@ import com.linkedin.restli.restspec.ResourceSchema;
 import java.io.File;
 import java.io.FileInputStream;
 import java.lang.reflect.Field;
+import java.util.Collections;
 import java.util.Map;
 
 import org.testng.Assert;
@@ -101,7 +101,7 @@ public class TestResourceSchemaToResourceSpecTranslator
     String projectDir = System.getProperty("test.projectDir");
     idlDir = projectDir + FS + ".." + FS + "restli-int-test-api" + FS + "src" + FS + "main" + FS + "idl";
     String pdscDir = projectDir +  FS + ".." + FS + "restli-int-test-api" + FS + "src" + FS + "main" + FS + "pegasus";
-    resolver = new FileDataSchemaResolver(SchemaParserFactory.instance(), pdscDir);
+    resolver = MultiFormatDataSchemaResolver.withBuiltinFormats(pdscDir);
 
     translator = new ResourceSchemaToResourceSpecTranslator(resolver, new ExampleGeneratorClassBindingResolver());
   }
@@ -129,7 +129,8 @@ public class TestResourceSchemaToResourceSpecTranslator
 
   private RichResourceSchema loadResourceSchema(String restspecFile) throws Exception
   {
-    ResourceSchema resourceSchema = DataMapUtils.read(new FileInputStream(idlDir + FS + restspecFile), ResourceSchema.class);
+    ResourceSchema resourceSchema = DataMapUtils.read(
+        new FileInputStream(idlDir + FS + restspecFile), ResourceSchema.class, Collections.emptyMap());
     return new RichResourceSchema(resourceSchema);
   }
 

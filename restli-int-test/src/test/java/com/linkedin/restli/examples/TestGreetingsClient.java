@@ -16,7 +16,6 @@
 
 package com.linkedin.restli.examples;
 
-
 import com.linkedin.common.callback.Callback;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.schema.DataSchema;
@@ -55,6 +54,7 @@ import com.linkedin.restli.common.Link;
 import com.linkedin.restli.common.OptionsResponse;
 import com.linkedin.restli.common.PatchRequest;
 import com.linkedin.restli.common.ProtocolVersion;
+import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.common.UpdateStatus;
 import com.linkedin.restli.examples.greetings.api.Empty;
 import com.linkedin.restli.examples.greetings.api.Greeting;
@@ -79,7 +79,6 @@ import com.linkedin.restli.internal.testutils.URIDetails;
 import com.linkedin.restli.restspec.ResourceSchema;
 import com.linkedin.restli.test.util.BatchCreateHelper;
 import com.linkedin.restli.test.util.RootBuilderWrapper;
-
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -88,7 +87,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
-
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
@@ -131,6 +129,160 @@ public class TestGreetingsClient extends RestLiIntegrationTest
   }
 
   @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderDataProvider")
+  public void testGetRequestWithProjection(RootBuilderWrapper<Long, Greeting> builders) throws Exception
+  {
+    Greeting.Fields fields = Greeting.fields();
+
+    // Project all required fields leaving out 'senders'
+    Request<Greeting> request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone())
+        .build();
+
+    Greeting greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getId());
+    Assert.assertNotNull(greetingResponse.getMessage());
+    Assert.assertNotNull(greetingResponse.getTone());
+    Assert.assertNull(greetingResponse.getSenders());
+
+    // Project all fields including the 'senders' array
+    request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders())
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getId());
+    Assert.assertNotNull(greetingResponse.getMessage());
+    Assert.assertNotNull(greetingResponse.getTone());
+    List<String> fullSenders = greetingResponse.getSenders();
+    Assert.assertNotNull(fullSenders);
+    // We always send back 8 senders for all messages
+    Assert.assertEquals(fullSenders.size(), 8);
+
+    // Project the 'senders' array with a range (start: 0 and count: 5)
+    request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(0, 5))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 5);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders.subList(0, 5));
+
+    // Project the 'senders' array with a range (start: 3 and count: 2)
+    request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(3, 2))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 2);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders.subList(3, 5));
+
+    // Project the 'senders' array with a range (the default start and count: 5)
+    request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(null, 5))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 5);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders.subList(0, 5));
+
+    // Project the 'senders' array with a range (start: 5 and the default count)
+    request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(5, null))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 3);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders.subList(5, 8));
+
+    // Project the 'senders' array with a range (the default start and the default count)
+    request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(null, null))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 8);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders);
+  }
+
+  @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderDataProvider")
+  public void testGetRequestWithArrayRangeProjection(RootBuilderWrapper<Long, Greeting> builders) throws Exception {
+    Greeting.Fields fields = Greeting.fields();
+
+    // Get the full 'senders' list for later assertions
+    Request<Greeting> request = builders.get().id(1L).build();
+    Greeting greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    List<String> fullSenders = greetingResponse.getSenders();
+    // We always send back 8 senders for all messages
+    Assert.assertEquals(fullSenders.size(), 8);
+
+    // Project the 'senders' array twice with overlapping ranges (1 to 3 and 2 to 5)
+    request = request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(1, 3), fields.senders(2, 4))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 5);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders.subList(1, 6));
+
+    // Project the 'senders' array twice with overlapping ranges with defaults for one of them (0 to MAX_INT and 5 to 6)
+    request = request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(0, Integer.MAX_VALUE), fields.senders(5, 2))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 8);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders);
+
+    // Project the 'senders' array twice with non-overlapping ranges (1 to 3 and 5 to 6)
+    request = request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(1, 3), fields.senders(5, 2))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 6);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders.subList(1, 7));
+
+    // Project the 'senders' array twice with non-overlapping ranges with unspecified parameter values (default start to 3 and 5 to 6)
+    request = request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(null, 3), fields.senders(5, 2))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 7);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders.subList(0, 7));
+
+    // Project the 'senders' array twice with overlapping ranges with unspecified parameter values (2 to 5 and 5 to default end)
+    request = request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(2, 5), fields.senders(5, null))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 6);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders.subList(2, 8));
+
+    // Project the 'senders' array twice with non-overlapping ranges with unspecified parameter values (default start to 2 and 5 to default end)
+    request = request = builders.get()
+        .id(1L)
+        .fields(fields.id(), fields.message(), fields.tone(), fields.senders(null, 3), fields.senders(5, null))
+        .build();
+    greetingResponse = getClient().sendRequest(request).getResponse().getEntity();
+    Assert.assertNotNull(greetingResponse.getSenders());
+    Assert.assertEquals(greetingResponse.getSenders().size(), 8);
+    Assert.assertEquals(greetingResponse.getSenders(), fullSenders);
+  }
+
+  @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderDataProvider")
   public void testFinderRequestOptionsPropagation(RootBuilderWrapper<Long, Greeting> builders)
   {
     Request<CollectionResponse<Greeting>> findRequest =
@@ -169,7 +321,7 @@ public class TestGreetingsClient extends RestLiIntegrationTest
     Request<Void> requestVoid = builders.<Void>action("AnotherAction")
         .setActionParam("bitfield", new BooleanArray())
         .setActionParam("request", new TransferOwnershipRequest())
-        .setActionParam("someString", new String(""))
+        .setActionParam("someString", "")
         .setActionParam("stringMap", new StringMap())
         .build();
     ResponseFuture<Void> responseFutureVoid = getClient().sendRequest(requestVoid);
@@ -382,7 +534,7 @@ public class TestGreetingsClient extends RestLiIntegrationTest
 
     //Query parameter order is non deterministic
     //"/" + resourceName + "?count=5&start=5&q=searchWithPostFilter";
-    final Map<String, String> queryParamsMap = new HashMap<String, String>();
+    final Map<String, String> queryParamsMap = new HashMap<>();
     queryParamsMap.put("count", "5");
     queryParamsMap.put("start", "5");
     queryParamsMap.put("q", "searchWithPostFilter");
@@ -530,7 +682,7 @@ public class TestGreetingsClient extends RestLiIntegrationTest
   private List<Greeting> getBatchTestDataSerially(RootBuilderWrapper<Long, Greeting> builders, List<Long> idsToGet)
       throws RemoteInvocationException
   {
-    List<Greeting> fetchedGreetings = new ArrayList<Greeting>();
+    List<Greeting> fetchedGreetings = new ArrayList<>();
     for (int i = 0; i < idsToGet.size(); i++)
     {
       try
@@ -617,7 +769,7 @@ public class TestGreetingsClient extends RestLiIntegrationTest
    */
   private List<Greeting> generateBatchTestData(int numItems, String baseMessage, Tone tone)
   {
-    List<Greeting> greetings = new ArrayList<Greeting>();
+    List<Greeting> greetings = new ArrayList<>();
     for (int i = 0; i < numItems; i++)
     {
       greetings.add(generateTestGreeting(baseMessage + " " + i, tone));
@@ -636,7 +788,7 @@ public class TestGreetingsClient extends RestLiIntegrationTest
   private List<Long> createBatchTestDataSerially(RootBuilderWrapper<Long, Greeting> builders, List<Greeting> greetings)
       throws RemoteInvocationException
   {
-    List<Long> createdIds = new ArrayList<Long>();
+    List<Long> createdIds = new ArrayList<>();
 
     for (Greeting greeting: greetings)
     {
@@ -681,13 +833,14 @@ public class TestGreetingsClient extends RestLiIntegrationTest
     }
   }
 
-  @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderDataProvider")
-  public void testBatchCreate(RootBuilderWrapper<Long, Greeting> builders) throws RemoteInvocationException
+  @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderWithResourceNameDataProvider")
+  public void testBatchCreate(RootBuilderWrapper<Long, Greeting> builders, String resourceName,
+                              ProtocolVersion protocolVersion) throws RemoteInvocationException
   {
     List<Greeting> greetings = generateBatchTestData(3, "BatchCreate", Tone.FRIENDLY);
 
-    List<CreateIdStatus<Long>> statuses = BatchCreateHelper.batchCreate(getClient(), builders, greetings);
-    List<Long> createdIds = new ArrayList<Long>(statuses.size());
+    List<CreateIdStatus<Long>> statuses = BatchCreateHelper.batchCreate(getClient(), builders, greetings, false);
+    List<Long> createdIds = new ArrayList<>(statuses.size());
 
     for (CreateIdStatus<Long> status: statuses)
     {
@@ -695,11 +848,28 @@ public class TestGreetingsClient extends RestLiIntegrationTest
       @SuppressWarnings("deprecation")
       String id = status.getId();
       Assert.assertEquals(status.getKey().longValue(), Long.parseLong(id));
+      String expectedLocation = "/" + resourceName + "/" + status.getKey();
+      Assert.assertEquals(status.getLocation(), expectedLocation);
       createdIds.add(status.getKey());
     }
 
     getAndVerifyBatchTestDataSerially(builders, createdIds, greetings, Arrays.asList("id"));
     deleteAndVerifyBatchTestDataSerially(builders, createdIds);
+  }
+
+  @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderWithResourceNameQueryParamsDataProvider")
+  public void testBatchCreateLocationHeader(RootBuilderWrapper<Long, Greeting> builders, String resourceName,
+      ProtocolVersion protocolVersion) throws RemoteInvocationException
+  {
+    List<Greeting> greetings = generateBatchTestData(3, "BatchCreate", Tone.FRIENDLY);
+
+    List<CreateIdStatus<Long>> statuses = BatchCreateHelper.batchCreate(getClient(), builders, greetings, true);
+
+    for (CreateIdStatus<Long> status: statuses)
+    {
+      String expectedLocation = "/" + resourceName + "/" + status.getKey();
+      Assert.assertEquals(status.getLocation(), expectedLocation);
+    }
   }
 
   @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderDataProvider")
@@ -739,8 +909,8 @@ public class TestGreetingsClient extends RestLiIntegrationTest
     addIdsToGeneratedGreetings(createdIds, greetings);
 
     // Update the created greetings
-    List<Greeting> updatedGreetings = new ArrayList<Greeting>();
-    Map<Long, Greeting> updateGreetingsRequestMap = new HashMap<Long, Greeting>();
+    List<Greeting> updatedGreetings = new ArrayList<>();
+    Map<Long, Greeting> updateGreetingsRequestMap = new HashMap<>();
 
     for (Greeting greeting: greetings)
     {
@@ -776,8 +946,8 @@ public class TestGreetingsClient extends RestLiIntegrationTest
     addIdsToGeneratedGreetings(createdIds, greetings);
 
     // Patch the created Greetings
-    Map<Long, PatchRequest<Greeting>> patchedGreetingsDiffs = new HashMap<Long, PatchRequest<Greeting>>();
-    List<Greeting> patchedGreetings = new ArrayList<Greeting>();
+    Map<Long, PatchRequest<Greeting>> patchedGreetingsDiffs = new HashMap<>();
+    List<Greeting> patchedGreetings = new ArrayList<>();
 
     for (Greeting greeting: greetings)
     {
@@ -956,6 +1126,19 @@ public class TestGreetingsClient extends RestLiIntegrationTest
     Assert.assertNull(response.getId());
   }
 
+  @SuppressWarnings("deprecation")
+  @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderDataProvider")
+  public void testCreateLocationHeader(RootBuilderWrapper<Long, Greeting> builders)
+      throws RemoteInvocationException
+  {
+    Request<EmptyRecord> request = builders.create()
+        .input(new Greeting().setId(1L).setMessage("foo"))
+        .setQueryParam("isNullId", false)
+        .build();
+    Response<EmptyRecord> response = getClient().sendRequest(request).getResponse();
+    Assert.assertEquals(response.getHeader(RestConstants.HEADER_LOCATION), "/" + request.getBaseUriTemplate() + "/" + response.getId());
+  }
+
   @DataProvider(name = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestOptionsDataProvider")
   private static Object[][] requestOptionsDataProvider()
   {
@@ -1090,6 +1273,20 @@ public class TestGreetingsClient extends RestLiIntegrationTest
           AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion()},
       { new RootBuilderWrapper<Long, Greeting>(new GreetingsTaskRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "greetingsTask",
           AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion()},
+    };
+  }
+
+  @DataProvider(name = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderWithResourceNameQueryParamsDataProvider")
+  private static Object[][] requestBuilderWithResourceNameQueryParamsDataProvider() {
+    return new Object[][] {
+        { new RootBuilderWrapper<Long, Greeting>(new GreetingsBuilders()), "greetings",
+            AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion()},
+        { new RootBuilderWrapper<Long, Greeting>(new GreetingsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "greetings",
+            AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion()},
+        { new RootBuilderWrapper<Long, Greeting>(new GreetingsRequestBuilders()), "greetings",
+            AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion()},
+        { new RootBuilderWrapper<Long, Greeting>(new GreetingsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "greetings",
+            AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion()},
     };
   }
 

@@ -26,6 +26,8 @@ import com.linkedin.r2.message.rest.RestRequestBuilder;
 import com.linkedin.r2.message.stream.StreamRequest;
 import com.linkedin.r2.util.IOUtil;
 
+import java.util.HashSet;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,7 +42,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.HashMap;
+import java.util.TreeMap;
 import java.util.Map;
 
 
@@ -61,7 +63,7 @@ import java.util.Map;
  *              --data $'ids=1,2,3' http://localhost
  *
  *     Example: Call http://localhost?ids=1,2,3 with a JSON body
- *         curl -X POST -H "X-HTTP-Method-Override: GET" -H "Content-Type: multipart/mixed, boundary=xyz"
+ *         curl -X POST -H "X-HTTP-Method-Override: PUT" -H "Content-Type: multipart/mixed; boundary=xyz"
  *              --data $'--xyz\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\nids=1,2,3\r\n--xyz\r\n
  *                Content-Type: application/json\r\n\r\n{"foo":"bar"}\r\n--xyz--'
  *              http://localhost
@@ -77,13 +79,14 @@ import java.util.Map;
  */
 public class QueryTunnelUtil
 {
-  private static final String HEADER_METHOD_OVERRIDE = "X-HTTP-Method-Override";
+  public static final String HEADER_METHOD_OVERRIDE = "X-HTTP-Method-Override";
   private static final String HEADER_CONTENT_TYPE = "Content-Type";
   private static final String FORM_URL_ENCODED = "application/x-www-form-urlencoded";
   private static final String MULTIPART = "multipart/mixed";
   private static final String MIXED = "mixed";
   private static final String CONTENT_LENGTH = "Content-Length";
   private static final String UTF8 = "UTF-8";
+  private static final Set<String> VALID_HTTP_VERBS = getValidHttpVerbs();
   static final Logger LOG = LoggerFactory.getLogger(QueryTunnelUtil.class);
 
   /**
@@ -92,6 +95,16 @@ public class QueryTunnelUtil
   private QueryTunnelUtil()
   {
 
+  }
+
+  private static Set<String> getValidHttpVerbs() {
+    Set<String> verbs = new HashSet<String>();
+    verbs.add(RestMethod.GET);
+    verbs.add(RestMethod.POST);
+    verbs.add(RestMethod.PUT);
+    verbs.add(RestMethod.DELETE);
+    verbs.add(RestMethod.OPTIONS);
+    return verbs;
   }
 
   /**
@@ -145,15 +158,17 @@ public class QueryTunnelUtil
   {
 
     RestRequestBuilder requestBuilder = new RestRequestBuilder(request);
+
+    // Reconstruct URI without query. Use the URI(String) constructor to preserve any Rest.li specific encoding of the
+    // URI path keys.
     URI uri = request.getURI();
-    // reconstruct URI without query
-    URI newUri = new URI(uri.getScheme(),
-        uri.getUserInfo(),
-        uri.getHost(),
-        uri.getPort(),
-        uri.getPath(),
-        null,
-        uri.getFragment());
+    String uriString = uri.toString();
+    int queryIndex = uriString.indexOf('?');
+    if (queryIndex > 0)
+    {
+      uriString = uriString.substring(0, queryIndex);
+    }
+    URI newUri = new URI(uriString);
 
     // If there's no existing body, just pass the request as x-www-form-urlencoded
     ByteString entity = request.getEntity();
@@ -173,9 +188,12 @@ public class QueryTunnelUtil
       requestBuilder.setEntity(ByteString.copy(os.toByteArray()));
     }
 
-    // Set the base uri, supply the original method in the override header, and change method to POST
+    // Set the base uri, supply the original method in the override header, set/update content length
+    // header to the new entity length, and change method to POST
     requestBuilder.setURI(newUri);
-    requestBuilder.setHeader(HEADER_METHOD_OVERRIDE, requestBuilder.getMethod());
+    requestBuilder.setHeader(HEADER_METHOD_OVERRIDE,
+        validateOverride(request, request.getMethod()));
+    requestBuilder.setHeader(CONTENT_LENGTH, Integer.toString(requestBuilder.getEntity().length()));
     requestBuilder.setMethod(RestMethod.POST);
 
     return requestBuilder.build();
@@ -297,7 +315,8 @@ public class QueryTunnelUtil
     RestRequestBuilder requestBuilder = request.builder();
 
     // Get copy of headers and remove the override
-    Map<String, String> h = new HashMap<String, String>(request.getHeaders());
+    Map<String, String> h = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    h.putAll(request.getHeaders());
     h.remove(HEADER_METHOD_OVERRIDE);
 
     // Simple case, just extract query params from entity, append to query, and clear entity
@@ -403,11 +422,19 @@ public class QueryTunnelUtil
     }
     requestBuilder.setEntity(entity);
     requestBuilder.setHeaders(h);
-    requestBuilder.setMethod(request.getHeader(HEADER_METHOD_OVERRIDE));
+    requestBuilder.setMethod(validateOverride(request, request.getHeader(HEADER_METHOD_OVERRIDE)));
 
     requestContext.putLocalAttr(R2Constants.IS_QUERY_TUNNELED, true);
 
     return requestBuilder.build();
+  }
+
+  private static String validateOverride(RestRequest request, String method) throws IOException {
+    if (!VALID_HTTP_VERBS.contains(method)) {
+      LOG.warn("Invalid HTTP method override header, rejecting request.");
+      throw new IOException("Invalid HTTP method override header.");
+    }
+    return method;
   }
 
 

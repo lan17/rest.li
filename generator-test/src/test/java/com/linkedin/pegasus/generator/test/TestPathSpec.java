@@ -53,6 +53,22 @@ public class TestPathSpec
   }
 
   @Test
+  public void testArrayRangePathSpec()
+  {
+    PathSpec p = ArrayTest.fields().intArray(10, 5);
+    Assert.assertEquals(p.toString(), "/intArray?start=10&count=5");
+
+    p = ArrayTest.fields().recordInlineArray(null, 2);
+    Assert.assertEquals(p.toString(), "/recordInlineArray?count=2");
+
+    p = ArrayTest.fields().unionArray(8, null);
+    Assert.assertEquals(p.toString(), "/unionArray?start=8");
+
+    p = ArrayTest.fields().stringArray(null, null);
+    Assert.assertEquals(p.toString(), "/stringArray");
+  }
+
+  @Test
   public void testMapWildcardPathSpec()
   {
     PathSpec p = MapTest.fields().recordInlineMap().values().f();
@@ -67,6 +83,22 @@ public class TestPathSpec
 
     p = UnionTest.fields().unionWithoutNull().RecordBar().location();
     Assert.assertEquals(p.toString(), "/unionWithoutNull/com.linkedin.pegasus.generator.test.RecordBar/location");
+
+    p = UnionTest.fields().unionWithNull().Null();
+    Assert.assertEquals(p.toString(), "/unionWithNull/null");
+
+    // Test path specs for Union member with aliases
+    p = UnionTest.fields().unionWithAliases().MemRecord().location();
+    Assert.assertEquals(p.toString(), "/unionWithAliases/memRecord/location");
+
+    p = UnionTest.fields().unionWithAliases().MemArray();
+    Assert.assertEquals(p.toString(), "/unionWithAliases/memArray");
+
+    p = UnionTest.fields().unionWithAliases().MemMap();
+    Assert.assertEquals(p.toString(), "/unionWithAliases/memMap");
+
+    p = UnionTest.fields().unionWithAliases().Null();
+    Assert.assertEquals(p.toString(), "/unionWithAliases/null");
   }
 
   @Test
@@ -131,7 +163,7 @@ public class TestPathSpec
     checkPathSpec(JavaReservedTest.fields().break_(), "/break");
     checkPathSpec(JavaReservedTest.fields().try_(), "/try");
     checkPathSpec(JavaReservedTest.fields().union(), "/union");
-    
+
     checkPathSpec(MapTest.fields().intMap(), "/intMap");
     checkPathSpec(MapTest.fields().longMap(), "/longMap");
     checkPathSpec(MapTest.fields().floatMap(), "/floatMap");
@@ -160,6 +192,78 @@ public class TestPathSpec
     checkPathSpec(MapTest.fields().unionMap().values().EnumFruits(), "/unionMap/*/com.linkedin.pegasus.generator.test.EnumFruits");
     checkPathSpec(MapTest.fields().unionMap().values().RecordBar(), "/unionMap/*/com.linkedin.pegasus.generator.test.RecordBar");
     checkPathSpec(MapTest.fields().unionMap().values().FixedMD5(), "/unionMap/*/com.linkedin.pegasus.generator.test.FixedMD5");
+  }
+
+  @Test
+  public void testValidatePathSpecString()
+  {
+    Object[][] testStrings = new Object[][]
+        {
+            {
+                "/field1/field2",
+                true,
+            },
+            {
+                "/field1",
+                true,
+            },
+            {
+                "/field1/*/field2", //field inside map
+                true,
+            },
+            {
+                "/field1/$key", // map key field
+                true,
+            },
+            {
+                "/field1/*", // array items
+                true,
+            },
+            {
+                "/intArray?start=10&count=5", // array pathSpec with range
+                true,
+            },
+            {
+                "/field1/*/$key", //nested map
+                true,
+            },
+            {
+                "",
+                false,
+            },
+            {
+                "/",
+                false,
+            },
+            {
+                "field1",
+                false,
+            },
+            {
+                "field1/",
+                false,
+            },
+            {
+                "/field1/",
+                false,
+            },
+            {
+                "field1/field2",
+                false,
+            },
+            {
+                "field1/field2/",
+                false,
+            },
+            {
+                "/field1//field2",
+                false,
+            },
+        };
+    for (Object[] validationPairs: testStrings)
+    {
+      Assert.assertEquals(validationPairs[1], PathSpec.validatePathSpecString((String) validationPairs[0]));
+    }
   }
 
   private void checkPathSpec(PathSpec p, String expected)

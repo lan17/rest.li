@@ -16,7 +16,9 @@
 
 package com.linkedin.restli.internal.server.methods.arguments;
 
+
 import com.linkedin.common.callback.Callback;
+import com.linkedin.data.DataMap;
 import com.linkedin.data.schema.EnumDataSchema;
 import com.linkedin.data.schema.IntegerDataSchema;
 import com.linkedin.data.schema.Name;
@@ -26,23 +28,27 @@ import com.linkedin.data.template.DynamicRecordMetadata;
 import com.linkedin.parseq.Context;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.restli.common.test.SimpleEnum;
+import com.linkedin.restli.internal.server.MutablePathKeys;
 import com.linkedin.restli.internal.server.PathKeysImpl;
 import com.linkedin.restli.internal.server.RoutingResult;
+import com.linkedin.restli.internal.server.ServerResourceContext;
 import com.linkedin.restli.internal.server.model.AnnotationSet;
 import com.linkedin.restli.internal.server.model.Parameter;
 import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
+import com.linkedin.restli.internal.server.util.DataMapUtils;
 import com.linkedin.restli.server.PathKeys;
-import com.linkedin.restli.server.ResourceContext;
 import com.linkedin.restli.server.RestLiRequestData;
 import com.linkedin.restli.server.RoutingException;
-import java.util.Collections;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
 
+import java.io.IOException;
+import java.util.Collections;
 import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+
+import org.testng.annotations.DataProvider;
+import org.testng.annotations.Test;
 
 import static org.easymock.EasyMock.verify;
 import static org.testng.Assert.assertEquals;
@@ -57,8 +63,8 @@ public class TestActionArgumentBuilder
 {
   private List<Parameter<?>> getStringAndIntParams()
   {
-    List<Parameter<?>> params = new ArrayList<Parameter<?>>();
-    params.add(new Parameter<String>(
+    List<Parameter<?>> params = new ArrayList<>();
+    params.add(new Parameter<>(
         "param1",
         String.class,
         new StringDataSchema(),
@@ -67,7 +73,7 @@ public class TestActionArgumentBuilder
         Parameter.ParamType.POST,
         true,
         new AnnotationSet(new Annotation[]{})));
-    params.add(new Parameter<Integer>(
+    params.add(new Parameter<>(
         "param2",
         Integer.class,
         new IntegerDataSchema(),
@@ -83,7 +89,7 @@ public class TestActionArgumentBuilder
   {
     EnumDataSchema simpleEnumSchema = new EnumDataSchema(new Name("com.linkedin.restli.common.test.SimpleEnum"));
     simpleEnumSchema.setSymbols(Arrays.asList("A", "B", "C"), null);
-    return Collections.<Parameter<?>>singletonList(new Parameter<SimpleEnum>(
+    return Collections.singletonList(new Parameter<>(
         "simpleEnum",
         SimpleEnum.class,
         simpleEnumSchema,
@@ -97,7 +103,7 @@ public class TestActionArgumentBuilder
   @SuppressWarnings("rawtypes")
   private List<Parameter<?>> getCallbackParams()
   {
-    return Collections.<Parameter<?>>singletonList(new Parameter<Callback>(
+    return Collections.singletonList(new Parameter<>(
         "",
         Callback.class,
         null,
@@ -110,7 +116,7 @@ public class TestActionArgumentBuilder
 
   private List<Parameter<?>> getParSeqContextParams()
   {
-    return Collections.<Parameter<?>>singletonList(new Parameter<Context>(
+    return Collections.singletonList(new Parameter<>(
         "",
         Context.class,
         null,
@@ -124,7 +130,7 @@ public class TestActionArgumentBuilder
   @SuppressWarnings("deprecation")
   private List<Parameter<?>> getDeprecatedParSeqContextParams()
   {
-    return Collections.<Parameter<?>>singletonList(new Parameter<Context>(
+    return Collections.singletonList(new Parameter<>(
         "",
         Context.class,
         null,
@@ -137,7 +143,7 @@ public class TestActionArgumentBuilder
 
   private List<Parameter<?>> getPathKeysParams()
   {
-    return Collections.<Parameter<?>>singletonList(new Parameter<PathKeys>(
+    return Collections.singletonList(new Parameter<>(
         "pathKeys",
         PathKeys.class,
         null,
@@ -150,7 +156,7 @@ public class TestActionArgumentBuilder
 
   private List<Parameter<?>> getAssocKeyParams()
   {
-    return Collections.<Parameter<?>>singletonList(new Parameter<String>(
+    return Collections.singletonList(new Parameter<>(
         "string1",
         String.class,
         new StringDataSchema(),
@@ -201,14 +207,16 @@ public class TestActionArgumentBuilder
 
   @Test(dataProvider = "successData")
   public void testArgumentBuilderSuccess(String entity, List<Parameter<?>> params, Object[] expectedArgs)
+      throws IOException
   {
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, entity, 3);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, entity);
+    DataMap dataMap = DataMapUtils.readMapWithExceptions(request);
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, params, null, null);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(null, null, null);
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(null, null, null, true);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 2, context, 1);
 
     RestLiArgumentBuilder argumentBuilder = new ActionArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, dataMap);
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
     assertEquals(args, expectedArgs);
 
@@ -236,16 +244,17 @@ public class TestActionArgumentBuilder
 
   @Test(dataProvider = "failureData")
   public void testExtractRequestDataFailure(String entity, List<Parameter<?>> params, String errorRegEx)
+      throws IOException
   {
     RecordDataSchema dataSchema = DynamicRecordMetadata.buildSchema("testAction", params);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, entity, 3);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, entity);
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, null, "testAction", dataSchema);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 1, null, 1);
 
     RestLiArgumentBuilder argumentBuilder = new ActionArgumentBuilder();
     try
     {
-      argumentBuilder.extractRequestData(routingResult, request);
+      argumentBuilder.extractRequestData(routingResult, DataMapUtils.readMapWithExceptions(request));
       fail("Expected RoutingException");
     }
     catch (RoutingException e)
@@ -258,15 +267,17 @@ public class TestActionArgumentBuilder
 
   @Test
   public void testBuildArgumentsFailure()
+      throws IOException
   {
     String entity = "{\"param2\":5678}";
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, entity, 3);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, entity);
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, getStringAndIntParams(), null, null);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(null, null, null);
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(null, null, null, false);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 2, context, 1);
 
     RestLiArgumentBuilder argumentBuilder = new ActionArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult,
+        DataMapUtils.readMapWithExceptions(request));
     try
     {
       argumentBuilder.buildArguments(requestData, routingResult);
@@ -283,7 +294,7 @@ public class TestActionArgumentBuilder
   @DataProvider(name = "keyArgumentData")
   private Object[][] keyArgumentData()
   {
-    PathKeys pkeys = new PathKeysImpl().append("string1", "testString");
+    MutablePathKeys pkeys = new PathKeysImpl().append("string1", "testString");
     return new Object[][]
         {
             {
@@ -300,15 +311,17 @@ public class TestActionArgumentBuilder
   }
 
   @Test(dataProvider = "keyArgumentData")
-  public void testKeyArguments(List<Parameter<?>> params, PathKeys pathKeys, Object[] expectedArgs)
+  public void testKeyArguments(List<Parameter<?>> params, MutablePathKeys pathKeys, Object[] expectedArgs)
+      throws IOException
   {
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, params, null, null);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(pathKeys, false);
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(pathKeys, false, true);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 2, context, 1);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, "{\"a\":\"xyz\",\"b\":123}", 3);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, "{\"a\":\"xyz\",\"b\":123}");
 
     RestLiArgumentBuilder argumentBuilder = new ActionArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult,
+        DataMapUtils.readMapWithExceptions(request));
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
     assertEquals(args, expectedArgs);
 

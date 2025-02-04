@@ -110,9 +110,14 @@ public class TestURIElementParser
     internalEncodedList.add(":");
     internalEncoded.put(",", internalEncodedList);
 
+    // Ensure that the URI parser interprets this literally and not as an empty string element
+    DataMap withFakeEmptyString = new DataMap();
+    withFakeEmptyString.put("notEmpty", "''");
+
     return new Object [][] {
       { "(this%20is%20a%20key:List(%2F,%3D,%26))", externalEncoded },
-      { "(%2C:List(%27,%28,%29,%3A))", internalEncoded }
+      { "(%2C:List(%27,%28,%29,%3A))", internalEncoded },
+      { "(notEmpty:%27%27)", withFakeEmptyString },
     };
   }
 
@@ -124,6 +129,34 @@ public class TestURIElementParser
   }
 
   @DataProvider
+  private static Object[][] unicode()
+  {
+    // create objects
+    // test unicode encoding
+    DataMap japaneseMap = new DataMap();
+    japaneseMap.put("konnichiwa","こんにちは"); // Japanese
+
+    DataMap emojiMap = new DataMap();
+    emojiMap.put("smiley","☺"); // Emoji
+
+    DataMap surrogatePairMap = new DataMap();
+    surrogatePairMap.put("stickoutTongue", "\uD83D\uDE1B"); // Emoji, but with surrogate pairs
+
+    return new Object[][] {
+        { "(konnichiwa:%E3%81%93%E3%82%93%E3%81%AB%E3%81%A1%E3%81%AF)", japaneseMap },
+        { "(smiley:%E2%98%BA)", emojiMap },
+        { "(stickoutTongue:%F0%9F%98%9B)",surrogatePairMap }
+    };
+  }
+
+  @Test(dataProvider = "unicode")
+  public void testUnicode(String decodable, Object expectedObj) throws PathSegment.PathSegmentSyntaxException
+  {
+    Object actualObj = URIElementParser.parse(decodable);
+    Assert.assertEquals(actualObj, expectedObj);
+  }
+
+  @DataProvider
   private static Object[][] undecodables()
   {
     return new Object[][] {
@@ -131,6 +164,9 @@ public class TestURIElementParser
       { "(a:b",       "unexpected end of input" },
       { "List(a",     "unexpected end of input" },
       { "List(a,",    "unexpected end of input" },
+      { "",           "unexpected end of input" },
+      { "List(",      "unexpected end of input" },
+      { "(a:(",       "unexpected end of input" },
       { ",hello",     "unexpected token: ',' (column 0) at start of element" },
       { "(,",         "expected string token, found grammar token: ',' (column 1)" },
       { "(a,b)",      "expected ':' but found ',' (column 2)" },
@@ -140,8 +176,7 @@ public class TestURIElementParser
       { "List(a,,b)", "unexpected token: ',' (column 7) at start of element" },
       { "(:b)",       "expected string token, found grammar token: ':' (column 1)" },
       { "(a:)",       "unexpected token: ')' (column 3) at start of element" },
-      { "(a::b)",     "unexpected token: ':' (column 3) at start of element" },
-      { "",           "unexpected end of input" },
+      { "(a::b)",     "unexpected token: ':' (column 3) at start of element" }
     };
   }
 
@@ -162,7 +197,7 @@ public class TestURIElementParser
   @Test
   public void testParseURIParams() throws PathSegment.PathSegmentSyntaxException
   {
-    Map<String, List<String>> queryParams = new HashMap<String, List<String>>();
+    Map<String, List<String>> queryParams = new HashMap<>();
     queryParams.put("aParam", Collections.singletonList("(someField:someValue,foo:bar,empty:())"));
     queryParams.put("bParam", Collections.singletonList("List(x,y,z)"));
 

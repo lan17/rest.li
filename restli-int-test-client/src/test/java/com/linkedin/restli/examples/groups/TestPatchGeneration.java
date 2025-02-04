@@ -88,8 +88,8 @@ public class TestPatchGeneration
     //The ordering might be different but the URI should look something like:
     //"id,description,name";
     final String actualEncodedMaskURI = URIMaskUtil.encodeMaskForURI(mask);
-    final Set<String> maskURISet = new HashSet<String>(Arrays.asList(actualEncodedMaskURI.split(",")));
-    final Set<String> expectedURISet = new HashSet<String>();
+    final Set<String> maskURISet = new HashSet<>(Arrays.asList(actualEncodedMaskURI.split(",")));
+    final Set<String> expectedURISet = new HashSet<>();
     expectedURISet.add("id");
     expectedURISet.add("description");
     expectedURISet.add("name");
@@ -116,7 +116,7 @@ public class TestPatchGeneration
     //"id,location:(longitude,latitude),name";
     final String actualEncodedMaskURI = URIMaskUtil.encodeMaskForURI(mask);
     //We convert back into a MaskTree so we can compare DataMaps because the URI could be in any order
-    final MaskTree generatedMaskTree = URIMaskUtil.decodeMaskUriFormat(new StringBuilder(actualEncodedMaskURI));
+    final MaskTree generatedMaskTree = URIMaskUtil.decodeMaskUriFormat(actualEncodedMaskURI);
     Assert.assertEquals(generatedMaskTree.getDataMap(), idLocationNameMap, "The actual encoded Mask URI should be correct");
   }
 
@@ -138,8 +138,8 @@ public class TestPatchGeneration
     //The ordering might be different but the URI should look something like:
     //"-id,owner:(-id),-badge";
     final String actualEncodedMaskURI = URIMaskUtil.encodeMaskForURI(mask);
-    final Set<String> maskURISet = new HashSet<String>(Arrays.asList(actualEncodedMaskURI.split(",")));
-    final Set<String> expectedURISet = new HashSet<String>();
+    final Set<String> maskURISet = new HashSet<>(Arrays.asList(actualEncodedMaskURI.split(",")));
+    final Set<String> expectedURISet = new HashSet<>();
     expectedURISet.add("-id");
     expectedURISet.add("owner:(-id)");
     expectedURISet.add("-badge");

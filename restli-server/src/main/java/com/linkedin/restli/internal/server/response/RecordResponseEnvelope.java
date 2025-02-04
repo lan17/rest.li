@@ -19,52 +19,38 @@ package com.linkedin.restli.internal.server.response;
 
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.restli.common.HttpStatus;
-import com.linkedin.restli.internal.server.RestLiResponseEnvelope;
 import com.linkedin.restli.internal.server.ResponseType;
 import com.linkedin.restli.server.RestLiServiceException;
-
-import java.net.HttpCookie;
-import java.util.List;
-import java.util.Map;
 
 
 /**
  * Response for {@link com.linkedin.restli.internal.server.ResponseType#SINGLE_ENTITY}.
  *
- * The invariants of {@link com.linkedin.restli.internal.server.RestLiResponseEnvelope}
+ * The invariants of {@link RestLiResponseEnvelope}
  * is maintained, with the further condition that a record template is available whenever
  * there are no top level exceptions.
  *
  * @author erli
  */
-public final class RecordResponseEnvelope extends RestLiResponseEnvelope
+public abstract class RecordResponseEnvelope extends RestLiResponseEnvelope
 {
   private RecordTemplate _recordResponse;
 
   /**
    * Sets an entity response with no triggered exception.
-   *
-   * @param httpStatus http status of the response.
    * @param response entity of the response.
-   * @param headers headers of the response.
-   * @param cookies
+   *
    */
-  public RecordResponseEnvelope(HttpStatus httpStatus, RecordTemplate response, Map<String, String> headers, List<HttpCookie> cookies)
+  RecordResponseEnvelope(HttpStatus status, RecordTemplate response)
   {
-    super(httpStatus, headers, cookies);
+    super(status);
     _recordResponse = response;
   }
 
-  /**
-   * Sets a failed entity response with an exception.
-   *
-   * @param exception caused the response failure.
-   * @param headers headers of the response.
-   * @param cookies
-   */
-  public RecordResponseEnvelope(RestLiServiceException exception, Map<String, String> headers, List<HttpCookie> cookies)
+  RecordResponseEnvelope(RestLiServiceException exception)
   {
-    super(exception, headers, cookies);
+    super(exception);
+    _recordResponse = null;
   }
 
   /**
@@ -80,8 +66,8 @@ public final class RecordResponseEnvelope extends RestLiResponseEnvelope
   /**
    * Sets an entity response with no triggered exceptions.
    *
-   * @param httpStatus http status of the response.
    * @param response entity of the response.
+   * @param httpStatus the HTTP status of the response.
    */
   public void setRecord(RecordTemplate response, HttpStatus httpStatus)
   {
@@ -90,49 +76,22 @@ public final class RecordResponseEnvelope extends RestLiResponseEnvelope
   }
 
   /**
-   * Sets the exception of this response with an exception.
-   *
-   * @param exception caused the response failure.
+   * Sets the data stored in this envelope to null.
    */
-  public void setException(RestLiServiceException exception)
+  @Override
+  protected void clearData()
   {
-    super.setException(exception);
     _recordResponse = null;
   }
 
+  /**
+   * Returns the {@link ResponseType}.
+   *
+   * @return {@link ResponseType}.
+   */
   @Override
-  public ResponseType getResponseType()
+  public final ResponseType getResponseType()
   {
     return ResponseType.SINGLE_ENTITY;
-  }
-
-  @Override
-  public RecordResponseEnvelope getRecordResponseEnvelope()
-  {
-    return this;
-  }
-
-  @Override
-  public CollectionResponseEnvelope getCollectionResponseEnvelope()
-  {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public CreateCollectionResponseEnvelope getCreateCollectionResponseEnvelope()
-  {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public BatchResponseEnvelope getBatchResponseEnvelope()
-  {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public EmptyResponseEnvelope getEmptyResponseEnvelope()
-  {
-    throw new UnsupportedOperationException();
   }
 }

@@ -43,23 +43,25 @@ import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.examples.greetings.api.Greeting;
 import com.linkedin.restli.examples.greetings.client.GreetingsBuilders;
 import com.linkedin.restli.server.RestLiServiceException;
+import com.linkedin.restli.server.filter.Filter;
 import com.linkedin.restli.server.filter.FilterRequestContext;
-import com.linkedin.restli.server.filter.NextRequestFilter;
-import com.linkedin.restli.server.filter.RequestFilter;
+import com.linkedin.test.util.retry.SingleRetry;
 
-import io.netty.channel.nio.NioEventLoopGroup;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import io.netty.channel.nio.NioEventLoopGroup;
 
 /**
  * Integration tests for response compression.
@@ -73,7 +75,7 @@ public class TestResponseCompression extends RestLiIntegrationTest
 {
   // Headers for sending test information to the server.
   private static final String EXPECTED_ACCEPT_ENCODING = "Expected-Accept-Encoding";
-  private static final String DEFAULT_ACCEPT_ENCODING = "gzip;q=1.00,snappy;q=0.80,deflate;q=0.60,bzip2;q=0.40";
+  private static final String DEFAULT_ACCEPT_ENCODING = "gzip;q=1.00,snappy;q=0.83,x-snappy-framed;q=0.67,deflate;q=0.50,bzip2;q=0.33";
   private static final String NONE = "None";
   private static final String EXPECTED_COMPRESSION_THRESHOLD = "Expected-Response-Compression-Threshold";
   private static final String SERVICE_NAME = "service1";
@@ -81,10 +83,10 @@ public class TestResponseCompression extends RestLiIntegrationTest
   @BeforeClass
   public void initClass() throws Exception
   {
-    class TestHelperFilter implements RequestFilter
+    class TestHelperFilter implements Filter
     {
       @Override
-      public void onRequest(FilterRequestContext requestContext, NextRequestFilter nextRequestFilter)
+      public CompletableFuture<Void> onRequest(FilterRequestContext requestContext)
       {
         Map<String, String> requestHeaders = requestContext.getRequestHeaders();
         if (requestHeaders.containsKey(EXPECTED_ACCEPT_ENCODING))
@@ -115,14 +117,14 @@ public class TestResponseCompression extends RestLiIntegrationTest
                 + ", but received " + requestHeaders.get(HttpConstants.HEADER_RESPONSE_COMPRESSION_THRESHOLD));
           }
         }
-        nextRequestFilter.onRequest(requestContext);
+        return CompletableFuture.completedFuture(null);
       }
     }
     // The default compression threshold is between tiny and huge threshold.
     final FilterChain fc = FilterChains.empty().addLastRest(new TestCompressionServer.SaveContentEncodingHeaderFilter())
-        .addLastRest(new ServerCompressionFilter("snappy,gzip,deflate", new CompressionConfig(10000)))
+        .addLastRest(new ServerCompressionFilter("x-snappy-framed,snappy,gzip,deflate", new CompressionConfig(10000)))
         .addLastRest(new SimpleLoggingFilter());
-    super.init(Arrays.asList(new TestHelperFilter()), null, fc, false);
+    super.init(Arrays.asList(new TestHelperFilter()), fc, false);
   }
 
   @AfterClass
@@ -187,31 +189,32 @@ public class TestResponseCompression extends RestLiIntegrationTest
     };
   }
 
-  @Test(dataProvider = "requestData")
+  @Test(dataProvider = "requestData", retryAnalyzer = SingleRetry.class) // Often fails in CI without a retry
   public void testResponseCompression(Boolean useResponseCompression, CompressionConfig responseCompressionConfig,
                                       RestliRequestOptions restliRequestOptions, int idCount, String expectedAcceptEncoding,
                                       String expectedCompressionThreshold, boolean responseShouldBeCompressed)
       throws RemoteInvocationException, CloneNotSupportedException
   {
     ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("R2 Netty Scheduler"));
-    Map<String, CompressionConfig> responseCompressionConfigs = new HashMap<String, CompressionConfig>();
+    Map<String, CompressionConfig> responseCompressionConfigs = new HashMap<>();
     if (responseCompressionConfig != null)
     {
       responseCompressionConfigs.put(SERVICE_NAME, responseCompressionConfig);
     }
-    HttpClientFactory httpClientFactory = new HttpClientFactory(FilterChains.empty(),
-                                                                new NioEventLoopGroup(0 /* use default settings */, new NamedThreadFactory("R2 Nio Event Loop")),
-                                                                true,
-                                                                executor,
-                                                                true,
-                                                                executor,
-                                                                false,
-                                                                AbstractJmxManager.NULL_JMX_MANAGER,
-                                                                Integer.MAX_VALUE,
-                                                                Collections.<String, CompressionConfig>emptyMap(),
-                                                                responseCompressionConfigs,
-                                                                true);
-    Map<String, Object> properties = new HashMap<String, Object>();
+    HttpClientFactory httpClientFactory = new HttpClientFactory.Builder()
+        .setEventLoopGroup(new NioEventLoopGroup(0 /* use default settings */, new NamedThreadFactory("R2 Nio Event Loop")))
+        .setShutDownFactory(true)
+        .setScheduleExecutorService(executor)
+        .setShutdownScheduledExecutorService(true)
+        .setCallbackExecutor(executor)
+        .setShutdownCallbackExecutor(false)
+        .setJmxManager(AbstractJmxManager.NULL_JMX_MANAGER)
+        .setRequestCompressionThresholdDefault(Integer.MAX_VALUE)
+        .setRequestCompressionConfigs(Collections.<String, CompressionConfig>emptyMap())
+        .setResponseCompressionConfigs(responseCompressionConfigs)
+        .setUseClientCompression(true)
+        .build();
+    Map<String, Object> properties = new HashMap<>();
     properties.put(HttpClientFactory.HTTP_SERVICE_NAME, SERVICE_NAME);
     if (useResponseCompression != null)
     {
@@ -252,14 +255,15 @@ public class TestResponseCompression extends RestLiIntegrationTest
             {"gzip,snappy", "gzip;q=1.00,snappy;q=0.67", "gzip"},
             {"deflate,gzip,snappy", "deflate;q=1.00,gzip;q=0.75,snappy;q=0.50", "deflate"},
             {"sdch,gzip,snappy", "gzip;q=1.00,snappy;q=0.67", "gzip"}, // client doesn't support sdch
-            {"bzip2,snappy", "bzip2;q=1.00,snappy;q=0.67", "snappy"} // server doesn't support bzip2
+            {"bzip2,snappy", "bzip2;q=1.00,snappy;q=0.67", "snappy"}, // server doesn't support bzip2
+            {"bzip2,x-snappy-framed", "bzip2;q=1.00,x-snappy-framed;q=0.67", "x-snappy-framed"} // server doesn't support bzip2
         };
   }
 
-  @Test(dataProvider = "encodingsData")
+  @Test(dataProvider = "encodingsData", retryAnalyzer = SingleRetry.class) // Often fails in CI without a retry
   public void testAcceptEncodingConfiguration(String responseContentEncodings, String expectedAcceptEncoding, String expectedContentEncoding) throws RemoteInvocationException
   {
-    Map<String, Object> properties = new HashMap<String, Object>();
+    Map<String, Object> properties = new HashMap<>();
     properties.put(HttpClientFactory.HTTP_RESPONSE_CONTENT_ENCODINGS, responseContentEncodings);
     properties.put(HttpClientFactory.HTTP_USE_RESPONSE_COMPRESSION, "true");
     Client client = newTransportClient(properties);

@@ -33,6 +33,7 @@ import java.net.HttpCookie;
 import java.util.List;
 import java.util.Map;
 
+
 /**
  * @author Josh Walker
  * @version $Revision: $
@@ -41,7 +42,7 @@ import java.util.Map;
 public class BatchDeleteRequest<K, V extends RecordTemplate> extends BatchRequest<BatchKVResponse<K, UpdateStatus>>
 {
   @SuppressWarnings("unchecked")
-  BatchDeleteRequest(Map<String, String> headers,
+  public BatchDeleteRequest(Map<String, String> headers,
                      List<HttpCookie> cookies,
                      Map<String, Object> queryParams,
                      Map<String, Class<?>> queryParamClasses,
@@ -54,14 +55,15 @@ public class BatchDeleteRequest<K, V extends RecordTemplate> extends BatchReques
           null,
           headers,
           cookies,
-          new BatchUpdateResponseDecoder<K>((TypeSpec<K>) resourceSpec.getKeyType(),
-                                            resourceSpec.getKeyParts(),
-                                            resourceSpec.getComplexKeyType()),
+        new BatchUpdateResponseDecoder<>((TypeSpec<K>) resourceSpec.getKeyType(),
+            resourceSpec.getKeyParts(),
+            resourceSpec.getComplexKeyType()),
           resourceSpec,
           queryParams,
           queryParamClasses,
           baseUriTemplate,
           pathKeys,
-          requestOptions);
+          requestOptions,
+          null);
   }
 }

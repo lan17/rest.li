@@ -18,10 +18,12 @@ package com.linkedin.d2.balancer.config;
 
 import com.linkedin.common.util.MapUtil;
 import com.linkedin.d2.D2TransportClientProperties;
+import com.linkedin.d2.HttpProtocolVersionType;
 import com.linkedin.d2.balancer.properties.PropertyKeys;
 import com.linkedin.d2.poolStrategyType;
 import com.linkedin.data.template.StringArray;
 import com.linkedin.r2.util.ConfigValueExtractor;
+
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -33,6 +35,11 @@ import static com.linkedin.d2.balancer.properties.util.PropertyUtil.coerce;
 /**
  * This class converts {@link D2TransportClientProperties} into a map from String to Object
  * that can be stored in zookeeper and vice versa.
+ *
+ * Note that this Converter uses different key names than the field names (e.g. http.queryPostThreshold instead of queryPostThreshold),
+ * so all serialization should go through toProperties first, and deserialization should go through toConfig afterwards
+ * to properly convert to and from the pegasus objects.
+ *
  * @author Ang Xu
  */
 public class TransportClientPropertiesConverter
@@ -53,6 +60,10 @@ public class TransportClientPropertiesConverter
     {
       prop.put(PropertyKeys.HTTP_REQUEST_TIMEOUT, config.getRequestTimeout().toString());
     }
+    if (config.hasStreamingTimeout())
+    {
+      prop.put(PropertyKeys.HTTP_STREAMING_TIMEOUT, config.getStreamingTimeout().toString());
+    }
     if (config.hasMaxResponseSize())
     {
       prop.put(PropertyKeys.HTTP_MAX_RESPONSE_SIZE, config.getMaxResponseSize().toString());
@@ -69,9 +80,17 @@ public class TransportClientPropertiesConverter
     {
       prop.put(PropertyKeys.HTTP_IDLE_TIMEOUT, config.getIdleTimeout().toString());
     }
+    if (config.hasSslIdleTimeout())
+    {
+      prop.put(PropertyKeys.HTTP_SSL_IDLE_TIMEOUT, config.getSslIdleTimeout().toString());
+    }
     if (config.hasShutdownTimeout())
     {
       prop.put(PropertyKeys.HTTP_SHUTDOWN_TIMEOUT, config.getShutdownTimeout().toString());
+    }
+    if (config.hasGracefulShutdownTimeout())
+    {
+      prop.put(PropertyKeys.HTTP_GRACEFUL_SHUTDOWN_TIMEOUT, config.getGracefulShutdownTimeout().toString());
     }
     if (config.hasResponseCompressionOperations())
     {
@@ -107,9 +126,30 @@ public class TransportClientPropertiesConverter
     {
       prop.put(PropertyKeys.HTTP_POOL_MIN_SIZE, config.getMinPoolSize().toString());
     }
+    if (config.hasPoolStatsNamePrefix())
+    {
+      prop.put(PropertyKeys.HTTP_POOL_STATS_NAME_PREFIX, config.getPoolStatsNamePrefix());
+    }
     if (config.hasMaxConcurrentConnections())
     {
       prop.put(PropertyKeys.HTTP_MAX_CONCURRENT_CONNECTIONS, config.getMaxConcurrentConnections().toString());
+    }
+    if (config.hasTcpNoDelay())
+    {
+      prop.put(PropertyKeys.HTTP_TCP_NO_DELAY, config.isTcpNoDelay().toString());
+    }
+    if (config.hasProtocolVersion())
+    {
+      prop.put(PropertyKeys.HTTP_PROTOCOL_VERSION, config.getProtocolVersion().name());
+    }
+    if (!config.getAllowedClientOverrideKeys().isEmpty())
+    {
+      prop.put(PropertyKeys.ALLOWED_CLIENT_OVERRIDE_KEYS,
+          config.getAllowedClientOverrideKeys().stream().collect(Collectors.joining(",")));
+    }
+    if (config.hasMaxClientRequestRetryRatio())
+    {
+      prop.put(PropertyKeys.HTTP_MAX_CLIENT_REQUEST_RETRY_RATIO, config.getMaxClientRequestRetryRatio().toString());
     }
     return prop;
   }
@@ -126,10 +166,14 @@ public class TransportClientPropertiesConverter
     {
       config.setRequestTimeout(coerce(properties.get(PropertyKeys.HTTP_REQUEST_TIMEOUT), Long.class));
     }
+    if (properties.containsKey(PropertyKeys.HTTP_STREAMING_TIMEOUT))
+    {
+      config.setStreamingTimeout(coerce(properties.get(PropertyKeys.HTTP_STREAMING_TIMEOUT), Long.class));
+    }
     if (properties.containsKey(PropertyKeys.HTTP_MAX_RESPONSE_SIZE))
     {
       config.setMaxResponseSize(coerce(properties.get(PropertyKeys.HTTP_MAX_RESPONSE_SIZE),
-          Integer.class));
+          Long.class));
     }
     if (properties.containsKey(PropertyKeys.HTTP_POOL_SIZE))
     {
@@ -143,12 +187,22 @@ public class TransportClientPropertiesConverter
     if (properties.containsKey(PropertyKeys.HTTP_IDLE_TIMEOUT))
     {
       config.setIdleTimeout(coerce(properties.get(PropertyKeys.HTTP_IDLE_TIMEOUT),
-          Long.class));
+        Long.class));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_SSL_IDLE_TIMEOUT))
+    {
+      config.setSslIdleTimeout(coerce(properties.get(PropertyKeys.HTTP_SSL_IDLE_TIMEOUT),
+        Long.class));
     }
     if (properties.containsKey(PropertyKeys.HTTP_SHUTDOWN_TIMEOUT))
     {
       config.setShutdownTimeout(coerce(properties.get(PropertyKeys.HTTP_SHUTDOWN_TIMEOUT),
           Long.class));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_GRACEFUL_SHUTDOWN_TIMEOUT))
+    {
+      config.setGracefulShutdownTimeout(coerce(properties.get(PropertyKeys.HTTP_GRACEFUL_SHUTDOWN_TIMEOUT),
+        Long.class));
     }
     if (properties.containsKey(PropertyKeys.HTTP_RESPONSE_COMPRESSION_OPERATIONS))
     {
@@ -189,9 +243,32 @@ public class TransportClientPropertiesConverter
     {
       config.setMinPoolSize(coerce(properties.get(PropertyKeys.HTTP_POOL_MIN_SIZE), Integer.class));
     }
+    if (properties.containsKey(PropertyKeys.HTTP_POOL_STATS_NAME_PREFIX))
+    {
+      config.setPoolStatsNamePrefix(coerce(properties.get(PropertyKeys.HTTP_POOL_STATS_NAME_PREFIX), String.class));
+    }
     if (properties.containsKey(PropertyKeys.HTTP_MAX_CONCURRENT_CONNECTIONS))
     {
       config.setMaxConcurrentConnections(coerce(properties.get(PropertyKeys.HTTP_MAX_CONCURRENT_CONNECTIONS), Integer.class));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_TCP_NO_DELAY))
+    {
+      config.setTcpNoDelay(coerce(properties.get(PropertyKeys.HTTP_TCP_NO_DELAY), Boolean.class));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_PROTOCOL_VERSION))
+    {
+      config.setProtocolVersion(
+          HttpProtocolVersionType.valueOf((String) properties.get(PropertyKeys.HTTP_PROTOCOL_VERSION)));
+    }
+    if (properties.containsKey(PropertyKeys.ALLOWED_CLIENT_OVERRIDE_KEYS))
+    {
+      config.setAllowedClientOverrideKeys(new StringArray(
+          ConfigValueExtractor.buildList(properties.get(PropertyKeys.ALLOWED_CLIENT_OVERRIDE_KEYS), ",")
+      ));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_MAX_CLIENT_REQUEST_RETRY_RATIO))
+    {
+      config.setMaxClientRequestRetryRatio(coerce(properties.get(PropertyKeys.HTTP_MAX_CLIENT_REQUEST_RETRY_RATIO), Double.class));
     }
     return config;
   }

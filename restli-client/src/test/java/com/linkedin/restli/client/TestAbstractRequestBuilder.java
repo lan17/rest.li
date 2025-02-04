@@ -29,11 +29,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Collections;
 
+import java.util.Set;
 import org.testng.Assert;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
@@ -97,7 +100,7 @@ public class TestAbstractRequestBuilder
     Assert.assertEquals(builder.getHeader("a"), "b");
     Assert.assertEquals(builder.getHeader("c"), "d");
 
-    final Map<String, String> newHeaders = new HashMap<String, String>();
+    final Map<String, String> newHeaders = new HashMap<>();
     newHeaders.put("c", "e");
 
     builder.setHeaders(newHeaders);
@@ -112,7 +115,7 @@ public class TestAbstractRequestBuilder
   public void testSetHeadersWithNullValue()
   {
     final AbstractRequestBuilder<?, ?, ?> builder = new DummyAbstractRequestBuilder();
-    final Map<String, String> newHeaders = new HashMap<String, String>();
+    final Map<String, String> newHeaders = new HashMap<>();
     newHeaders.put("a", "b");
     newHeaders.put("c", null);
 
@@ -125,9 +128,9 @@ public class TestAbstractRequestBuilder
   public void testAddCookieWithNonNullValue()
   {
     final AbstractRequestBuilder<?, ?, ?> builder = new DummyAbstractRequestBuilder();
-    List<HttpCookie> cookies = new ArrayList<HttpCookie>(Arrays.asList(new HttpCookie("X", "1"),
-                                                                       new HttpCookie("Y", "2"),
-                                                                       new HttpCookie("Z", "3")));
+    List<HttpCookie> cookies = new ArrayList<>(Arrays.asList(new HttpCookie("X", "1"),
+        new HttpCookie("Y", "2"),
+        new HttpCookie("Z", "3")));
 
     Assert.assertSame(builder.addCookie(new HttpCookie("X", "1")), builder);
     Assert.assertSame(builder.addCookie(new HttpCookie("Y", "2")), builder);
@@ -144,8 +147,8 @@ public class TestAbstractRequestBuilder
     Assert.assertSame(builder.addCookie(null), builder);
     Assert.assertSame(builder.addCookie(new HttpCookie("Z", "3")), builder);
 
-    List<HttpCookie> cookies = new ArrayList<HttpCookie>(Arrays.asList(new HttpCookie("X", "1"),
-                                                                       new HttpCookie("Z", "3")));
+    List<HttpCookie> cookies = new ArrayList<>(Arrays.asList(new HttpCookie("X", "1"),
+        new HttpCookie("Z", "3")));
 
     Assert.assertEquals(builder.getCookies(), cookies);
   }
@@ -154,9 +157,9 @@ public class TestAbstractRequestBuilder
   public void testSetCookiesWithNonNullValue()
   {
     final AbstractRequestBuilder<?, ?, ?> builder = new DummyAbstractRequestBuilder();
-    List<HttpCookie> cookies = new ArrayList<HttpCookie>(Arrays.asList(new HttpCookie("X", "1"),
-                                                                       new HttpCookie("Y", "2"),
-                                                                       new HttpCookie("Z", "3")));
+    List<HttpCookie> cookies = new ArrayList<>(Arrays.asList(new HttpCookie("X", "1"),
+        new HttpCookie("Y", "2"),
+        new HttpCookie("Z", "3")));
 
     Assert.assertSame(builder.setCookies(cookies), builder);
     Assert.assertEquals(builder.getCookies(), cookies);
@@ -166,13 +169,13 @@ public class TestAbstractRequestBuilder
   public void testSetCookiesWithNullValue()
   {
     final AbstractRequestBuilder<?, ?, ?> builder = new DummyAbstractRequestBuilder();
-    List<HttpCookie> cookies = new ArrayList<HttpCookie>(Arrays.asList(new HttpCookie("X", "1"),
-                                                                       null,
-                                                                       new HttpCookie("Z", "3")));
+    List<HttpCookie> cookies = new ArrayList<>(Arrays.asList(new HttpCookie("X", "1"),
+        null,
+        new HttpCookie("Z", "3")));
    // Null element will not be passed
     Assert.assertSame(builder.setCookies(cookies), builder);
-    List<HttpCookie> resultCookies = new ArrayList<HttpCookie>(Arrays.asList(new HttpCookie("X", "1"),
-                                                                       new HttpCookie("Z", "3")));
+    List<HttpCookie> resultCookies = new ArrayList<>(Arrays.asList(new HttpCookie("X", "1"),
+        new HttpCookie("Z", "3")));
     Assert.assertEquals(builder.getCookies(), resultCookies);
   }
 
@@ -180,9 +183,9 @@ public class TestAbstractRequestBuilder
   public void testClearCookie()
   {
     final AbstractRequestBuilder<?, ?, ?> builder = new DummyAbstractRequestBuilder();
-    List<HttpCookie> cookies = new ArrayList<HttpCookie>(Arrays.asList(new HttpCookie("X", "1"),
-                                                                       new HttpCookie("Y", "2"),
-                                                                       new HttpCookie("Z", "3")));
+    List<HttpCookie> cookies = new ArrayList<>(Arrays.asList(new HttpCookie("X", "1"),
+        new HttpCookie("Y", "2"),
+        new HttpCookie("Z", "3")));
 
     Assert.assertSame(builder.setCookies(cookies), builder);
     Assert.assertSame(builder.clearCookies(), builder);
@@ -276,7 +279,7 @@ public class TestAbstractRequestBuilder
 
     // AbstractList returned by Arrays.asList() does not support add()
     // need to wrap it with ArrayList
-    final Collection<Object> testData = new ArrayList<Object>(Arrays.asList(value1, value2));
+    final Collection<Object> testData = new ArrayList<>(Arrays.asList(value1, value2));
     builder.setParam("a", testData);
     builder.addParam("a", value3);
 
@@ -332,17 +335,29 @@ public class TestAbstractRequestBuilder
     Assert.assertEquals(builder.getParam("a"), Arrays.asList("b1", "b2"));
   }
 
+  @Test
+  public void testRemoveParam()
+  {
+    final AbstractRequestBuilder<?, ?, ?> builder = new DummyAbstractRequestBuilder();
+
+    builder.addParam("a", "b");
+    Assert.assertEquals(builder.getParam("a"), Arrays.asList("b"));
+
+    builder.removeParam("a");
+    Assert.assertFalse(builder.hasParam("a"));
+  }
+
   @DataProvider(name = "testQueryParam")
   public static Object[][] testQueryParamDataProvider()
   {
-    final Object value3 = new ArrayList<String>(Arrays.asList("x", "y"));
+    final Object value3 = new ArrayList<>(Arrays.asList("x", "y"));
     return new Object[][] {
       { "a", "b", "z" },
       { "a", "b", value3 },
       { new String[] { "a", "b" }, new String[] { "c", "d" }, "z" },
       { new String[] { "a", "b" }, new String[] { "c", "d" }, value3 },
-      { new ArrayList<String>(Arrays.asList("a", "b")), new ArrayList<String>(Arrays.asList("c", "d")), "z" },
-      { new ArrayList<String>(Arrays.asList("a", "b")), new ArrayList<String>(Arrays.asList("c", "d")), value3 }
+      {new ArrayList<>(Arrays.asList("a", "b")), new ArrayList<>(Arrays.asList("c", "d")), "z" },
+      {new ArrayList<>(Arrays.asList("a", "b")), new ArrayList<>(Arrays.asList("c", "d")), value3 }
     };
   }
 
@@ -363,31 +378,74 @@ public class TestAbstractRequestBuilder
   }
 
   @Test
+  public void testQueryParameterCopyPreservesSetOrder()
+  {
+    // Experimentally, this order of inputs into LinkedHashSet will be different
+    // when copied into a HashSet and iterated over. This _is_ subject to change
+    // as the JDK changes, so this is a best effort test only.
+    LinkedHashSet<String> initialSetParameter = new LinkedHashSet<>(Arrays.asList("4", "3", "2", "1"));
+
+    Map<String, Object> initialQueryParameters = new HashMap<>();
+    initialQueryParameters.put("set", initialSetParameter);
+
+    Map<String, Object> readOnlyQueryParameters =
+        AbstractRequestBuilder.getReadOnlyQueryParameters(initialQueryParameters);
+
+    @SuppressWarnings("unchecked")
+    List<String> orderedReadOnlySetParameter = new ArrayList<>((Set<String>) readOnlyQueryParameters.get("set"));
+
+    Assert.assertEquals(orderedReadOnlySetParameter, new ArrayList<>(initialSetParameter));
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
   public void testProjectionFields()
   {
     final AbstractRequestBuilder<?, ?, ?> builder = new DummyAbstractRequestBuilder();
 
-    builder.addFields(new PathSpec("firstField"), new PathSpec("secondField", PathSpec.WILDCARD, "thirdField"));
-    Assert.assertTrue(builder.getParam(RestConstants.FIELDS_PARAM) instanceof PathSpec[]);
-    final PathSpec[] fieldsPathSpecs = (PathSpec[])builder.getParam(RestConstants.FIELDS_PARAM);
-    Assert.assertEquals(fieldsPathSpecs[0].toString(), "/firstField", "The path spec(s) should match!");
-    Assert.assertEquals(fieldsPathSpecs[1].toString(), "/secondField/*/thirdField", "The path spec(s) should match!");
+    PathSpec pathSpec1 = new PathSpec("firstField");
+    PathSpec pathSpec23 = new PathSpec("secondField", PathSpec.WILDCARD, "thirdField");
+    builder.addFields(pathSpec1, pathSpec23);
+    Assert.assertTrue(builder.getParam(RestConstants.FIELDS_PARAM) instanceof Set);
+    final Set<PathSpec> fieldsPathSpecs = (Set<PathSpec>) builder.getParam(RestConstants.FIELDS_PARAM);
+    Assert.assertEquals(fieldsPathSpecs, new HashSet<>(Arrays.asList(pathSpec1, pathSpec23)), "The path spec(s) should match!") ;
 
-    builder.addMetadataFields(new PathSpec(PathSpec.WILDCARD, "fourthField"), new PathSpec("fifthField"));
-    Assert.assertTrue(builder.getParam(RestConstants.METADATA_FIELDS_PARAM) instanceof PathSpec[]);
-    final PathSpec[] metadataFieldsPathSpecs = (PathSpec[])builder.getParam(RestConstants.METADATA_FIELDS_PARAM);
-    Assert.assertEquals(metadataFieldsPathSpecs[0].toString(), "/*/fourthField", "The path spec(s) should match!");
-    Assert.assertEquals(metadataFieldsPathSpecs[1].toString(), "/fifthField", "The path spec(s) should match!");
+    PathSpec pathSpec4 = new PathSpec(PathSpec.WILDCARD, "fourthField");
+    PathSpec pathSpec5 = new PathSpec("fifthField");
+    builder.addMetadataFields(pathSpec4, pathSpec5);
+    Assert.assertTrue(builder.getParam(RestConstants.METADATA_FIELDS_PARAM) instanceof Set);
+    final Set<PathSpec> metadataFieldsPathSpecs = (Set<PathSpec>)  builder.getParam(RestConstants.METADATA_FIELDS_PARAM);
+    Assert.assertEquals(metadataFieldsPathSpecs, new HashSet<>(Arrays.asList(pathSpec4, pathSpec5)), "The path spec(s) should match!") ;
 
-    builder.addPagingFields(new PathSpec("sixthField", PathSpec.WILDCARD), new PathSpec("seventhField"),
-        new PathSpec(PathSpec.WILDCARD));
-    Assert.assertTrue(builder.getParam(RestConstants.PAGING_FIELDS_PARAM) instanceof PathSpec[]);
-    final PathSpec[] pagingFieldsPathSpecs = (PathSpec[])builder.getParam(RestConstants.PAGING_FIELDS_PARAM);
-    Assert.assertEquals(pagingFieldsPathSpecs[0].toString(), "/sixthField/*", "The path spec(s) should match!");
-    Assert.assertEquals(pagingFieldsPathSpecs[1].toString(), "/seventhField", "The path spec(s) should match!");
+    PathSpec pathSpec6 = new PathSpec("sixthField", PathSpec.WILDCARD);
+    PathSpec pathSpec7 = new PathSpec("seventhField");
+    builder.addPagingFields(pathSpec6, pathSpec7, null);
+    Assert.assertTrue(builder.getParam(RestConstants.PAGING_FIELDS_PARAM) instanceof Set);
+    final Set<PathSpec> pagingFieldsPathSpecs = (Set<PathSpec>) builder.getParam(RestConstants.PAGING_FIELDS_PARAM);
+    Assert.assertEquals(pagingFieldsPathSpecs, new HashSet<>(Arrays.asList(pathSpec6, pathSpec7, null)), "The path spec(s) should match!") ;
 
     Assert.assertEquals(builder.buildReadOnlyQueryParameters().size(), 3,
                         "We should have 3 query parameters, one for each projection type");
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  public void testNullProjectionFields()
+  {
+    final AbstractRequestBuilder<?, ?, ?> builder = new DummyAbstractRequestBuilder();
+
+    PathSpec[] pathSpecs = null;
+    builder.addFields(pathSpecs);
+    Assert.assertTrue(builder.getParam(RestConstants.FIELDS_PARAM) == null);
+
+    builder.addMetadataFields(pathSpecs);
+    Assert.assertTrue(builder.getParam(RestConstants.METADATA_FIELDS_PARAM) == null);
+
+    builder.addPagingFields(pathSpecs);
+    Assert.assertTrue(builder.getParam(RestConstants.PAGING_FIELDS_PARAM) == null);
+
+    Assert.assertEquals(builder.buildReadOnlyQueryParameters().size(), 0,
+        "We should not have query parameters");
   }
 
   @Test
@@ -430,11 +488,11 @@ public class TestAbstractRequestBuilder
     TestRecord testRecord = new TestRecord();
     TestRecord testRecord2 = new TestRecord();
     ComplexResourceKey<TestRecord, TestRecord> originalKey =
-        new ComplexResourceKey<TestRecord, TestRecord>(testRecord, testRecord2);
+        new ComplexResourceKey<>(testRecord, testRecord2);
 
     builder.addKey(originalKey);
     Map<String, Object> parameters = builder.buildReadOnlyQueryParameters();
-    Object key = ((List<Object>)parameters.get("ids")).get(0);
+    Object key = ((Set<Object>)parameters.get(RestConstants.QUERY_BATCH_IDS_PARAM)).iterator().next();
     Assert.assertNotSame(key, originalKey);
     Assert.assertTrue(((ComplexResourceKey<TestRecord, TestRecord>)key).isReadOnly());
 
@@ -450,7 +508,7 @@ public class TestAbstractRequestBuilder
 
     originalKey.makeReadOnly();
     parameters = builder.buildReadOnlyQueryParameters();
-    key = ((List<Object>)parameters.get("ids")).get(0);
+    key = ((Set<Object>)parameters.get(RestConstants.QUERY_BATCH_IDS_PARAM)).iterator().next();
     Assert.assertSame(key, originalKey);
   }
 
@@ -463,7 +521,7 @@ public class TestAbstractRequestBuilder
     TestRecord testRecord = new TestRecord();
     TestRecord testRecord2 = new TestRecord();
     ComplexResourceKey<TestRecord, TestRecord> originalKey =
-        new ComplexResourceKey<TestRecord, TestRecord>(testRecord, testRecord2);
+        new ComplexResourceKey<>(testRecord, testRecord2);
 
     builder.pathKey("abc", originalKey);
     Map<String, Object> pathKeys = builder.buildReadOnlyPathKeys();
@@ -552,9 +610,9 @@ public class TestAbstractRequestBuilder
     builder.addPagingFields(originalFields);
 
     Map<String, Object> parameters = builder.buildReadOnlyQueryParameters();
-    List<Object> fields = (List<Object>) parameters.get(RestConstants.FIELDS_PARAM);
-    List<Object> metadataFields = (List<Object>) parameters.get(RestConstants.METADATA_FIELDS_PARAM);
-    List<Object> pagingFields = (List<Object>) parameters.get(RestConstants.PAGING_FIELDS_PARAM);
+    Set<Object> fields = (Set<Object>) parameters.get(RestConstants.FIELDS_PARAM);
+    Set<Object> metadataFields = (Set<Object>) parameters.get(RestConstants.METADATA_FIELDS_PARAM);
+    Set<Object> pagingFields = (Set<Object>) parameters.get(RestConstants.PAGING_FIELDS_PARAM);
 
     PathSpec field2 = new PathSpec("def");
     originalFields[0] = field2;

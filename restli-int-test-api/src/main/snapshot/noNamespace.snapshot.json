@@ -1,10 +1,5 @@
 {
   "models" : [ {
-    "type" : "enum",
-    "name" : "Tone",
-    "namespace" : "com.linkedin.restli.examples.greetings.api",
-    "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
-  }, {
     "type" : "record",
     "name" : "Greeting",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -17,10 +12,22 @@
       "type" : "string"
     }, {
       "name" : "tone",
-      "type" : "Tone",
+      "type" : {
+        "type" : "enum",
+        "name" : "Tone",
+        "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
+      },
       "doc" : "tone"
+    }, {
+      "name" : "senders",
+      "type" : {
+        "type" : "array",
+        "items" : "string"
+      },
+      "doc" : "Sender(s) of the message",
+      "optional" : true
     } ]
-  }, {
+  }, "com.linkedin.restli.examples.greetings.api.Tone", {
     "type" : "record",
     "name" : "ToneFacet",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -38,6 +45,7 @@
     "path" : "/noNamespace",
     "schema" : "com.linkedin.restli.examples.greetings.api.Greeting",
     "doc" : "An REST endpoint without namespace\n\ngenerated from: com.linkedin.restli.examples.greetings.server.NoNamespaceResource",
+    "resourceClass" : "com.linkedin.restli.examples.greetings.server.NoNamespaceResource",
     "collection" : {
       "identifier" : {
         "name" : "noNamespaceId",
@@ -52,6 +60,7 @@
           "path" : "/noNamespace/{noNamespaceId}/noNamespace",
           "schema" : "com.linkedin.restli.examples.greetings.api.Greeting",
           "doc" : "A Subresource whose unqualified name is identical to its parent\n\n N.B. The only reason a namespace is specified on this resource is to avoid clashing when the\n client builders are generated.\n\ngenerated from: com.linkedin.restli.examples.greetings.server.IdenticallyNamedSubResource",
+          "resourceClass" : "com.linkedin.restli.examples.greetings.server.IdenticallyNamedSubResource",
           "collection" : {
             "identifier" : {
               "name" : "noNamespaceId",
@@ -67,6 +76,7 @@
           "path" : "/noNamespace/{noNamespaceId}/noNamespaceSub",
           "schema" : "com.linkedin.restli.examples.greetings.api.Greeting",
           "doc" : "A subresource of the REST endpoint without namespace\n\ngenerated from: com.linkedin.restli.examples.greetings.server.NoNamespaceSubResource",
+          "resourceClass" : "com.linkedin.restli.examples.greetings.server.NoNamespaceSubResource",
           "collection" : {
             "identifier" : {
               "name" : "noNamespaceSubId",
@@ -80,6 +90,7 @@
                 "path" : "/noNamespace/{noNamespaceId}/noNamespaceSub/{noNamespaceSubId}/subSub",
                 "schema" : "com.linkedin.restli.examples.greetings.api.ToneFacet",
                 "doc" : "generated from: com.linkedin.restli.examples.greetings.server.SubSubResource",
+                "resourceClass" : "com.linkedin.restli.examples.greetings.server.SubSubResource",
                 "collection" : {
                   "identifier" : {
                     "name" : "subSubId",

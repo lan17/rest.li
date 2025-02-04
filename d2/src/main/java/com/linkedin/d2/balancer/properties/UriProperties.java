@@ -16,6 +16,7 @@
 
 package com.linkedin.d2.balancer.properties;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.net.URI;
 import java.util.Collections;
 import java.util.HashMap;
@@ -23,6 +24,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+@JsonIgnoreProperties({ "version" })
 public class UriProperties
 {
   private final String                              _clusterName;
@@ -36,6 +38,8 @@ public class UriProperties
   // Properties specific to a particular machine in the cluster
   private final Map<URI, Map<String, Object>> _uriSpecificProperties;
 
+  private long _version;
+
   public UriProperties(String clusterName, Map<URI, Map<Integer, PartitionData>> partitionDescriptions)
   {
     this(clusterName, partitionDescriptions, Collections.<URI, Map<String, Object>>emptyMap());
@@ -45,24 +49,32 @@ public class UriProperties
                        Map<URI, Map<Integer, PartitionData>> partitionDescriptions,
                        Map<URI, Map<String, Object>> uriSpecificProperties)
   {
+    this(clusterName, partitionDescriptions, uriSpecificProperties, -1);
+  }
+
+  public UriProperties(String clusterName,
+      Map<URI, Map<Integer, PartitionData>> partitionDescriptions,
+      Map<URI, Map<String, Object>> uriSpecificProperties,
+      long version)
+  {
     _clusterName = clusterName;
-    Map<URI, Map<Integer, PartitionData>> partitionDescriptionsMap = new HashMap<URI, Map<Integer, PartitionData>>(partitionDescriptions.size() * 2);
+    _version = version;
+    Map<URI, Map<Integer, PartitionData>> partitionDescriptionsMap = new HashMap<>(partitionDescriptions.size() * 2);
     for (Map.Entry<URI, Map<Integer, PartitionData>> entry : partitionDescriptions.entrySet())
     {
-      partitionDescriptionsMap.put(entry.getKey(), Collections.unmodifiableMap(
-          new HashMap<Integer, PartitionData>(entry.getValue())));
+      partitionDescriptionsMap.put(entry.getKey(), Collections.unmodifiableMap(new HashMap<>(entry.getValue())));
     }
     _partitionDesc = Collections.unmodifiableMap(partitionDescriptionsMap);
 
     // group uris by scheme and partition
-    HashMap<String, Map<Integer, Set<URI>>> urisBySchemeAndPartition = new HashMap<String, Map<Integer, Set<URI>>>();
+    HashMap<String, Map<Integer, Set<URI>>> urisBySchemeAndPartition = new HashMap<>();
     for (Map.Entry<URI, Map<Integer, PartitionData>> entry : _partitionDesc.entrySet())
     {
       final URI uri = entry.getKey();
       Map<Integer, Set<URI>> map= urisBySchemeAndPartition.get(uri.getScheme());
       if (map == null)
       {
-        map = new HashMap<Integer, Set<URI>>();
+        map = new HashMap<>();
         urisBySchemeAndPartition.put(uri.getScheme(), map);
       }
 
@@ -72,7 +84,7 @@ public class UriProperties
         Set<URI> uriSet = map.get(partitionId);
         if (uriSet == null)
         {
-          uriSet = new HashSet<URI>();
+          uriSet = new HashSet<>();
           map.put(partitionId, uriSet);
         }
         uriSet.add(uri);
@@ -102,6 +114,16 @@ public class UriProperties
   public String getClusterName()
   {
     return _clusterName;
+  }
+
+  public void setVersion(long version)
+  {
+    _version = version;
+  }
+
+  public long getVersion()
+  {
+    return _version;
   }
 
   public Set<URI> Uris()
@@ -141,7 +163,8 @@ public class UriProperties
   public String toString()
   {
     return "UriProperties [_clusterName=" + _clusterName + ", _urisBySchemeAndPartition="
-        + _urisBySchemeAndPartition + "_partitions=" + _partitionDesc + ", _uriSpecificProperties=" + _uriSpecificProperties + "]";
+        + _urisBySchemeAndPartition + ", _partitions=" + _partitionDesc + ", _uriSpecificProperties="
+        + _uriSpecificProperties + "]";
   }
 
   @Override
@@ -196,9 +219,18 @@ public class UriProperties
         return false;
     }
     else if (!_uriSpecificProperties.equals(other._uriSpecificProperties))
-      return false;
+    {
+      // only two effectively empty uri specific properties maps are equal
+      return isEffectivelyEmpty(_uriSpecificProperties)
+          && isEffectivelyEmpty(other._uriSpecificProperties);
+    }
 
     return true;
   }
 
+  private static boolean isEffectivelyEmpty(Map<URI, Map<String, Object>> m)
+  {
+    // the map is empty OR all inner maps are actually empty
+    return m.isEmpty() || m.values().stream().allMatch(Map::isEmpty);
+  }
 }

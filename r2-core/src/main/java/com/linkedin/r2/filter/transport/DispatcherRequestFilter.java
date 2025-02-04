@@ -30,13 +30,14 @@ import com.linkedin.r2.message.stream.StreamResponse;
 import com.linkedin.r2.message.stream.entitystream.BaseConnector;
 import com.linkedin.r2.message.stream.entitystream.EntityStream;
 import com.linkedin.r2.message.stream.entitystream.EntityStreams;
+import com.linkedin.r2.message.timing.TimingContextUtil;
+import com.linkedin.r2.message.timing.FrameworkTimingKeys;
 import com.linkedin.r2.transport.common.bridge.common.TransportCallback;
-import com.linkedin.r2.transport.common.bridge.common.TransportResponse;
 import com.linkedin.r2.transport.common.bridge.server.TransportDispatcher;
-
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+
 
 /**
  * Filter implementation which sends requests to a {@link TransportDispatcher} for processing.
@@ -63,6 +64,7 @@ public class DispatcherRequestFilter implements StreamFilter, RestFilter
                             Map<String, String> wireAttrs,
                             NextFilter<RestRequest, RestResponse> nextFilter)
   {
+    markOnRequestTimings(requestContext);
     try
     {
       _dispatcher.handleRestRequest(req, wireAttrs, requestContext,
@@ -71,7 +73,7 @@ public class DispatcherRequestFilter implements StreamFilter, RestFilter
     }
     catch (Exception e)
     {
-      nextFilter.onError(e, requestContext, new HashMap<String, String>());
+      nextFilter.onError(e, requestContext, new HashMap<>());
     }
   }
 
@@ -79,11 +81,55 @@ public class DispatcherRequestFilter implements StreamFilter, RestFilter
       final RequestContext requestContext,
       final NextFilter<REQ, RES> nextFilter)
   {
-    return new TransportCallback<RES>()
-    {
-      @Override
-      public void onResponse(TransportResponse<RES> res)
+    return res -> {
+      markOnResponseTimings(requestContext);
+      final Map<String, String> wireAttrs = res.getWireAttributes();
+      if (res.hasError())
       {
+        nextFilter.onError(res.getError(), requestContext, wireAttrs);
+      }
+      else
+      {
+        nextFilter.onResponse(res.getResponse(), requestContext, wireAttrs);
+      }
+    };
+  }
+
+  @Override
+  public void onStreamRequest(StreamRequest req, RequestContext requestContext,
+                            Map<String, String> wireAttrs,
+                            NextFilter<StreamRequest, StreamResponse> nextFilter)
+  {
+    markOnRequestTimings(requestContext);
+    Connector connector = null;
+    try
+    {
+      final AtomicBoolean responded = new AtomicBoolean(false);
+      TransportCallback<StreamResponse> callback = createStreamCallback(requestContext, nextFilter, responded);
+      connector = new Connector(responded, nextFilter, requestContext, wireAttrs);
+      req.getEntityStream().setReader(connector);
+      EntityStream newStream = EntityStreams.newEntityStream(connector);
+      _dispatcher.handleStreamRequest(req.builder().build(newStream), wireAttrs, requestContext, callback);
+    }
+    catch (Exception e)
+    {
+      nextFilter.onError(e, requestContext, new HashMap<>());
+      if (connector != null)
+      {
+        connector.cancel();
+      }
+    }
+  }
+
+  private <REQ extends Request, RES extends Response> TransportCallback<RES> createStreamCallback(
+          final RequestContext requestContext,
+          final NextFilter<REQ, RES> nextFilter,
+          final AtomicBoolean responded)
+  {
+    return res -> {
+      if (responded.compareAndSet(false, true))
+      {
+        markOnResponseTimings(requestContext);
         final Map<String, String> wireAttrs = res.getWireAttributes();
         if (res.hasError())
         {
@@ -97,59 +143,23 @@ public class DispatcherRequestFilter implements StreamFilter, RestFilter
     };
   }
 
-  @Override
-  public void onStreamRequest(StreamRequest req, RequestContext requestContext,
-                            Map<String, String> wireAttrs,
-                            NextFilter<StreamRequest, StreamResponse> nextFilter)
+  private static void markOnRequestTimings(RequestContext requestContext)
   {
-    Connector connector = null;
-    try
-    {
-      final AtomicBoolean responded = new AtomicBoolean(false);
-      TransportCallback<StreamResponse> callback = createStreamCallback(requestContext, nextFilter, responded);
-      connector = new Connector(responded, nextFilter, requestContext, wireAttrs);
-      req.getEntityStream().setReader(connector);
-      EntityStream newStream = EntityStreams.newEntityStream(connector);
-      _dispatcher.handleStreamRequest(req.builder().build(newStream), wireAttrs, requestContext, callback);
-    }
-    catch (Exception e)
-    {
-      nextFilter.onError(e, requestContext, new HashMap<String, String>());
-      if (connector != null)
-      {
-        connector.cancel();
-      }
-    }
+    TimingContextUtil.endTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_R2_FILTER_CHAIN.key());
+    TimingContextUtil.endTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_R2.key());
+    TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_RESTLI.key());
   }
 
-  private <REQ extends Request, RES extends Response> TransportCallback<RES> createStreamCallback(
-          final RequestContext requestContext,
-          final NextFilter<REQ, RES> nextFilter,
-          final AtomicBoolean responded)
+  private static void markOnResponseTimings(RequestContext requestContext)
   {
-    return new TransportCallback<RES>()
-    {
-      @Override
-      public void onResponse(TransportResponse<RES> res)
-      {
-        if (responded.compareAndSet(false, true))
-        {
-          final Map<String, String> wireAttrs = res.getWireAttributes();
-          if (res.hasError())
-          {
-            nextFilter.onError(res.getError(), requestContext, wireAttrs);
-          }
-          else
-          {
-            nextFilter.onResponse(res.getResponse(), requestContext, wireAttrs);
-          }
-        }
-      }
-    };
+    TimingContextUtil.endTiming(requestContext, FrameworkTimingKeys.SERVER_RESPONSE_RESTLI.key());
+    TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.SERVER_RESPONSE_R2.key());
+    TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.SERVER_RESPONSE_R2_FILTER_CHAIN.key());
   }
 
   private static class Connector extends BaseConnector
   {
+
     private final AtomicBoolean _responded;
     private final NextFilter<StreamRequest, StreamResponse> _nextFilter;
     private final RequestContext _requestContext;

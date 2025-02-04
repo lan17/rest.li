@@ -34,7 +34,7 @@ public final class ArrayDataSchema extends ComplexDataSchema
    *
    * @param items is the {@link DataSchema} of items in the array.
    */
-  void setItems(DataSchema items)
+  public void setItems(DataSchema items)
   {
     if (items == null)
     {
@@ -55,6 +55,24 @@ public final class ArrayDataSchema extends ComplexDataSchema
   public DataSchema getItems()
   {
     return _items;
+  }
+
+  /**
+   * Sets if the items type is declared inline in the schema.
+   * @param itemsDeclaredInline true if the items type is declared inline, false if it is referenced by name.
+   */
+  public void setItemsDeclaredInline(boolean itemsDeclaredInline)
+  {
+    _itemsDeclaredInline = itemsDeclaredInline;
+  }
+
+  /**
+   * Checks if the item type is declared inline.
+   * @return true if the items type is declared inline, false if it is referenced by name.
+   */
+  public boolean isItemsDeclaredInline()
+  {
+    return _itemsDeclaredInline;
   }
 
   @Override
@@ -85,4 +103,5 @@ public final class ArrayDataSchema extends ComplexDataSchema
   }
 
   private DataSchema _items = DataSchemaConstants.NULL_DATA_SCHEMA;
+  private boolean _itemsDeclaredInline = false;
 }

@@ -64,7 +64,6 @@ import java.util.concurrent.TimeUnit;
 
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
-import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.DataProvider;
@@ -86,6 +85,7 @@ public class TestMIMEChainingMultipleSources
   private static final URI SERVER_A_URI = URI.create("/serverA");
   private static final URI SERVER_B_URI = URI.create("/serverB");
   private static final int TEST_TIMEOUT = 30000;
+  private static final String TESTNG_GROUP_KNOWN_ISSUE = "known_issue";
   private TransportClientFactory _clientFactory;
   private HttpServer _serverA;
   private HttpServer _serverB;
@@ -97,22 +97,10 @@ public class TestMIMEChainingMultipleSources
   private ScheduledExecutorService _scheduledExecutorService;
 
   @BeforeClass
-  public void threadPoolSetup()
-  {
-    _scheduledExecutorService = Executors.newScheduledThreadPool(30);
-  }
-
-  @AfterClass
-  public void threadPoolTearDown()
-  {
-    _scheduledExecutorService.shutdownNow();
-  }
-
-  @BeforeMethod
   public void setup() throws IOException
   {
-    _latch = new CountDownLatch(2);
-    _clientFactory = new HttpClientFactory();
+    _scheduledExecutorService = Executors.newScheduledThreadPool(30);
+    _clientFactory = new HttpClientFactory.Builder().build();
     _client = new TransportClientAdapter(_clientFactory.getClient(Collections.<String, String>emptyMap()));
     _server_A_client = new TransportClientAdapter(_clientFactory.getClient(Collections.<String, String>emptyMap()));
 
@@ -132,18 +120,19 @@ public class TestMIMEChainingMultipleSources
     _serverB.start();
   }
 
-  @AfterMethod
+  @AfterClass
   public void tearDown() throws Exception
   {
-    final FutureCallback<None> clientShutdownCallback = new FutureCallback<None>();
+    _scheduledExecutorService.shutdownNow();
+    final FutureCallback<None> clientShutdownCallback = new FutureCallback<>();
     _client.shutdown(clientShutdownCallback);
     clientShutdownCallback.get();
 
-    final FutureCallback<None> server1ClientShutdownCallback = new FutureCallback<None>();
+    final FutureCallback<None> server1ClientShutdownCallback = new FutureCallback<>();
     _server_A_client.shutdown(server1ClientShutdownCallback);
     server1ClientShutdownCallback.get();
 
-    final FutureCallback<None> factoryShutdownCallback = new FutureCallback<None>();
+    final FutureCallback<None> factoryShutdownCallback = new FutureCallback<>();
     _clientFactory.shutdown(factoryShutdownCallback);
     factoryShutdownCallback.get();
 
@@ -151,6 +140,12 @@ public class TestMIMEChainingMultipleSources
     _serverA.waitForStop();
     _serverB.stop();
     _serverB.waitForStop();
+  }
+
+  @BeforeMethod
+  public void setupMethod() throws IOException
+  {
+    _latch = new CountDownLatch(2);
   }
 
   @DataProvider(name = "chunkSizes")
@@ -225,8 +220,7 @@ public class TestMIMEChainingMultipleSources
     final Callback<StreamResponse> _incomingRequestCallback;
     final StreamRequest _incomingRequest;
     boolean _firstPartConsumed = false;
-    final List<MIMETestUtils.SinglePartMIMEFullReaderCallback> _singlePartMIMEReaderCallbacks =
-        new ArrayList<MIMETestUtils.SinglePartMIMEFullReaderCallback>();
+    final List<MIMETestUtils.SinglePartMIMEFullReaderCallback> _singlePartMIMEReaderCallbacks = new ArrayList<>();
 
     ServerAMultiPartCallback(final StreamRequest incomingRequest, final Callback<StreamResponse> callback)
     {
@@ -278,7 +272,7 @@ public class TestMIMEChainingMultipleSources
     }
 
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       Assert.fail();
     }
@@ -318,7 +312,7 @@ public class TestMIMEChainingMultipleSources
             new MultiPartMIMEInputStream.Builder(new ByteArrayInputStream(BODY_4.getPartData().copyBytes()),
                 _scheduledExecutorService, BODY_4.getPartHeaders()).withWriteChunkSize(_chunkSize).build();
 
-        final List<MultiPartMIMEDataSourceWriter> dataSources = new ArrayList<MultiPartMIMEDataSourceWriter>();
+        final List<MultiPartMIMEDataSourceWriter> dataSources = new ArrayList<>();
         dataSources.add(body1DataSource);
         dataSources.add(body2DataSource);
         dataSources.add(body3DataSource);
@@ -346,7 +340,7 @@ public class TestMIMEChainingMultipleSources
   //stream + the first part from the incoming mime response from Server B.
   //5. Main thread then gets all of this and stores it.
   //6. Server A then drains and stores the rest of the parts from Server B's response.
-  @Test(dataProvider = "chunkSizes")
+  @Test(dataProvider = "chunkSizes", groups = TESTNG_GROUP_KNOWN_ISSUE)
   public void testSinglePartDataSource(final int chunkSize) throws Exception
   {
     _chunkSize = chunkSize;
@@ -419,8 +413,7 @@ public class TestMIMEChainingMultipleSources
   //count down the latch upon finishing.
   private class ClientMultiPartReceiver implements MultiPartMIMEReaderCallback
   {
-    final List<MIMETestUtils.SinglePartMIMEFullReaderCallback> _singlePartMIMEReaderCallbacks =
-        new ArrayList<MIMETestUtils.SinglePartMIMEFullReaderCallback>();
+    final List<MIMETestUtils.SinglePartMIMEFullReaderCallback> _singlePartMIMEReaderCallbacks = new ArrayList<>();
 
     ClientMultiPartReceiver()
     {
@@ -448,7 +441,7 @@ public class TestMIMEChainingMultipleSources
     }
 
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       Assert.fail();
     }

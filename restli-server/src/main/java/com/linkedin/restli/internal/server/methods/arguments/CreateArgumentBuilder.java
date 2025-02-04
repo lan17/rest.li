@@ -14,19 +14,19 @@
    limitations under the License.
  */
 
-/**
- * $Id: $
- */
-
 package com.linkedin.restli.internal.server.methods.arguments;
 
-
+import com.linkedin.data.DataMap;
+import com.linkedin.data.template.DataTemplateUtil;
 import com.linkedin.data.template.RecordTemplate;
-import com.linkedin.r2.message.rest.RestRequest;
+import com.linkedin.restli.common.ResourceMethod;
 import com.linkedin.restli.internal.server.RoutingResult;
 import com.linkedin.restli.internal.server.util.ArgumentUtils;
 import com.linkedin.restli.server.RestLiRequestData;
 import com.linkedin.restli.server.RestLiRequestDataImpl;
+import com.linkedin.restli.server.util.UnstructuredDataUtil;
+
+import static com.linkedin.restli.internal.server.methods.arguments.ArgumentBuilder.checkEntityNotNull;
 
 
 /**
@@ -38,17 +38,28 @@ public class CreateArgumentBuilder implements RestLiArgumentBuilder
   @Override
   public Object[] buildArguments(RestLiRequestData requestData, RoutingResult routingResult)
   {
-    Object[] positionalArgs = { requestData.getEntity() };
+    Object[] positionalArgs = requestData.getEntity() != null ? new Object[]{requestData.getEntity()} : new Object[]{};
+
     return ArgumentBuilder.buildArgs(positionalArgs,
                                      routingResult.getResourceMethod(),
                                      routingResult.getContext(),
-                                     null);
+                                     null,
+                                     routingResult.getResourceMethodConfig());
   }
 
   @Override
-  public RestLiRequestData extractRequestData(RoutingResult routingResult, RestRequest request)
+  public RestLiRequestData extractRequestData(RoutingResult routingResult, DataMap dataMap)
   {
-    RecordTemplate inputEntity = ArgumentBuilder.extractEntity(request, ArgumentUtils.getValueClass(routingResult));
-    return new RestLiRequestDataImpl.Builder().entity(inputEntity).build();
+    // Unstructured data is not available in the Rest.Li filters
+    if (UnstructuredDataUtil.isUnstructuredDataRouting(routingResult))
+    {
+      return new RestLiRequestDataImpl.Builder().build();
+    }
+    else
+    {
+      checkEntityNotNull(dataMap, ResourceMethod.CREATE);
+      RecordTemplate inputEntity = DataTemplateUtil.wrap(dataMap, ArgumentUtils.getValueClass(routingResult));
+      return new RestLiRequestDataImpl.Builder().entity(inputEntity).build();
+    }
   }
 }

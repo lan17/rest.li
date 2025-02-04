@@ -46,36 +46,56 @@ import java.util.Map;
 
   private FilterChainImpl(List<RestFilter> restFilters, List<StreamFilter> streamFilters)
   {
-    _restFilters = Collections.unmodifiableList(new ArrayList<RestFilter>(restFilters));
-    _streamFilters = Collections.unmodifiableList(new ArrayList<StreamFilter>(streamFilters));
+    _restFilters = Collections.unmodifiableList(new ArrayList<>(restFilters));
+    _streamFilters = Collections.unmodifiableList(new ArrayList<>(streamFilters));
   }
 
   @Override
   public FilterChain addFirstRest(RestFilter filter)
   {
     notNull(filter, "filter");
-    return new FilterChainImpl(doAddFirst(_restFilters, filter), _streamFilters);
+    return new FilterChainImpl(doAddFirst(_restFilters, decorateRestFilter(filter)), _streamFilters);
   }
 
   @Override
   public FilterChain addLastRest(RestFilter filter)
   {
     notNull(filter, "filter");
-    return new FilterChainImpl(doAddLast(_restFilters, filter), _streamFilters);
+    return new FilterChainImpl(doAddLast(_restFilters, decorateRestFilter(filter)), _streamFilters);
   }
 
   @Override
   public FilterChain addFirst(StreamFilter filter)
   {
     notNull(filter, "filter");
-    return new FilterChainImpl(_restFilters, doAddFirst(_streamFilters, filter));
+    return new FilterChainImpl(_restFilters, doAddFirst(_streamFilters, decorateStreamFilter(filter)));
   }
 
   @Override
   public FilterChain addLast(StreamFilter filter)
   {
     notNull(filter, "filter");
-    return new FilterChainImpl(_restFilters, doAddLast(_streamFilters, filter));
+    return new FilterChainImpl(_restFilters, doAddLast(_streamFilters, decorateStreamFilter(filter)));
+  }
+
+  @Override
+  public List<RestFilter> getRestFilters() {
+    return new ArrayList<>(_restFilters);
+  }
+
+  @Override
+  public List<StreamFilter> getStreamFilters() {
+    return new ArrayList<>(_streamFilters);
+  }
+
+  private RestFilter decorateRestFilter(RestFilter filter)
+  {
+    return new TimedRestFilter(filter);
+  }
+
+  private StreamFilter decorateStreamFilter(StreamFilter filter)
+  {
+    return new TimedStreamFilter(filter);
   }
 
   @Override
@@ -131,7 +151,7 @@ import java.util.Map;
 
   private <T> List<T> doAddFirst(List<T> list, T obj)
   {
-    final List<T> newFilters = new ArrayList<T>(list.size() + 1);
+    final List<T> newFilters = new ArrayList<>(list.size() + 1);
     newFilters.add(obj);
     newFilters.addAll(list);
     return newFilters;
@@ -139,7 +159,7 @@ import java.util.Map;
 
   private <T> List<T> doAddLast(List<T> list, T obj)
   {
-    final List<T> newFilters = new ArrayList<T>(list.size() + 1);
+    final List<T> newFilters = new ArrayList<>(list.size() + 1);
     newFilters.addAll(list);
     newFilters.add(obj);
     return newFilters;

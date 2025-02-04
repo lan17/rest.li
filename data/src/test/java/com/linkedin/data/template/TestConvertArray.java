@@ -16,7 +16,6 @@
 
 package com.linkedin.data.template;
 
-
 import com.linkedin.data.ByteString;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
@@ -91,11 +90,11 @@ public class TestConvertArray
     Object result;
 
     result = convert("[[1.1], [2.2]]", DoubleArray[].class);
-    Assert.assertEquals(result, new DoubleArray[] { new DoubleArray(Arrays.asList(1.1D)), new DoubleArray(Arrays.asList(2.2D)) });
+    Assert.assertEquals(result, new DoubleArray[] { new DoubleArray(1.1D), new DoubleArray(2.2D) });
     Assert.assertSame(result.getClass(), DoubleArray[].class);
 
     result = convert("[[[1.1]], [[2.2]]]", DoubleArray[][].class);
-    Assert.assertEquals(result, new DoubleArray[][] { { new DoubleArray(Arrays.asList(1.1D)) }, { new DoubleArray(Arrays.asList(2.2D)) } });
+    Assert.assertEquals(result, new DoubleArray[][] { { new DoubleArray(1.1D) }, { new DoubleArray(2.2D) } });
     Assert.assertSame(result.getClass(), DoubleArray[][].class);
 
     result = convert("[[\"APPLE\"], [\"BANANA\"]]", TestArrayTemplate.EnumArrayTemplate[].class);
@@ -109,8 +108,8 @@ public class TestConvertArray
     Assert.assertSame(result.getClass(), TestFixedTemplate.Fixed5[].class);
 
     result = convert("[{\"A\": 3}, {\"B\": 4}]", IntegerMap[].class);
-    final Map<String, Integer> integerFixture1 = new HashMap<String, Integer>();
-    final Map<String, Integer> integerFixture2 = new HashMap<String, Integer>();
+    final Map<String, Integer> integerFixture1 = new HashMap<>();
+    final Map<String, Integer> integerFixture2 = new HashMap<>();
     integerFixture1.put("A", 3);
     integerFixture2.put("B", 4);
     Assert.assertEquals(result, new IntegerMap[] { new IntegerMap(integerFixture1), new IntegerMap(integerFixture2) });

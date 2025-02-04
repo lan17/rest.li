@@ -17,7 +17,6 @@
 package com.linkedin.restli.examples.greetings.server;
 
 
-import com.google.common.collect.ImmutableList;
 import com.linkedin.data.transform.filter.request.MaskOperation;
 import com.linkedin.data.transform.filter.request.MaskTree;
 import com.linkedin.restli.examples.greetings.api.Greeting;
@@ -35,6 +34,8 @@ import com.linkedin.restli.server.annotations.RestMethod;
 import com.linkedin.restli.server.resources.CollectionResourceTemplate;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 
@@ -68,7 +69,7 @@ public class CustomMetadataProjectionResource extends CollectionResourceTemplate
     GREETING_TWO.setId(15l);
     GREETING_TWO.setMessage("I really like you!");
 
-    LIST = new ArrayList<Greeting>();
+    LIST = new ArrayList<>();
     LIST.add(GREETING_ONE);
     LIST.add(GREETING_TWO);
 
@@ -88,7 +89,7 @@ public class CustomMetadataProjectionResource extends CollectionResourceTemplate
       final @MetadataProjectionParam MaskTree metadataProjection,
       final @PagingProjectionParam MaskTree pagingProjection)
   {
-    return new CollectionResult<Greeting, Greeting>(LIST, 2, CUSTOM_METADATA_GREETING);
+    return new CollectionResult<>(LIST, 2, CUSTOM_METADATA_GREETING);
   }
 
   /**
@@ -103,7 +104,7 @@ public class CustomMetadataProjectionResource extends CollectionResourceTemplate
       final @PagingProjectionParam MaskTree pagingProjection) throws CloneNotSupportedException
   {
     super.getContext().setMetadataProjectionMode(ProjectionMode.MANUAL);
-    return new CollectionResult<Greeting, Greeting>(LIST, 2, applyMetadataProjection(metadataProjection));
+    return new CollectionResult<>(LIST, 2, applyMetadataProjection(metadataProjection));
   }
 
   /**
@@ -118,7 +119,7 @@ public class CustomMetadataProjectionResource extends CollectionResourceTemplate
       final @PagingProjectionParam MaskTree pagingProjection) throws CloneNotSupportedException
   {
     super.getContext().setProjectionMode(ProjectionMode.MANUAL);
-    return new CollectionResult<Greeting, Greeting>(applyRootObjectProjection(rootObjectProjection),
+    return new CollectionResult<>(applyRootObjectProjection(rootObjectProjection),
         2, CUSTOM_METADATA_GREETING);
   }
 
@@ -135,7 +136,7 @@ public class CustomMetadataProjectionResource extends CollectionResourceTemplate
   {
     super.getContext().setMetadataProjectionMode(ProjectionMode.MANUAL);
     super.getContext().setProjectionMode(ProjectionMode.MANUAL);
-    return new CollectionResult<Greeting, Greeting>(applyRootObjectProjection(rootObjectProjection),
+    return new CollectionResult<>(applyRootObjectProjection(rootObjectProjection),
         2, applyMetadataProjection(metadataProjection));
   }
 
@@ -152,7 +153,7 @@ public class CustomMetadataProjectionResource extends CollectionResourceTemplate
       final @PagingProjectionParam MaskTree pagingProjection) throws CloneNotSupportedException
   {
     super.getContext().setMetadataProjectionMode(ProjectionMode.MANUAL);
-    return new CollectionResult<Greeting, Greeting>(LIST, 2, applyMetadataProjection(metadataProjection));
+    return new CollectionResult<>(LIST, 2, applyMetadataProjection(metadataProjection));
   }
 
   /**
@@ -167,7 +168,7 @@ public class CustomMetadataProjectionResource extends CollectionResourceTemplate
       final @MetadataProjectionParam MaskTree metadataProjection,
       final @PagingProjectionParam MaskTree pagingProjection)
   {
-    return new CollectionResult<Greeting, Greeting>(LIST, 2, null);
+    return new CollectionResult<>(LIST, 2, null);
   }
 
   private List<Greeting> applyRootObjectProjection(final MaskTree rootObjectProjection) throws CloneNotSupportedException
@@ -183,7 +184,7 @@ public class CustomMetadataProjectionResource extends CollectionResourceTemplate
       //However since we are testing to make sure that manual root object projection works as intended, we will
       //intentionally apply an incorrect projection by hand to verify restli doesn't interfere with it.
     }
-    return ImmutableList.of(clonedGreetingOne, clonedGreetingTwo);
+    return Collections.unmodifiableList(Arrays.asList(clonedGreetingOne, clonedGreetingTwo));
   }
 
   private Greeting applyMetadataProjection(final MaskTree metadataProjection) throws CloneNotSupportedException

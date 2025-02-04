@@ -59,7 +59,6 @@ public class MockBatchEntityResponseFactory
    * @param errorResponses the data that will be returned for a call to {@link com.linkedin.restli.client.response.BatchKVResponse#getErrors()}
    * @param <K>
    * @param <V>
-   * @return
    */
   public static <K extends CompoundKey, V extends RecordTemplate> BatchKVResponse<K, EntityResponse<V>> createWithCompoundKey(Class<K> keyClass,
                                                                                                                               Map<String, CompoundKey.TypeInfo> keyParts,
@@ -88,7 +87,6 @@ public class MockBatchEntityResponseFactory
    *                       NOTE: the params part of the {@link ComplexResourceKey} is removed in this map. A new
    *                       instance of the params class is created with no data in it.
    * @param <V>
-   * @return
    */
   @SuppressWarnings("rawtypes")
   public static <KK extends RecordTemplate, KP extends RecordTemplate, V extends RecordTemplate> BatchKVResponse<ComplexResourceKey<KK, KP>, EntityResponse<V>> createWithComplexKey(Class<V> valueClass,
@@ -104,12 +102,12 @@ public class MockBatchEntityResponseFactory
 
     @SuppressWarnings("unchecked")
     BatchKVResponse<ComplexResourceKey<KK, KP>, EntityResponse<V>> response =
-      (BatchKVResponse<ComplexResourceKey<KK, KP>, EntityResponse<V>>) (Object) new BatchEntityResponse<ComplexResourceKey, V>(batchResponseDataMap,
-                                                                                                                               new TypeSpec<ComplexResourceKey>(ComplexResourceKey.class),
-                                                                                                                               TypeSpec.forClassMaybeNull(valueClass),
-                                                                                                                               null,
-                                                                                                                               ComplexKeySpec.forClassesMaybeNull(keyKeyClass, keyParamsClass),
-                                                                                                                               version);
+      (BatchKVResponse<ComplexResourceKey<KK, KP>, EntityResponse<V>>) (Object) new BatchEntityResponse<>(batchResponseDataMap,
+          new TypeSpec<>(ComplexResourceKey.class),
+          TypeSpec.forClassMaybeNull(valueClass),
+          null,
+          ComplexKeySpec.forClassesMaybeNull(keyKeyClass, keyParamsClass),
+          version);
     return response;
   }
 
@@ -123,7 +121,6 @@ public class MockBatchEntityResponseFactory
    * @param errorResponses the data that will be returned for a call to {@link com.linkedin.restli.client.response.BatchKVResponse#getErrors()}
    * @param <K>
    * @param <V>
-   * @return
    */
   public static <K, V extends RecordTemplate> BatchKVResponse<K, EntityResponse<V>> createWithPrimitiveKey(Class<K> keyClass,
                                                                                            Class<V> valueClass,
@@ -148,7 +145,6 @@ public class MockBatchEntityResponseFactory
    * @param <K>
    * @param <TK>
    * @param <V>
-   * @return
    */
   @SuppressWarnings({"unchecked", "rawtypes"})
   public static <K, TK, V extends RecordTemplate> BatchKVResponse<K, EntityResponse<V>> createWithCustomTyperefKey(Class<K> keyClass,
@@ -175,43 +171,40 @@ public class MockBatchEntityResponseFactory
                                                                     Map<K, ErrorResponse> errorResponses,
                                                                     ProtocolVersion version)
   {
-    Set<K> mergedKeys = new HashSet<K>();
-    mergedKeys.addAll(recordTemplates.keySet());
-    mergedKeys.addAll(statuses.keySet());
-    mergedKeys.addAll(errorResponses.keySet());
-
     DataMap batchResponseDataMap = new DataMap();
-    DataMap rawBatchData = new DataMap();
-    for (K key : mergedKeys)
+    DataMap resultData = new DataMap();
+    for (K key : recordTemplates.keySet())
     {
-      DataMap entityResponseData = new DataMap();
+      String stringKey = URIParamUtils.encodeKeyForBody(key, false, version);
       RecordTemplate recordTemplate = recordTemplates.get(key);
       if (recordTemplate != null)
       {
-        entityResponseData.put(EntityResponse.ENTITY, recordTemplate.data());
+        resultData.put(stringKey, recordTemplate.data());
       }
+    }
+    DataMap statusData = new DataMap();
+    for(K key : statuses.keySet())
+    {
+      String stringKey = URIParamUtils.encodeKeyForBody(key, false, version);
       HttpStatus status = statuses.get(key);
       if (status != null)
       {
-        entityResponseData.put(EntityResponse.STATUS, status.getCode());
+        statusData.put(stringKey, status.getCode());
       }
+    }
+    DataMap errorData = new DataMap();
+    for(K key : errorResponses.keySet())
+    {
+      String stringKey = URIParamUtils.encodeKeyForBody(key, false, version);
       ErrorResponse errorResponse = errorResponses.get(key);
       if (errorResponse != null)
       {
-        entityResponseData.put(EntityResponse.ERROR, errorResponse.data());
+        errorData.put(stringKey, errorResponse.data());
       }
-
-      String stringKey = URIParamUtils.encodeKeyForBody(key, false, version);
-      rawBatchData.put(stringKey, entityResponseData);
     }
-    batchResponseDataMap.put(BatchResponse.RESULTS, rawBatchData);
-
-    DataMap rawErrorData = new DataMap();
-    for (Map.Entry<K, ErrorResponse> errorResponse : errorResponses.entrySet())
-    {
-      rawErrorData.put(URIParamUtils.encodeKeyForBody(errorResponse.getKey(), false, version), errorResponse.getValue().data());
-    }
-    batchResponseDataMap.put(BatchResponse.ERRORS, rawErrorData);
+    batchResponseDataMap.put(BatchResponse.RESULTS, resultData);
+    batchResponseDataMap.put(BatchResponse.STATUSES, statusData);
+    batchResponseDataMap.put(BatchResponse.ERRORS, errorData);
     return batchResponseDataMap;
   }
 
@@ -225,11 +218,11 @@ public class MockBatchEntityResponseFactory
   {
     DataMap batchResponseDataMap = buildDataMap(recordTemplates, statuses, errorResponses, version);
 
-    return new BatchEntityResponse<K, V>(batchResponseDataMap,
-                                         TypeSpec.forClassMaybeNull(keyClass),
-                                         TypeSpec.forClassMaybeNull(valueClass),
-                                         keyParts,
-                                         null,
-                                         version);
+    return new BatchEntityResponse<>(batchResponseDataMap,
+        TypeSpec.forClassMaybeNull(keyClass),
+        TypeSpec.forClassMaybeNull(valueClass),
+        keyParts,
+        null,
+        version);
   }
 }

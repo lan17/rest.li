@@ -10,7 +10,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * @auther Zhenkai Zhu
+ * @author Zhenkai Zhu
  */
 
 public class StreamClientRunnableFactory implements ClientRunnableFactory
@@ -33,7 +33,7 @@ public class StreamClientRunnableFactory implements ClientRunnableFactory
   @Override
   public void shutdown()
   {
-    final FutureCallback<None> callback = new FutureCallback<None>();
+    final FutureCallback<None> callback = new FutureCallback<>();
     _client.shutdown(callback);
 
     try

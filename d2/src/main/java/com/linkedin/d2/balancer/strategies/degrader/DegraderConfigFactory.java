@@ -51,6 +51,9 @@ public class DegraderConfigFactory
                                                   PropertyKeys.DEGRADER_LOG_ENABLED,
                                                   DegraderImpl.DEFAULT_LOG_ENABLED));
 
+      config.setLogThreshold(MapUtil.getWithDefault(properties, PropertyKeys.DEGRADER_LOG_THRESHOLD,
+          DegraderImpl.DEFAULT_LOG_THRESHOLD));
+
       if (properties.get(PropertyKeys.DEGRADER_LATENCY_TO_USE) != null)
       {
         try
@@ -114,6 +117,18 @@ public class DegraderConfigFactory
       config.setOverrideMinCallCount(MapUtil.getWithDefault(properties,
                                                             PropertyKeys.DEGRADER_OVERRIDE_MIN_CALL_COUNT,
                                                             DegraderImpl.DEFAULT_OVERRIDE_MIN_CALL_COUNT));
+
+      config.setInitialDropRate(MapUtil.getWithDefault(properties,
+                                                       PropertyKeys.DEGRADER_INITIAL_DROP_RATE,
+                                                       DegraderImpl.DEFAULT_INITIAL_DROP_RATE));
+
+      config.setSlowStartThreshold(MapUtil.getWithDefault(properties,
+                                                          PropertyKeys.DEGRADER_SLOW_START_THRESHOLD,
+                                                          DegraderImpl.DEFAULT_SLOW_START_THRESHOLD));
+
+      config.setPreemptiveRequestTimeoutRate(MapUtil.getWithDefault(properties,
+                                                                    PropertyKeys.DEGRADER_PREEMPTIVE_REQUEST_TIMEOUT_RATE,
+                                                                    DegraderImpl.DEFAULT_PREEMPTIVE_REQUEST_TIMEOUT_RATE));
     }
     return config;
   }

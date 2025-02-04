@@ -14,10 +14,6 @@
    limitations under the License.
 */
 
-/**
- * $Id: $
- */
-
 package com.linkedin.restli.server.annotations;
 
 import com.linkedin.data.template.TyperefInfo;

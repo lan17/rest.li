@@ -21,9 +21,12 @@ import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 
+import com.linkedin.d2.balancer.strategies.DelegatingRingFactory;
+import com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategyConfig;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -40,13 +43,13 @@ public class ConsistentHashRingTest
   @Test(groups = { "small", "back-end" })
   public void testZeroItems()
   {
-    Map<String, Integer> zero = new HashMap<String, Integer>();
-    ConsistentHashRing<String> test = new ConsistentHashRing<String>(zero);
+    Map<String, Integer> zero = new HashMap<>();
+    ConsistentHashRing<String> test = new ConsistentHashRing<>(zero);
 
     assertNull(test.get(0));
 
     zero.put("test", 0);
-    test = new ConsistentHashRing<String>(zero);
+    test = new ConsistentHashRing<>(zero);
 
     assertNull(test.get(100));
   }
@@ -54,16 +57,16 @@ public class ConsistentHashRingTest
   @Test(groups = { "small", "back-end" })
   public void testOneItem()
   {
-    Map<String, Integer> one = new HashMap<String, Integer>();
+    Map<String, Integer> one = new HashMap<>();
 
     one.put("test", 100);
 
-    ConsistentHashRing<String> test = new ConsistentHashRing<String>(one);
+    ConsistentHashRing<String> test = new ConsistentHashRing<>(one);
 
     // will generate ring:
     // [-2138377917, .., 2112547902]
     assertEquals(test.get(0), "test");
-    int[] ring = test.getRing();
+    List<ConsistentHashRing.Point<String>> points = test.getPoints();
 
     // test low
     assertEquals(test.get(-2138377918), "test");
@@ -78,17 +81,17 @@ public class ConsistentHashRingTest
     assertEquals(test.get(-2080272130), "test");
 
     // test ring is sorted
-    for (int i = 1; i < ring.length; ++i)
+    for (int i = 1; i < points.size(); ++i)
     {
-      assertTrue(ring[i - 1] < ring[i]);
+      assertTrue(points.get(i - 1).getHash() < points.get(i).getHash());
     }
   }
 
   @Test(groups = { "small", "back-end" })
   public void testManyItemsEqualWeight()
   {
-    Map<String, Integer> many = new HashMap<String, Integer>();
-    Map<String, AtomicInteger> counts = new HashMap<String, AtomicInteger>();
+    Map<String, Integer> many = new HashMap<>();
+    Map<String, AtomicInteger> counts = new HashMap<>();
 
     for (int i = 0; i < 100; ++i)
     {
@@ -96,29 +99,33 @@ public class ConsistentHashRingTest
       counts.put("test" + i, new AtomicInteger());
     }
 
-    ConsistentHashRing<String> test = new ConsistentHashRing<String>(many);
+    DelegatingRingFactory<String> ringFactory = new DelegatingRingFactory<>(new DegraderLoadBalancerStrategyConfig(1L));
+    ConsistentHashRing<String> test = (ConsistentHashRing<String>)ringFactory.createRing(many);
 
     assertNotNull(test.get(0));
 
     // verify that each test item has 10 points on the ring
-    Object[] objects = test.getObjects();
+    List<ConsistentHashRing.Point<String>> points = test.getPoints();
 
-    for (int i = 0; i < objects.length; ++i)
+    for (int i = 0; i < points.size(); ++i)
     {
-      counts.get(objects[i].toString()).incrementAndGet();
+      counts.get(points.get(i).getT()).incrementAndGet();
     }
 
     for (Entry<String, AtomicInteger> count : counts.entrySet())
     {
       assertEquals(count.getValue().get(), 10);
     }
+
+    double highLowDiff = test.getHighLowDiffOfAreaRing();
+    assertTrue(highLowDiff < 1.54, "Hash Ring area diff is greater than it should be, saw diff of: " + highLowDiff);
   }
 
   @Test(groups = { "small", "back-end" })
   public void testManyItemsUnequalWeight()
   {
-    Map<Integer, Integer> many = new HashMap<Integer, Integer>();
-    Map<Integer, AtomicInteger> counts = new HashMap<Integer, AtomicInteger>();
+    Map<Integer, Integer> many = new HashMap<>();
+    Map<Integer, AtomicInteger> counts = new HashMap<>();
 
     for (int i = 0; i < 100; ++i)
     {
@@ -126,16 +133,16 @@ public class ConsistentHashRingTest
       counts.put(i, new AtomicInteger());
     }
 
-    ConsistentHashRing<Integer> test = new ConsistentHashRing<Integer>(many);
+    ConsistentHashRing<Integer> test = new ConsistentHashRing<>(many);
 
     assertNotNull(test.get(0));
 
     // verify that each test item has proper points on the ring
-    Object[] objects = test.getObjects();
+    List<ConsistentHashRing.Point<Integer>> points = test.getPoints();
 
-    for (int i = 0; i < objects.length; ++i)
+    for (int i = 0; i < points.size(); ++i)
     {
-      counts.get(objects[i]).incrementAndGet();
+      counts.get(points.get(i).getT()).incrementAndGet();
     }
 
     for (Entry<Integer, AtomicInteger> count : counts.entrySet())
@@ -148,12 +155,12 @@ public class ConsistentHashRingTest
   public void test2ItemsWithOnePoint()
       throws URISyntaxException
   {
-    Map<URI, Integer> pointsMap = new HashMap<URI, Integer>();
+    Map<URI, Integer> pointsMap = new HashMap<>();
     URI uri1 = new URI("http://ext23.corp.linkedin.com:231/ajdi");
     URI uri2 = new URI("http://ext66.corp.linkedin.com:231/ajdi");
     pointsMap.put(uri1, 1);
     pointsMap.put(uri2, 1);
-    ConsistentHashRing<URI> test = new ConsistentHashRing<URI>(pointsMap);
+    ConsistentHashRing<URI> test = new ConsistentHashRing<>(pointsMap);
     //we will produce 2 points with value -590810423 for uri1 and 742698789 for uri2
     //test edge case
     URI lowEdgeUri = test.get(-600000000);

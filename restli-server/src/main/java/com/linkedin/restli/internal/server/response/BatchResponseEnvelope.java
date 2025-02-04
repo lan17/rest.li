@@ -19,12 +19,9 @@ package com.linkedin.restli.internal.server.response;
 
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.restli.common.HttpStatus;
-import com.linkedin.restli.internal.server.RestLiResponseEnvelope;
 import com.linkedin.restli.internal.server.ResponseType;
 import com.linkedin.restli.server.RestLiServiceException;
 
-import java.net.HttpCookie;
-import java.util.List;
 import java.util.Map;
 
 
@@ -32,49 +29,38 @@ import java.util.Map;
  * Response for {@link com.linkedin.restli.internal.server.ResponseType#BATCH_ENTITIES}.
  * Maps passed in setter and constructor for this class is kept by reference.
  *
- * The invariants of {@link com.linkedin.restli.internal.server.RestLiResponseEnvelope}
+ * The invariants of {@link RestLiResponseEnvelope}
  * is maintained, with the further condition that a map is available whenever
  * there are no top level exceptions.
  *
  * @author erli
  */
-public final class BatchResponseEnvelope extends RestLiResponseEnvelope
+public abstract class BatchResponseEnvelope extends RestLiResponseEnvelope
 {
   private Map<?, BatchResponseEntry> _batchResponseMap;
 
   /**
-   * Sets a batch response without triggered exception.
-   *  @param batchResponseMap map with entities of the response.
-   * @param headers of the response.
-   * @param cookies
+   * @param batchResponseMap map with entities of the response.
+   *
    */
-  public BatchResponseEnvelope(Map<?, BatchResponseEntry> batchResponseMap,
-                               Map<String, String> headers,
-                               List<HttpCookie> cookies)
+  BatchResponseEnvelope(HttpStatus status, Map<?, BatchResponseEntry> batchResponseMap)
   {
-    super(HttpStatus.S_200_OK, headers, cookies);
+    super(status);
     _batchResponseMap = batchResponseMap;
   }
 
-  /**
-   * Sets a failed top level batch response with exception indicate the entire response failed.
-   *  @param exception caused the failed response.
-   * @param headers of the response.
-   * @param cookies
-   */
-  public BatchResponseEnvelope(RestLiServiceException exception, Map<String, String> headers, List<HttpCookie> cookies)
+  BatchResponseEnvelope(RestLiServiceException exception)
   {
-    super(exception, headers, cookies);
-    _batchResponseMap = null;
+    super(exception);
   }
 
   /**
    * Sets a batch response without triggered exception.
    *
-   * @param httpStatus status of the response.
    * @param batchResponseMap map with entities of the response.
+   * @param httpStatus the HTTP status of the response.
    */
-  public void setBatchResponseMap(HttpStatus httpStatus, Map<?, BatchResponseEntry> batchResponseMap)
+  public void setBatchResponseMap(Map<?, BatchResponseEntry> batchResponseMap, HttpStatus httpStatus)
   {
     super.setStatus(httpStatus);
     _batchResponseMap = batchResponseMap;
@@ -91,18 +77,21 @@ public final class BatchResponseEnvelope extends RestLiResponseEnvelope
   }
 
   /**
-   * Sets a failed top level batch response with the given exception indicating the entire response failed.
-   *
-   * @param exception caused the failed response.
+   * Sets the data stored by this envelope to null.
    */
-  public void setException(RestLiServiceException exception)
+  @Override
+  protected void clearData()
   {
-    super.setException(exception);
     _batchResponseMap = null;
   }
 
+  /**
+   * Returns the {@link ResponseType}.
+   *
+   * @return {@link ResponseType}.
+   */
   @Override
-  public ResponseType getResponseType()
+  public final ResponseType getResponseType()
   {
     return ResponseType.BATCH_ENTITIES;
   }
@@ -124,7 +113,7 @@ public final class BatchResponseEnvelope extends RestLiResponseEnvelope
     // underlying data map will be preserved.
     // For BatchUpdate, it must be an instanceof UpdateStatus;
     // otherwise, the content will be overwritten upon building
-    // the PartialRestResponse. The instance of UpdateStatus
+    // the RestLiResponse. The instance of UpdateStatus
     // will not actually honor the status code or error response
     // fields since there are corresponding sources of truth in
     // this class, but any other items in the underlying data map
@@ -207,35 +196,5 @@ public final class BatchResponseEnvelope extends RestLiResponseEnvelope
     {
       return _restLiServiceException;
     }
-  }
-
-  @Override
-  public RecordResponseEnvelope getRecordResponseEnvelope()
-  {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public CollectionResponseEnvelope getCollectionResponseEnvelope()
-  {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public CreateCollectionResponseEnvelope getCreateCollectionResponseEnvelope()
-  {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public BatchResponseEnvelope getBatchResponseEnvelope()
-  {
-    return this;
-  }
-
-  @Override
-  public EmptyResponseEnvelope getEmptyResponseEnvelope()
-  {
-    throw new UnsupportedOperationException();
   }
 }

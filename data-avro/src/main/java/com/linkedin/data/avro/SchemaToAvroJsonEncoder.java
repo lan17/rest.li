@@ -22,8 +22,11 @@ import com.linkedin.data.DataMap;
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.DataSchemaConstants;
 import com.linkedin.data.schema.JsonBuilder;
+import com.linkedin.data.schema.Named;
+import com.linkedin.data.schema.NamedDataSchema;
 import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.schema.SchemaToJsonEncoder;
+import com.linkedin.data.schema.TyperefDataSchema;
 import com.linkedin.data.schema.UnionDataSchema;
 
 import java.io.IOException;
@@ -31,14 +34,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Formatter;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BinaryOperator;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import static com.linkedin.data.avro.SchemaTranslator.AVRO_PREFIX;
 import static com.linkedin.data.schema.DataSchemaConstants.DEFAULT_KEY;
 import static com.linkedin.data.schema.DataSchemaConstants.TYPE_KEY;
-
 
 /**
  * Serializes and outputs {@link DataSchema}s in
@@ -49,20 +54,23 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
   /**
    * Serialize a {@link DataSchema} to an Avro-compliant schema as a JSON encoded string.
    *
-   * @param schema is the {@link DataSchema} to build a JSON encoded output for.
-   * @param fieldDefaultValueProvider provides the default values for each of the fields.
+   * @param schema is the translated {@link DataSchema} to build a JSON encoded output for.
+   * @param originalSchema is the original {@link DataSchema} pre-translation. This is used to write the
+   *                       original schema to the Avro schema based on the embed schema mode.
+   * @param defaultValueOverrides provides the default values overrides (if any) for the fields.
    * @param options provides the {@link DataToAvroSchemaTranslationOptions}.
    * @return the Avro-compliant schema as JSON encoded string.
    */
   static String schemaToAvro(DataSchema schema,
-                             SchemaTranslator.FieldDefaultValueProvider fieldDefaultValueProvider,
+                             DataSchema originalSchema,
+                             Map<RecordDataSchema.Field, FieldOverride> defaultValueOverrides,
                              DataToAvroSchemaTranslationOptions options)
   {
     JsonBuilder builder = null;
     try
     {
       builder = new JsonBuilder(options.getPretty());
-      final SchemaToAvroJsonEncoder serializer = new SchemaToAvroJsonEncoder(builder, schema, fieldDefaultValueProvider, options);
+      final SchemaToAvroJsonEncoder serializer = new SchemaToAvroJsonEncoder(builder, schema, originalSchema, defaultValueOverrides, options);
       serializer.encode(schema);
       return builder.result();
     }
@@ -81,12 +89,14 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
 
   protected SchemaToAvroJsonEncoder(JsonBuilder builder,
                                     DataSchema rootSchema,
-                                    SchemaTranslator.FieldDefaultValueProvider fieldDefaultValueProvider,
+                                    DataSchema originalSchema,
+                                    Map<RecordDataSchema.Field, FieldOverride> defaultValueOverrides,
                                     DataToAvroSchemaTranslationOptions options)
   {
     super(builder);
     _rootSchema = rootSchema;
-    _fieldDefaultValueProvider = fieldDefaultValueProvider;
+    _originalSchema = originalSchema;
+    _defaultValueOverrides = defaultValueOverrides;
     _options = options;
   }
 
@@ -108,6 +118,25 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
     }
   }
 
+  /**
+   * Encode a {@link DataSchema}.
+   *
+   * Special handling is required for typeref's. All typeref's are
+   * de-referenced to the actual type.
+   *
+   * @param schema to encode.
+   * @throws IOException
+   */
+  @Override
+  protected void encode(DataSchema schema, boolean originallyInlined) throws IOException
+  {
+    if (encodeCustomAvroSchema(schema) == false)
+    {
+      super.encode(schema.getDereferencedDataSchema(), originallyInlined);
+    }
+  }
+
+
   @Override
   protected void encodeProperties(DataSchema schema) throws IOException
   {
@@ -116,7 +145,7 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
       DataSchema dereferencedSchema = _rootSchema.getDereferencedDataSchema();
       if (schema == dereferencedSchema && schema.getType() != DataSchema.Type.UNION)
       {
-        encodePropertiesWithEmbeddedSchema(schema);
+        encodePropertiesWithEmbeddedSchema(_originalSchema.getDereferencedDataSchema());
         return;
       }
     }
@@ -124,7 +153,11 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
   }
 
   private static final Set<String> RESERVED_DATA_PROPERTIES =
-    new HashSet<String>(Arrays.asList(SchemaTranslator.SCHEMA_PROPERTY, SchemaTranslator.OPTIONAL_DEFAULT_MODE_PROPERTY));
+    new HashSet<>(Arrays.asList(
+        SchemaTranslator.AVRO_PREFIX,
+        SchemaTranslator.SCHEMA_PROPERTY,
+        SchemaTranslator.OPTIONAL_DEFAULT_MODE_PROPERTY,
+        SchemaTranslator.TRANSLATED_UNION_MEMBER_PROPERTY));
 
   private void encodePropertiesWithEmbeddedSchema(DataSchema schema) throws IOException
   {
@@ -191,7 +224,6 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
   @Override
   protected void encodeFieldType(RecordDataSchema.Field field) throws IOException
   {
-    boolean optional = field.getOptional();
     DataSchema fieldSchema = field.getType();
     UnionDataSchema unionDataSchema =
       (fieldSchema.getDereferencedType() == DataSchema.Type.UNION ?
@@ -199,13 +231,22 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
         null);
     _builder.writeFieldName(TYPE_KEY);
 
-    if (optional == false && unionDataSchema == null)
+    Object defaultValue = field.getDefault();
+    boolean optional = field.getOptional() ||
+        //If chose to translate default to optional field AND ALSO has defaultValue
+        ((defaultValue !=null)
+            && _options.getDefaultFieldTranslationMode() == PegasusToAvroDefaultFieldTranslationMode.DO_NOT_TRANSLATE);
+    if (!optional && unionDataSchema == null)
     {
       encode(fieldSchema);
     }
     else
     {
-      // special handling for unions
+      // This branch handles
+      // optional fields,
+      // or default field needs to be translated as optional
+      // or union fields(includes special handling for unions (BOTH optional or default)
+
       // output will be an union if the field is optional or its type is a union
 
       // whether to add null to translated union,
@@ -216,36 +257,45 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
       // members of the union (excluding null introduced by optional)
       List<DataSchema> resultMemberTypes;
 
-      Object defaultValue = field.getDefault();
       if (optional)
       {
+        // handle optional field // or if want to translate "required field with default" to Optional field
+        boolean isTranslatedUnionMember = (Boolean.TRUE == field.getProperties().get(SchemaTranslator.TRANSLATED_UNION_MEMBER_PROPERTY));
         if (unionDataSchema == null)
         {
           addNullMemberType = true;
-          resultMemberTypes = new ArrayList<DataSchema>(1);
+          resultMemberTypes = new ArrayList<>(1);
           resultMemberTypes.add(fieldSchema);
           defaultValueSchema = (
-            defaultValue != null && _options.getOptionalDefaultMode() == OptionalDefaultMode.TRANSLATE_DEFAULT ?
-              fieldSchema :
-              DataSchemaConstants.NULL_DATA_SCHEMA);
+            defaultValue != null
+              && _options.getDefaultFieldTranslationMode() == PegasusToAvroDefaultFieldTranslationMode.TRANSLATE
+              && (isTranslatedUnionMember || _options.getOptionalDefaultMode() == OptionalDefaultMode.TRANSLATE_DEFAULT) ?
+                fieldSchema : DataSchemaConstants.NULL_DATA_SCHEMA);
         }
         else
         {
-          addNullMemberType = unionDataSchema.getType(DataSchemaConstants.NULL_TYPE) == null;
-          resultMemberTypes = unionDataSchema.getTypes();
+          addNullMemberType = unionDataSchema.getTypeByMemberKey(DataSchemaConstants.NULL_TYPE) == null;
+          resultMemberTypes = unionDataSchema.getMembers().stream()
+              .map(UnionDataSchema.Member::getType)
+              .collect(Collectors.toList());
           defaultValueSchema = (
-            defaultValue != null && _options.getOptionalDefaultMode() == OptionalDefaultMode.TRANSLATE_DEFAULT ?
-              unionValueDataSchema(unionDataSchema, defaultValue) :
-              DataSchemaConstants.NULL_DATA_SCHEMA);
+            defaultValue != null
+                && _options.getDefaultFieldTranslationMode() == PegasusToAvroDefaultFieldTranslationMode.TRANSLATE
+                && _options.getOptionalDefaultMode() == OptionalDefaultMode.TRANSLATE_DEFAULT ?
+                unionValueDataSchema(unionDataSchema, defaultValue) :
+                DataSchemaConstants.NULL_DATA_SCHEMA);
         }
-        assert(_options.getOptionalDefaultMode() != OptionalDefaultMode.TRANSLATE_TO_NULL ||
-               defaultValueSchema == DataSchemaConstants.NULL_DATA_SCHEMA);
+        assert((_options.getOptionalDefaultMode() != OptionalDefaultMode.TRANSLATE_TO_NULL) ||
+              (isTranslatedUnionMember || _options.getOptionalDefaultMode() == OptionalDefaultMode.TRANSLATE_DEFAULT) ||
+              (defaultValueSchema == DataSchemaConstants.NULL_DATA_SCHEMA));
       }
       else
       {
-        // must be union
+        // must be required union, AND didn't choose to be translated as optional
         addNullMemberType = false;
-        resultMemberTypes = unionDataSchema.getTypes();
+        resultMemberTypes = unionDataSchema.getMembers().stream()
+            .map(UnionDataSchema.Member::getType)
+            .collect(Collectors.toList());
         defaultValueSchema = unionValueDataSchema(unionDataSchema, defaultValue);
       }
 
@@ -254,7 +304,7 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
       _builder.writeStartArray();
       // this variable keeps track of whether null member type has been emitted
       boolean emittedNull = false;
-      // if field has a default, defaultValueSchema != null, always encode it 1st
+      // if field has a default, defaultValueSchema != null, always encode it 1st, this includes NULL_DATA_SCHEMA
       if (defaultValueSchema != null)
       {
         emittedNull |= (defaultValueSchema.getDereferencedType() == DataSchema.Type.NULL);
@@ -276,12 +326,12 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
         encode(type);
       }
       // emit null member type if it is has to be added and has not already been emitted
-      if (addNullMemberType && emittedNull == false)
+      if (addNullMemberType && !emittedNull)
       {
         _builder.writeString(DataSchemaConstants.NULL_TYPE);
         emittedNull = true;
       }
-      assert(addNullMemberType == false || emittedNull == true);
+      assert(!addNullMemberType || emittedNull);
       _builder.writeEndArray();
     }
   }
@@ -301,7 +351,7 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
     {
       DataMap dataMap = (DataMap) value;
       Map.Entry<String, ?> mapEntry = dataMap.entrySet().iterator().next();
-      schema = unionDataSchema.getTypeByName(mapEntry.getKey());
+      schema = unionDataSchema.getTypeByMemberKey(mapEntry.getKey());
       assert(schema != null);
     }
     return schema;
@@ -324,12 +374,16 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
   @Override
   protected void encodeFieldDefault(RecordDataSchema.Field field) throws IOException
   {
-    Object defaultValue = _fieldDefaultValueProvider.defaultValue(field);
+    FieldOverride defaultValueOverride = _defaultValueOverrides.get(field);
 
     // if field is optional, it must have a default value - either Data.NULL or translated value
-    assert(field.getOptional() == false || defaultValue != null);
-    if (defaultValue != null)
-    {
+    assert(!field.getOptional() || (defaultValueOverride != null && defaultValueOverride.getValue() != null));
+
+    boolean isTranslatedUnionMember = (Boolean.TRUE == field.getProperties().get(SchemaTranslator.TRANSLATED_UNION_MEMBER_PROPERTY));
+
+    Object defaultValue = (defaultValueOverride != null) ? defaultValueOverride.getValue() : null;
+
+    if (defaultValue != null || isTranslatedUnionMember) {
       _builder.writeFieldName(DEFAULT_KEY);
       _builder.writeData(defaultValue);
     }
@@ -345,6 +399,83 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
   protected void encodeFieldOptional(RecordDataSchema.Field field) throws IOException
   {
     // do nothing.
+  }
+
+  /**
+   * Override for RecordSchema field's properties encoding in Avro
+   *   (1) contains special handling for TypeRef property propagation and
+   *   (2) filtered out reserved data properties keyword
+   *
+   * @param field RecordDataSchema's field
+   * @throws IOException
+   */
+  @Override
+  protected void encodeFieldProperties(RecordDataSchema.Field field) throws IOException
+  {
+    final Map<String, ?> filteredMap = produceFieldProperties(field, _options);
+
+    _builder.writeProperties(filteredMap);
+  }
+
+  @SuppressWarnings("unchecked")
+  /* package private */
+  static Map<String, ?> produceFieldProperties(RecordDataSchema.Field field, DataToAvroSchemaTranslationOptions options)
+  {
+
+    Stream<Map.Entry<String, Object>> toBeFiltered = field.getProperties().entrySet().stream();
+
+    // If a record field's type is a TypeRef, will need to propagate TypeRef's properties to current record field
+    //   and merge with record field's properties.
+    if (field.getType().getType() == DataSchema.Type.TYPEREF)
+    {
+      toBeFiltered = Stream.concat(toBeFiltered,
+          ((TyperefDataSchema) field.getType()).getMergedTyperefProperties().entrySet().stream())
+          .filter(entry -> !options.getTyperefPropertiesExcludeSet().contains(entry.getKey()));
+    }
+    // Property merge rule:
+    // For property content inherited from TypeRef that appears to be have same property name as the record field:
+    //    if the two property contents are Map type, they will be merged at this level,
+    //    otherwise Typeref field property content will be overridden by record field property's content.
+    BinaryOperator<Object> propertyMergeLogic = (originalPropertyContent, inheritedPropertyContent) ->
+    {
+      if (originalPropertyContent instanceof Map && inheritedPropertyContent instanceof Map)
+      {
+        Map<String, Object> mergedMap = new DataMap((Map<String, Object>) originalPropertyContent);
+        ((Map<String, Object>) inheritedPropertyContent).forEach(mergedMap::putIfAbsent);
+        return mergedMap;
+      } else
+      {
+        return originalPropertyContent;
+      }
+    };
+
+    return toBeFiltered.filter(entry -> !RESERVED_DATA_PROPERTIES.contains(entry.getKey()))
+        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, propertyMergeLogic));
+  }
+
+  /**
+   * Encode namespace in the {@link Named}.
+   *
+   * This method encodes the namespace fields.
+   * If the override namespace option is true, the namespace will be prefixed with AVRO_PREFIX.
+   *
+   * @param schema provides the {@link NamedDataSchema}.
+   */
+  @Override
+  protected String encodeNamespace(Named schema)
+  {
+    String namespace = schema.getNamespace();
+    if (_options.isOverrideNamespace())
+    {
+      if (!namespace.isEmpty())
+      {
+        namespace = AVRO_PREFIX + "." + namespace;
+      }
+      else {
+        namespace = AVRO_PREFIX;
+      }
+    }
+    return namespace;
   }
 
   /**
@@ -389,7 +520,9 @@ class SchemaToAvroJsonEncoder extends SchemaToJsonEncoder
   }
 
   private final DataSchema _rootSchema;
-  private final SchemaTranslator.FieldDefaultValueProvider _fieldDefaultValueProvider;
+  private final DataSchema _originalSchema;
+  private final Map<RecordDataSchema.Field, FieldOverride> _defaultValueOverrides;
+
   private final DataToAvroSchemaTranslationOptions _options;
 
   private static final MyAvroOverrideFactory _avroOverrideFactory = new MyAvroOverrideFactory();

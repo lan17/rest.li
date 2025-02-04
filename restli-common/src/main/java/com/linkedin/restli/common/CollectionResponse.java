@@ -23,9 +23,9 @@ import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.data.schema.Name;
 import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.template.DataTemplateUtil;
+import com.linkedin.data.template.DynamicRecordArray;
 import com.linkedin.data.template.GetMode;
 import com.linkedin.data.template.RecordTemplate;
-import com.linkedin.data.template.WrappingArrayTemplate;
 
 import java.util.Arrays;
 import java.util.List;
@@ -52,16 +52,6 @@ public class CollectionResponse<T extends RecordTemplate> extends RecordTemplate
   private final RecordDataSchema.Field _arrayField;
   private final RecordDataSchema _schema;
   private static final Name _COLLECTION_RESPONSE_NAME = new Name(CollectionResponse.class.getSimpleName());
-
-
-  private static class DynamicRecordArray<R extends RecordTemplate> extends WrappingArrayTemplate<R>
-  {
-    @SuppressWarnings({"PublicConstructorInNonPublicClass"})
-    public DynamicRecordArray(DataList list, ArrayDataSchema arraySchema, Class<R> elementClass)
-    {
-      super(list, arraySchema, elementClass);
-    }
-  }
 
 
   /**
@@ -111,7 +101,7 @@ public class CollectionResponse<T extends RecordTemplate> extends RecordTemplate
   {
     DataList value = (DataList) data().get(ELEMENTS);
 
-    return new DynamicRecordArray<T>(value, _arraySchema, _elementClass);
+    return new DynamicRecordArray<>(value, _arraySchema, _elementClass);
   }
 
   public boolean hasPaging()

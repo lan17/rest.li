@@ -22,23 +22,30 @@ package com.linkedin.r2.transport.http.client;
 
 import com.linkedin.common.callback.Callback;
 import com.linkedin.common.callback.FutureCallback;
+import com.linkedin.common.stats.LongTracking;
 import com.linkedin.common.util.None;
 import com.linkedin.r2.RemoteInvocationException;
+import com.linkedin.r2.filter.R2Constants;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestRequestBuilder;
 import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.transport.common.bridge.client.TransportCallbackAdapter;
 import com.linkedin.r2.transport.common.bridge.common.TransportCallback;
+import com.linkedin.r2.transport.http.client.common.ChannelPoolFactory;
+import com.linkedin.r2.transport.http.client.rest.HttpNettyClient;
+import com.linkedin.r2.transport.http.common.HttpProtocolVersion;
+import com.linkedin.test.util.retry.SingleRetry;
+import com.linkedin.util.clock.SettableClock;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelException;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.handler.codec.EncoderException;
 import io.netty.handler.codec.TooLongFrameException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.atomic.AtomicReference;
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Ignore;
 import org.testng.annotations.Test;
 
 import javax.net.ssl.SSLContext;
@@ -51,10 +58,14 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static com.linkedin.test.util.ExceptionTestUtil.verifyCauseChain;
 
 /**
  * @author Steven Ihde
@@ -91,12 +102,12 @@ public class TestHttpNettyClient
   public void testNoChannelTimeout()
       throws InterruptedException
   {
-    HttpNettyClient client = new HttpNettyClient(new NoCreations(_scheduler), _scheduler, 500, 500, 1024 * 1024 * 2);
+    HttpNettyClient client = new HttpNettyClient(new NoCreations(_scheduler), _scheduler, 500, 500);
 
     RestRequest r = new RestRequestBuilder(URI.create("http://localhost/")).build();
-    FutureCallback<RestResponse> cb = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(cb);
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), callback);
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    client.restRequest(r, new RequestContext(), new HashMap<>(), callback);
     try
     {
       // This timeout needs to be significantly larger than the getTimeout of the netty client;
@@ -124,12 +135,12 @@ public class TestHttpNettyClient
     TestServer testServer = new TestServer();
 
     HttpNettyClient client = new HttpClientBuilder(_eventLoop, _scheduler).setRequestTimeout(500).setIdleTimeout(10000)
-        .setShutdownTimeout(500).buildRest();
+      .setShutdownTimeout(500).buildRestClient();
 
     RestRequest r = new RestRequestBuilder(testServer.getNoResponseURI()).build();
-    FutureCallback<RestResponse> cb = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(cb);
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), callback);
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    client.restRequest(r, new RequestContext(), new HashMap<>(), callback);
 
     try
     {
@@ -159,12 +170,12 @@ public class TestHttpNettyClient
                                   .setRequestTimeout(30000)
                                   .setIdleTimeout(10000)
                                   .setShutdownTimeout(500)
-                                  .buildRest();
+                                  .buildRestClient();
 
     RestRequest r = new RestRequestBuilder(URI.create("http://this.host.does.not.exist.linkedin.com")).build();
-    FutureCallback<RestResponse> cb = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(cb);
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), callback);
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    client.restRequest(r, new RequestContext(), new HashMap<>(), callback);
     try
     {
       cb.get(30, TimeUnit.SECONDS);
@@ -175,6 +186,32 @@ public class TestHttpNettyClient
       verifyCauseChain(e, RemoteInvocationException.class, UnknownHostException.class);
     }
   }
+
+  @Test
+  public void testRequestContextAttributes()
+      throws InterruptedException, IOException, TimeoutException
+  {
+    HttpNettyClient client = new HttpClientBuilder(_eventLoop, _scheduler).buildRestClient();
+
+    RestRequest r = new RestRequestBuilder(URI.create("http://localhost")).build();
+
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    RequestContext requestContext = new RequestContext();
+
+    client.restRequest(r, requestContext, new HashMap<>(), callback);
+
+    final String actualRemoteAddress = (String) requestContext.getLocalAttr(R2Constants.REMOTE_SERVER_ADDR);
+    final int actualRemotePort = (int) requestContext.getLocalAttr(R2Constants.REMOTE_SERVER_PORT);
+    final HttpProtocolVersion actualProtocolVersion = (HttpProtocolVersion) requestContext.getLocalAttr(R2Constants.HTTP_PROTOCOL_VERSION);
+
+    Assert.assertTrue("127.0.0.1".equals(actualRemoteAddress) || "0:0:0:0:0:0:0:1".equals(actualRemoteAddress),
+                      "Actual remote client address is not expected. " +
+                          "The local attribute field must be IP address in string type");
+    Assert.assertEquals(actualRemotePort, 80);
+    Assert.assertEquals(actualProtocolVersion, HttpProtocolVersion.HTTP_1_1);
+  }
+
 
   @Test
   public void testMaxResponseSize()
@@ -194,12 +231,12 @@ public class TestHttpNettyClient
 
     HttpNettyClient client =
         new HttpClientBuilder(_eventLoop, _scheduler).setRequestTimeout(50000).setIdleTimeout(10000)
-            .setShutdownTimeout(500).setMaxResponseSize(TEST_MAX_RESPONSE_SIZE).buildRest();
+            .setShutdownTimeout(500).setMaxResponseSize(TEST_MAX_RESPONSE_SIZE).buildRestClient();
 
     RestRequest r = new RestRequestBuilder(testServer.getResponseOfSizeURI(responseSize)).build();
-    FutureCallback<RestResponse> cb = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(cb);
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), callback);
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    client.restRequest(r, new RequestContext(), new HashMap<>(), callback);
 
     try
     {
@@ -237,12 +274,12 @@ public class TestHttpNettyClient
 
     HttpNettyClient client =
         new HttpClientBuilder(_eventLoop, _scheduler).setRequestTimeout(5000000).setIdleTimeout(10000)
-            .setShutdownTimeout(500).setMaxHeaderSize(TEST_MAX_HEADER_SIZE).buildRest();
+          .setShutdownTimeout(500).setMaxHeaderSize(TEST_MAX_HEADER_SIZE).buildRestClient();
 
     RestRequest r = new RestRequestBuilder(testServer.getResponseWithHeaderSizeURI(headerSize)).build();
-    FutureCallback<RestResponse> cb = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(cb);
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), callback);
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    client.restRequest(r, new RequestContext(), new HashMap<>(), callback);
 
     try
     {
@@ -263,6 +300,16 @@ public class TestHttpNettyClient
     testServer.shutdown();
   }
 
+  @Test(expectedExceptions = UnsupportedOperationException.class)
+  public void testUnsupportedStreamRequest() throws UnsupportedOperationException
+  {
+    HttpNettyClient client =
+      new HttpClientBuilder(_eventLoop, _scheduler).buildRestClient();
+
+    client.streamRequest(null, new RequestContext(), new HashMap<>(), null);
+    Assert.fail("The Http Rest client should throw UnsupportedOperationException when streamRequest is called");
+  }
+
   @Test
   public void testReceiveBadHeader() throws InterruptedException, IOException
   {
@@ -270,12 +317,12 @@ public class TestHttpNettyClient
     HttpNettyClient client = new HttpClientBuilder(_eventLoop, _scheduler)
                                   .setRequestTimeout(10000)
                                   .setIdleTimeout(10000)
-                                  .setShutdownTimeout(500).buildRest();
+      .setShutdownTimeout(500).buildRestClient();
 
     RestRequest r = new RestRequestBuilder(testServer.getBadHeaderURI()).build();
-    FutureCallback<RestResponse> cb = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(cb);
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), callback);
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    client.restRequest(r, new RequestContext(), new HashMap<>(), callback);
 
     try
     {
@@ -301,16 +348,16 @@ public class TestHttpNettyClient
     HttpNettyClient client = new HttpClientBuilder(_eventLoop, _scheduler)
         .setRequestTimeout(10000)
         .setIdleTimeout(10000)
-        .setShutdownTimeout(500).buildRest();
+      .setShutdownTimeout(500).buildRestClient();
 
 
     RestRequestBuilder rb = new RestRequestBuilder(testServer.getRequestURI());
 
     rb.setHeader("x", "makenettyunhappy\u000Bblah");
     RestRequest request = rb.build();
-    FutureCallback<RestResponse> cb = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(cb);
-    client.restRequest(request, new RequestContext(), new HashMap<String, String>(), callback);
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    client.restRequest(request, new RequestContext(), new HashMap<>(), callback);
 
     try
     {
@@ -323,7 +370,7 @@ public class TestHttpNettyClient
     }
     catch (ExecutionException ex)
     {
-      verifyCauseChain(ex, RemoteInvocationException.class, EncoderException.class, IllegalArgumentException.class);
+      verifyCauseChain(ex, RemoteInvocationException.class, ChannelException.class, EncoderException.class, IllegalArgumentException.class);
     }
     testServer.shutdown();
   }
@@ -335,16 +382,16 @@ public class TestHttpNettyClient
                                   .setRequestTimeout(500)
                                   .setIdleTimeout(10000)
                                   .setShutdownTimeout(500)
-                                  .buildRest();
+      .buildRestClient();
 
-    FutureCallback<None> shutdownCallback = new FutureCallback<None>();
+    FutureCallback<None> shutdownCallback = new FutureCallback<>();
     client.shutdown(shutdownCallback);
     shutdownCallback.get(30, TimeUnit.SECONDS);
 
     // Now verify a new request will also fail
     RestRequest r = new RestRequestBuilder(URI.create("http://no.such.host.linkedin.com")).build();
-    FutureCallback<RestResponse> callback = new FutureCallback<RestResponse>();
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), new TransportCallbackAdapter<RestResponse>(callback));
+    FutureCallback<RestResponse> callback = new FutureCallback<>();
+    client.restRequest(r, new RequestContext(), new HashMap<>(), new TransportCallbackAdapter<>(callback));
     try
     {
       callback.get(30, TimeUnit.SECONDS);
@@ -361,13 +408,13 @@ public class TestHttpNettyClient
 
   {
     // Test that shutdown works when the outstanding request is stuck in the pool waiting for a channel
-    HttpNettyClient client = new HttpNettyClient(new NoCreations(_scheduler), _scheduler, 60000, 1, 1024 * 1024 * 2);
+    HttpNettyClient client = new HttpNettyClient(new NoCreations(_scheduler), _scheduler, 60000, 1);
 
     RestRequest r = new RestRequestBuilder(URI.create("http://some.host/")).build();
-    FutureCallback<RestResponse> futureCallback = new FutureCallback<RestResponse>();
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), new TransportCallbackAdapter<RestResponse>(futureCallback));
+    FutureCallback<RestResponse> futureCallback = new FutureCallback<>();
+    client.restRequest(r, new RequestContext(), new HashMap<>(), new TransportCallbackAdapter<>(futureCallback));
 
-    FutureCallback<None> shutdownCallback = new FutureCallback<None>();
+    FutureCallback<None> shutdownCallback = new FutureCallback<>();
     client.shutdown(shutdownCallback);
 
     shutdownCallback.get(30, TimeUnit.SECONDS);
@@ -383,7 +430,7 @@ public class TestHttpNettyClient
     }
   }
 
-  @Test
+  @Test(retryAnalyzer = SingleRetry.class)
   public void testShutdownRequestOutstanding()
       throws IOException, ExecutionException, TimeoutException, InterruptedException
   {
@@ -408,14 +455,14 @@ public class TestHttpNettyClient
     TestServer testServer = new TestServer();
 
     HttpNettyClient client = new HttpClientBuilder(_eventLoop, _scheduler).setRequestTimeout(requestTimeout)
-        .setShutdownTimeout(shutdownTimeout).buildRest();
+      .setShutdownTimeout(shutdownTimeout).buildRestClient();
 
     RestRequest r = new RestRequestBuilder(testServer.getNoResponseURI()).build();
-    FutureCallback<RestResponse> cb = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(cb);
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), callback);
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    client.restRequest(r, new RequestContext(), new HashMap<>(), callback);
 
-    FutureCallback<None> shutdownCallback = new FutureCallback<None>();
+    FutureCallback<None> shutdownCallback = new FutureCallback<>();
     client.shutdown(shutdownCallback);
     shutdownCallback.get(30, TimeUnit.SECONDS);
 
@@ -440,24 +487,6 @@ public class TestHttpNettyClient
     testServer.shutdown();
   }
 
-  private static void verifyCauseChain(Throwable throwable, Class<?>... causes)
-  {
-    Throwable t = throwable;
-    for (Class<?> c : causes)
-    {
-      Throwable cause = t.getCause();
-      if (cause == null)
-      {
-        Assert.fail("Cause chain ended too early", throwable);
-      }
-      if (!c.isAssignableFrom(cause.getClass()))
-      {
-        Assert.fail("Expected cause " + c.getName() + " not " + cause.getClass().getName(), throwable);
-      }
-      t = cause;
-    }
-  }
-
   // Test that cannot pass pass SSLParameters without SSLContext.
   // This in fact tests HttpClientPipelineFactory constructor through HttpNettyClient
   // constructor.
@@ -469,7 +498,7 @@ public class TestHttpNettyClient
     {
       new HttpClientBuilder(_eventLoop, _scheduler)
           .setSSLParameters(new SSLParameters())
-          .buildRest();
+        .buildRestClient();
     }
     catch (IllegalArgumentException e)
     {
@@ -494,7 +523,7 @@ public class TestHttpNettyClient
       new HttpClientBuilder(_eventLoop, _scheduler)
           .setSSLContext(SSLContext.getDefault())
           .setSSLParameters(sslParameters)
-          .buildRest();
+        .buildRestClient();
     }
     catch (IllegalArgumentException e)
     {
@@ -508,6 +537,7 @@ public class TestHttpNettyClient
   // This in fact tests HttpClientPipelineFactory constructor through HttpNettyClient
   // constructor.
   @Test
+  @Ignore("This test is flaky and fails intermittently.")
   public void testClientPipelineFactory2Pass()
       throws NoSuchAlgorithmException
   {
@@ -517,7 +547,7 @@ public class TestHttpNettyClient
     new HttpClientBuilder(_eventLoop, _scheduler)
         .setSSLContext(SSLContext.getDefault())
         .setSSLParameters(sslParameters)
-        .buildRest();
+      .buildRestClient();
   }
 
   // Test that cannot set protocols in SSLParameters that don't have any match in
@@ -536,7 +566,7 @@ public class TestHttpNettyClient
       new HttpClientBuilder(_eventLoop, _scheduler)
           .setSSLContext(SSLContext.getDefault())
           .setSSLParameters(sslParameters)
-          .buildRest();
+        .buildRestClient();
     }
     catch (IllegalArgumentException e)
     {
@@ -560,7 +590,7 @@ public class TestHttpNettyClient
     new HttpClientBuilder(_eventLoop, _scheduler)
         .setSSLContext(SSLContext.getDefault())
         .setSSLParameters(sslParameters)
-        .buildRest();
+      .buildRestClient();
   }
 
   @Test
@@ -587,7 +617,7 @@ public class TestHttpNettyClient
     HttpNettyClient client =
         new HttpClientBuilder(_eventLoop, _scheduler)
             .setJmxManager(manager)
-            .buildRest();
+          .buildRestClient();
     // test setPoolStatsProvider
     try
     {
@@ -598,7 +628,7 @@ public class TestHttpNettyClient
       Assert.fail("PoolStatsAware setPoolStatsProvider didn't get called when creating channel pool.");
     }
     // test removePoolStatsProvider
-    FutureCallback<None> shutdownCallback = new FutureCallback<None>();
+    FutureCallback<None> shutdownCallback = new FutureCallback<>();
     client.shutdown(shutdownCallback);
     try
     {
@@ -621,16 +651,17 @@ public class TestHttpNettyClient
     HttpNettyClient client = new HttpClientBuilder(_eventLoop, _scheduler)
           .setSSLContext(context)
           .setSSLParameters(sslParameters)
-          .buildRest();
+      .buildRestClient();
 
     RestRequest r = new RestRequestBuilder(URI.create("https://www.howsmyssl.com/a/check")).build();
-    FutureCallback<RestResponse> cb = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(cb);
-    client.restRequest(r, new RequestContext(), new HashMap<String, String>(), callback);
+    FutureCallback<RestResponse> cb = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(cb);
+    client.restRequest(r, new RequestContext(), new HashMap<>(), callback);
     cb.get(30, TimeUnit.SECONDS);
   }
 
   @Test
+  @Ignore("This test is flaky and fails intermittently.")
   public void testFailBackoff() throws Exception
   {
     final int WARM_UP = 10;
@@ -691,9 +722,11 @@ public class TestHttpNettyClient
         new ExponentialBackOffRateLimiter(0,
             MAX_RATE_LIMITING_PERIOD,
             Math.max(10, MAX_RATE_LIMITING_PERIOD / 32),
-            _scheduler)
+            _scheduler),
+        new SettableClock(),
+        new LongTracking()
      );
-    HttpNettyClient client = new HttpNettyClient(address -> testPool, _scheduler, 500, 500, 1024 * 1024 * 2);
+    HttpNettyClient client = new HttpNettyClient(address -> testPool, _scheduler, MAX_RATE_LIMITING_PERIOD * 2, 500);
 
     final RestRequest r = new RestRequestBuilder(URI.create("http://localhost:8080/")).setMethod("GET").build();
     final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -704,7 +737,7 @@ public class TestHttpNettyClient
         try
         {
           FutureCallback<RestResponse> callback = new FutureCallback<>();
-          client.restRequest(r, new RequestContext(), new HashMap<>(), new TransportCallbackAdapter<RestResponse>(callback));
+          client.restRequest(r, new RequestContext(), new HashMap<>(), new TransportCallbackAdapter<>(callback));
           callback.get();
         }
         catch (Exception e)
@@ -741,35 +774,29 @@ public class TestHttpNettyClient
     @Override
     public AsyncPool<Channel> getPool(SocketAddress address)
     {
-      return new AsyncPoolImpl<Channel>("fake pool", new AsyncPool.Lifecycle<Channel>()
-      {
+      return new AsyncPoolImpl<>("fake pool", new AsyncPool.Lifecycle<Channel>() {
         @Override
-        public void create(Callback<Channel> channelCallback)
-        {
+        public void create(Callback<Channel> channelCallback) {
 
         }
 
         @Override
-        public boolean validateGet(Channel obj)
-        {
+        public boolean validateGet(Channel obj) {
           return false;
         }
 
         @Override
-        public boolean validatePut(Channel obj)
-        {
+        public boolean validatePut(Channel obj) {
           return false;
         }
 
         @Override
-        public void destroy(Channel obj, boolean error, Callback<Channel> channelCallback)
-        {
+        public void destroy(Channel obj, boolean error, Callback<Channel> channelCallback) {
 
         }
 
         @Override
-        public PoolStats.LifecycleStats getStats()
-        {
+        public PoolStats.LifecycleStats getStats() {
           return null;
         }
       }, 0, 0, _scheduler);

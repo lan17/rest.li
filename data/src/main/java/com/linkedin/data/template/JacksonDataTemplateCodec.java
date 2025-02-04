@@ -60,10 +60,10 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
   /**
    * Serialize the provided {@link java.lang.Object} to JSON and, if order is set to true, sort and order the output
    * using {@link com.linkedin.data.template.JacksonDataTemplateCodec.SchemaOrderTraverseCallback} with the specified
-   * {@link com.linkedin.data.schema.DataSchema}. The output is then written using the provided
-   * {@link com.fasterxml.jackson.core.JsonGenerator}. The most typical use case of this method is to
    * feed a {@link com.linkedin.data.template.DataTemplate} into a {@link com.fasterxml.jackson.core.JsonGenerator}.
    *
+   * {@link com.linkedin.data.schema.DataSchema}. The output is then written using the provided
+   * {@link com.fasterxml.jackson.core.JsonGenerator}. The most typical use case of this method is to
    * <p><i>Note</i> that the provided {@link com.fasterxml.jackson.core.JsonGenerator} will NOT close its underlying output,
    * whether its a {@link java.io.Writer} or an {@link java.io.OutputStream}, after the completion of this
    * method.
@@ -82,7 +82,7 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
   {
     if (order)
     {
-      JsonTraverseCallback callback = new SchemaOrderTraverseCallback(schema, generator);
+      JacksonTraverseCallback callback = new SchemaOrderTraverseCallback(schema, generator);
       Data.traverse(data, callback);
     }
     else
@@ -136,7 +136,7 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
   {
     if (order)
     {
-      JsonTraverseCallback callback = new SchemaOrderTraverseCallback(schema, generator);
+      JacksonTraverseCallback callback = new SchemaOrderTraverseCallback(schema, generator);
       Data.traverse(data, callback);
       generator.flush();
       generator.close();
@@ -273,7 +273,7 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
   {
     if (order)
     {
-      ByteArrayOutputStream out = new ByteArrayOutputStream(_defaultBufferSize);
+      ByteArrayOutputStream out = new ByteArrayOutputStream(DEFAULT_BUFFER_SIZE);
       writeDataTemplate(template, out, order);
       return out.toByteArray();
     }
@@ -297,7 +297,7 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
   {
     if (order)
     {
-      StringWriter out = new StringWriter(_defaultBufferSize);
+      StringWriter out = new StringWriter(DEFAULT_BUFFER_SIZE);
       writeDataTemplate(template, out, order);
       return out.toString();
     }
@@ -338,7 +338,7 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
    * order the fields are defined by the {@link RecordDataSchema} and
    * output each map sorted by the map's keys.
    */
-  public static class SchemaOrderTraverseCallback extends JsonTraverseCallback
+  public static class SchemaOrderTraverseCallback extends JacksonTraverseCallback
   {
     /**
      * Constructor.
@@ -469,7 +469,7 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
             break;
           case UNION:
             UnionDataSchema unionSchema = (UnionDataSchema) _currentSchema;
-            newSchema = unionSchema.getType(key);
+            newSchema = unionSchema.getTypeByMemberKey(key);
             break;
           case MAP:
             MapDataSchema mapSchema = (MapDataSchema) _currentSchema;
@@ -528,7 +528,7 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
 
     private static List<Map.Entry<String,Object>> orderMapEntries(RecordDataSchema schema, DataMap map)
     {
-      List<Map.Entry<String,Object>> output = new ArrayList<Map.Entry<String,Object>>(map.size());
+      List<Map.Entry<String,Object>> output = new ArrayList<>(map.size());
       List<RecordDataSchema.Field> fields = schema.getFields();
       // collect fields in the record schema in the order the fields are declared
       for (RecordDataSchema.Field field : fields)
@@ -537,11 +537,11 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
         Object found = map.get(fieldName);
         if (found != null)
         {
-          output.add(new AbstractMap.SimpleImmutableEntry<String,Object>(fieldName, found));
+          output.add(new AbstractMap.SimpleImmutableEntry<>(fieldName, found));
         }
       }
       // collect fields that are in the DataMap that is not in the record schema.
-      List<Map.Entry<String,Object>> uncollected = new ArrayList<Map.Entry<String,Object>>(map.size() - output.size());
+      List<Map.Entry<String,Object>> uncollected = new ArrayList<>(map.size() - output.size());
       for (Map.Entry<String,Object> e : map.entrySet())
       {
         if (schema.contains(e.getKey()) == false)
@@ -581,6 +581,6 @@ public class JacksonDataTemplateCodec extends JacksonDataCodec
 
     private DataSchema _currentSchema;
     private DataSchema _pendingSchema;
-    private final List<DataSchema> _schemaStack = new ArrayList<DataSchema>();  // use ArrayList because elements may be null
+    private final List<DataSchema> _schemaStack = new ArrayList<>();  // use ArrayList because elements may be null
   }
 }

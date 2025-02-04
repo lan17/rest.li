@@ -54,6 +54,7 @@ import java.util.concurrent.Future;
  */
 public abstract class AbstractClient implements Client
 {
+  public static final String HTTP_HEAD_METHOD = "HEAD";
 
   @Override
   public Future<RestResponse> restRequest(RestRequest request)
@@ -64,7 +65,7 @@ public abstract class AbstractClient implements Client
   @Override
   public Future<RestResponse> restRequest(RestRequest request, RequestContext requestContext)
   {
-    final FutureCallback<RestResponse> future = new FutureCallback<RestResponse>();
+    final FutureCallback<RestResponse> future = new FutureCallback<>();
     restRequest(request, requestContext, future);
     return future;
   }
@@ -85,19 +86,18 @@ public abstract class AbstractClient implements Client
   public void restRequest(RestRequest request, RequestContext requestContext, Callback<RestResponse> callback)
   {
     StreamRequest streamRequest = Messages.toStreamRequest(request);
-    //make a copy of the caller's RequestContext to make sure we don't modify the caller's copy of request context because
-    // they may reuse it (although that's not the contract of RequestContext).
-    RequestContext newRequestContext = new RequestContext(requestContext);
     // IS_FULL_REQUEST flag, if set true, would result in the request being sent without using chunked transfer encoding
     // This is needed as the legacy R2 server (before 2.8.0) does not support chunked transfer encoding.
-    newRequestContext.putLocalAttr(R2Constants.IS_FULL_REQUEST, true);
+    requestContext.putLocalAttr(R2Constants.IS_FULL_REQUEST, true);
+
+    boolean addContentLengthHeader = !HTTP_HEAD_METHOD.equalsIgnoreCase(request.getMethod());
     // here we add back the content-length header for the response because some client code depends on this header
-    streamRequest(streamRequest, newRequestContext, Messages.toStreamCallback(callback, true));
+    streamRequest(streamRequest, requestContext, Messages.toStreamCallback(callback, addContentLengthHeader));
   }
 
   @Override
-  public Map<String, Object> getMetadata(URI uri)
+  public void getMetadata(URI uri, Callback<Map<String, Object>> callback)
   {
-    return Collections.emptyMap();
+    callback.onSuccess(Collections.emptyMap());
   }
 }

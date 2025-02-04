@@ -16,6 +16,11 @@
 
 package com.linkedin.data.schema;
 
+import com.linkedin.data.DataMap;
+import java.util.HashMap;
+import java.util.Map;
+
+
 /**
  * {@link DataSchema} for typeref.
  *
@@ -29,6 +34,7 @@ package com.linkedin.data.schema;
 public class TyperefDataSchema extends NamedDataSchema
 {
   private DataSchema _referencedType = DataSchemaConstants.NULL_DATA_SCHEMA;
+  private boolean _refDeclaredInline = false;
 
   public TyperefDataSchema(Name name)
   {
@@ -54,13 +60,31 @@ public class TyperefDataSchema extends NamedDataSchema
   }
 
   /**
-   * Get the referenced type.
-   *
-   * @return the referenced type.
+   * This method returns the underlying _referencedType for {@link TyperefDataSchema}
+   * Note this method could still return {@link TyperefDataSchema} while {@link #getDereferencedDataSchema()} would not
+   * @return the referenced DataSchema
    */
   public DataSchema getRef()
   {
     return _referencedType;
+  }
+
+  /**
+   * Sets if the ref type is declared inline in the schema.
+   * @param refDeclaredInline true if the ref type is declared inline, false if it is referenced by name.
+   */
+  public void setRefDeclaredInline(boolean refDeclaredInline)
+  {
+    _refDeclaredInline = refDeclaredInline;
+  }
+
+  /**
+   * Checks if the ref type is declared inline.
+   * @return true if the ref type is declared inline, false if it is referenced by name.
+   */
+  public boolean isRefDeclaredInline()
+  {
+    return _refDeclaredInline;
   }
 
   @Override
@@ -73,6 +97,33 @@ public class TyperefDataSchema extends NamedDataSchema
   public DataSchema getDereferencedDataSchema()
   {
     return _referencedType.getDereferencedDataSchema();
+  }
+
+  /**
+   * Would merge properties of current {@link TyperefDataSchema} with its referenced DataSchema
+   * If referenced DataSchema is also a {@link TyperefDataSchema}, then it would merge recursively
+   * @return a map of properties which merged properties recursively, up to current {@link TyperefDataSchema}
+   */
+  public Map<String, Object> getMergedTyperefProperties()
+  {
+    Map<String, Object> propertiesToBeMerged = null;
+    if (getRef().getType() == Type.TYPEREF)
+    {
+      propertiesToBeMerged = ((TyperefDataSchema) getRef()).getMergedTyperefProperties();
+    }
+    else if (getRef().isPrimitive())
+    {
+      propertiesToBeMerged = getRef().getProperties();
+    }
+    else
+    {
+      propertiesToBeMerged = new HashMap<>();
+    }
+    Map<String, Object> mergedMap = new DataMap(getProperties());
+    // Merge rule for same name property conflicts:
+    //   Outer layer TypeRef's properties would override de-referenced DataSchema's properties.
+    propertiesToBeMerged.forEach(mergedMap::putIfAbsent);
+    return mergedMap;
   }
 
   @Override

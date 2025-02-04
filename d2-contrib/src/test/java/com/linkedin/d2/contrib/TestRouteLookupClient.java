@@ -21,7 +21,6 @@
 package com.linkedin.d2.contrib;
 
 import com.linkedin.common.callback.FutureCallback;
-import com.linkedin.common.util.None;
 import com.linkedin.d2.balancer.D2Client;
 import com.linkedin.d2.balancer.D2ClientBuilder;
 import com.linkedin.r2.message.rest.RestRequest;
@@ -49,14 +48,14 @@ public class TestRouteLookupClient
   {
     RouteLookup routeLookup = new SimpleTestRouteLookup();
 
-    FutureCallback<String> futureCallback = new FutureCallback<String>();
+    FutureCallback<String> futureCallback = new FutureCallback<>();
     String serviceName = "BarBar";
     routeLookup.run(serviceName, null, "1",futureCallback);
 
     String resultString = futureCallback.get();
     Assert.assertEquals(resultString, serviceName + "1" + "Foo");
 
-    futureCallback = new FutureCallback<String>();
+    futureCallback = new FutureCallback<>();
     routeLookup.run(serviceName, "blah", "2",futureCallback);
     resultString = futureCallback.get();
     Assert.assertEquals(resultString, serviceName + "blah" + "2" + "Foo");
@@ -67,8 +66,8 @@ public class TestRouteLookupClient
   {
     RouteLookup routeLookup = new SimpleTestRouteLookup();
 
-    final D2Client d2Client = new D2ClientBuilder().build();
-    d2Client.start(new FutureCallback<None>());
+    final D2Client d2Client = new D2ClientBuilder().setZkHosts("localhost:2121").build();
+    d2Client.start(new FutureCallback<>());
     RouteLookupClient routeLookupClient = new RouteLookupClient(d2Client, routeLookup, "WestCoast");
     RestRequest dummyRestRequest = new RestRequestBuilder(URI.create("d2://simple_uri")).build();
     Future<RestResponse> future = routeLookupClient.restRequest(dummyRestRequest, "5436");
@@ -96,11 +95,11 @@ public class TestRouteLookupClient
   {
     RouteLookup routeLookup = new SimpleTestRouteLookup();
 
-    final D2Client d2Client = new D2ClientBuilder().build();
-    d2Client.start(new FutureCallback<None>());
+    final D2Client d2Client = new D2ClientBuilder().setZkHosts("localhost:2121").build();
+    d2Client.start(new FutureCallback<>());
     RouteLookupClient routeLookupClient = new RouteLookupClient(d2Client, routeLookup, "WestCoast");
     RestRequest dummyRestRequest = new RestRequestBuilder(URI.create("d2://simple_uri")).build();
-    FutureCallback<RestResponse> futureCallback = new FutureCallback<RestResponse>();
+    FutureCallback<RestResponse> futureCallback = new FutureCallback<>();
     routeLookupClient.restRequest(dummyRestRequest,futureCallback, "5555");
 
     try
@@ -123,8 +122,8 @@ public class TestRouteLookupClient
   {
     RouteLookup routeLookup = new SimpleTestRouteLookup();
 
-    final D2Client d2Client = new D2ClientBuilder().build();
-    d2Client.start(new FutureCallback<None>());
+    final D2Client d2Client = new D2ClientBuilder().setZkHosts("localhost:2121").build();
+    d2Client.start(new FutureCallback<>());
     RouteLookupClient routeLookupClient = new RouteLookupClient(d2Client, routeLookup, "WestCoast");
     RestRequest dummyRestRequest = new RestRequestBuilder(URI.create("http://simple_uri")).build();
     try

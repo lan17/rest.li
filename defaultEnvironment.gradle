@@ -1,6 +1,9 @@
 subprojects {
   repositories {
     mavenCentral()
+    maven {
+      url "https://linkedin.jfrog.io/artifactory/open-source"
+    }
   }
 
   project.buildDir = new File(project.rootProject.buildDir, project.name)

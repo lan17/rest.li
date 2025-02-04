@@ -26,9 +26,12 @@ import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.restli.common.CollectionRequest;
 import com.linkedin.restli.common.ResourceSpec;
 import com.linkedin.restli.common.TypeSpec;
+import com.linkedin.restli.common.attachments.RestLiAttachmentDataSourceWriter;
+import com.linkedin.restli.common.attachments.RestLiDataSourceIterator;
 import com.linkedin.restli.internal.client.BatchCreateDecoder;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -41,8 +44,9 @@ import java.util.Map;
 public class BatchCreateRequestBuilder<K, V extends RecordTemplate> extends
     RestfulRequestBuilder<K, V, BatchCreateRequest<V>>
 {
-  private final List<V> _entities = new ArrayList<V>();
+  private final List<V> _entities = new ArrayList<>();
   private final Class<V> _valueClass;
+  private List<Object> _streamingAttachments; //We initialize only when we need to.
 
   public BatchCreateRequestBuilder(String baseUriTemplate,
                                    Class<V> valueClass,
@@ -62,6 +66,28 @@ public class BatchCreateRequestBuilder<K, V extends RecordTemplate> extends
   public BatchCreateRequestBuilder<K, V> inputs(List<V> entities)
   {
     _entities.addAll(entities);
+    return this;
+  }
+
+  public BatchCreateRequestBuilder<K, V> appendSingleAttachment(final RestLiAttachmentDataSourceWriter streamingAttachment)
+  {
+    if (_streamingAttachments == null)
+    {
+      _streamingAttachments = new ArrayList<>();
+    }
+
+    _streamingAttachments.add(streamingAttachment);
+    return this;
+  }
+
+  public BatchCreateRequestBuilder<K, V> appendMultipleAttachments(final RestLiDataSourceIterator dataSourceIterator)
+  {
+    if (_streamingAttachments == null)
+    {
+      _streamingAttachments = new ArrayList<>();
+    }
+
+    _streamingAttachments.add(dataSourceIterator);
     return this;
   }
 
@@ -125,20 +151,21 @@ public class BatchCreateRequestBuilder<K, V extends RecordTemplate> extends
   public BatchCreateRequest<V> build()
   {
     @SuppressWarnings("unchecked")
-    BatchCreateDecoder<K> decoder = new BatchCreateDecoder<K>((TypeSpec<K>)_resourceSpec.getKeyType(),
-                                                              _resourceSpec.getKeyParts(),
-                                                              _resourceSpec.getComplexKeyType());
+    BatchCreateDecoder<K> decoder = new BatchCreateDecoder<>((TypeSpec<K>) _resourceSpec.getKeyType(),
+        _resourceSpec.getKeyParts(),
+        _resourceSpec.getComplexKeyType());
 
-    return new BatchCreateRequest<V>(buildReadOnlyHeaders(),
-                                     buildReadOnlyCookies(),
-                                     decoder,
-                                     buildReadOnlyInput(),
-                                     _resourceSpec,
-                                     buildReadOnlyQueryParameters(),
-                                     getQueryParamClasses(),
-                                     getBaseUriTemplate(),
-                                     buildReadOnlyPathKeys(),
-                                     getRequestOptions());
+    return new BatchCreateRequest<>(buildReadOnlyHeaders(),
+        buildReadOnlyCookies(),
+        decoder,
+        buildReadOnlyInput(),
+        _resourceSpec,
+        buildReadOnlyQueryParameters(),
+        getQueryParamClasses(),
+        getBaseUriTemplate(),
+        buildReadOnlyPathKeys(),
+        getRequestOptions(),
+        _streamingAttachments == null ? null : Collections.unmodifiableList(_streamingAttachments));
   }
 
   private CollectionRequest<V> buildReadOnlyInput()
@@ -146,7 +173,7 @@ public class BatchCreateRequestBuilder<K, V extends RecordTemplate> extends
     try
     {
       DataMap map = new DataMap();
-      CollectionRequest<V> input = new CollectionRequest<V>(map, _valueClass);
+      CollectionRequest<V> input = new CollectionRequest<>(map, _valueClass);
 
       for (V entity : _entities)
       {

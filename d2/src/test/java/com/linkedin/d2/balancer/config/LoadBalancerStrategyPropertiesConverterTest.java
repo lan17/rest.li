@@ -16,16 +16,20 @@
 
 package com.linkedin.d2.balancer.config;
 
+import com.linkedin.d2.ConsistentHashAlgorithmEnum;
 import com.linkedin.d2.D2LoadBalancerStrategyProperties;
 import com.linkedin.d2.balancer.properties.PropertyKeys;
+import com.linkedin.d2.balancer.strategies.DelegatingRingFactory;
 import com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategyV3;
 import com.linkedin.d2.balancer.util.hashing.URIRegexHash;
 import com.linkedin.d2.hashConfigType;
 import com.linkedin.d2.hashMethodEnum;
+import com.linkedin.d2.quarantineInfo;
 import com.linkedin.data.template.StringArray;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.stream.Collectors;
+
 import org.testng.Assert;
 import org.testng.annotations.Test;
 
@@ -50,11 +54,25 @@ public class LoadBalancerStrategyPropertiesConverterTest
     final Integer minCallCountLowWaterMark = 1500;
     final hashMethodEnum hashMethod = hashMethodEnum.URI_REGEX;
     final hashConfigType hashConfig = new hashConfigType();
-    final StringArray regexes = new StringArray();
-    regexes.add("+231{w+)");
-    hashConfig.setUriRegexes(regexes);
-    Map<String, Object> loadBalancerStrategyProperties = new HashMap<>();
+    final StringArray regexes = new StringArray("+231{w+)");
+    final Double hashringPointCleanupRate = 0.2;
+    final ConsistentHashAlgorithmEnum consistentHashAlgorithm = ConsistentHashAlgorithmEnum.MULTI_PROBE;
+    final Integer numProbes = 1024;
+    final Integer numPointsPerHost = 1;
+    final Double quarantineMaxPercent = 0.2;
+    final String quarantineMethod = "OPTIONS:/test/path";
+    final quarantineInfo quarantineInfo = new quarantineInfo()
+        .setQuarantineMaxPercent(quarantineMaxPercent)
+        .setQuarantineMethod(quarantineMethod);
+    final String errorStatusRegex = "(5..)";
+    final Integer lowEmittingInterval = 10;
+    final Integer highEmittingInterval = 60;
 
+    hashConfig.setUriRegexes(regexes);
+    hashConfig.setWarnOnNoMatch(false);
+    hashConfig.setFailOnNoMatch(true);
+
+    Map<String, Object> loadBalancerStrategyProperties = new HashMap<>();
     loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_GLOBAL_STEP_DOWN, globalStepDown.toString());
     loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_GLOBAL_STEP_UP, globalStepUp.toString());
     loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_INITIAL_RECOVERY_LEVEL, recoveryLevel.toString());
@@ -66,9 +84,21 @@ public class LoadBalancerStrategyPropertiesConverterTest
     loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_CLUSTER_MIN_CALL_COUNT_HIGH_WATER_MARK, minCallCountHighWaterMark.toString());
     loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK, minCallCountLowWaterMark.toString());
     loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_HASH_METHOD, DegraderLoadBalancerStrategyV3.HASH_METHOD_URI_REGEX);
+    loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_HASHRING_POINT_CLEANUP_RATE, hashringPointCleanupRate.toString());
+    loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM, DelegatingRingFactory.MULTI_PROBE_CONSISTENT_HASH);
+    loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_NUM_PROBES, numProbes.toString());
+    loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_POINTS_PER_HOST, numPointsPerHost.toString());
+
     Map<String, Object> hashConfigMap = new HashMap<>();
-    hashConfigMap.put(URIRegexHash.KEY_REGEXES, regexes.stream().collect(Collectors.toList()));
+    hashConfigMap.put(URIRegexHash.KEY_REGEXES, new ArrayList<>(regexes));
+    hashConfigMap.put(URIRegexHash.KEY_WARN_ON_NO_MATCH, "false");
+    hashConfigMap.put(URIRegexHash.KEY_FAIL_ON_NO_MATCH, "true");
     loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_HASH_CONFIG, hashConfigMap);
+    loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_QUARANTINE_MAX_PERCENT, quarantineMaxPercent.toString());
+    loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_QUARANTINE_METHOD, quarantineMethod);
+    loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_ERROR_STATUS_REGEX, errorStatusRegex);
+    loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_LOW_EVENT_EMITTING_INTERVAL, lowEmittingInterval.toString());
+    loadBalancerStrategyProperties.put(PropertyKeys.HTTP_LB_HIGH_EVENT_EMITTING_INTERVAL, highEmittingInterval.toString());
 
     D2LoadBalancerStrategyProperties d2LoadBalancerStrategyProperties =
         new D2LoadBalancerStrategyProperties()
@@ -83,10 +113,17 @@ public class LoadBalancerStrategyPropertiesConverterTest
             .setMinCallCountHighWaterMark(minCallCountHighWaterMark)
             .setMinCallCountLowWaterMark(minCallCountLowWaterMark)
             .setHashMethod(hashMethod)
-            .setHashConfig(hashConfig);
+            .setHashConfig(hashConfig)
+            .setHashRingPointCleanupRate(hashringPointCleanupRate)
+            .setConsistentHashAlgorithm(consistentHashAlgorithm)
+            .setNumberOfProbes(numProbes)
+            .setNumberOfPointsPerHost(numPointsPerHost)
+            .setQuarantineCfg(quarantineInfo)
+            .setErrorStatusRegex(errorStatusRegex)
+            .setLowEmittingInterval(lowEmittingInterval)
+            .setHighEmittingInterval(highEmittingInterval);
 
-
-    Assert.assertEquals(LoadBalancerStrategyPropertiesConverter.toProperties(d2LoadBalancerStrategyProperties), loadBalancerStrategyProperties);
     Assert.assertEquals(LoadBalancerStrategyPropertiesConverter.toConfig(loadBalancerStrategyProperties), d2LoadBalancerStrategyProperties);
+    Assert.assertEquals(LoadBalancerStrategyPropertiesConverter.toProperties(d2LoadBalancerStrategyProperties), loadBalancerStrategyProperties);
   }
 }

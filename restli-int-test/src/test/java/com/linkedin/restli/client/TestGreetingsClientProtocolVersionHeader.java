@@ -61,7 +61,7 @@ import org.testng.annotations.Test;
  */
 public class TestGreetingsClientProtocolVersionHeader extends RestLiIntegrationTest
 {
-  private static final TransportClientFactory CLIENT_FACTORY = new HttpClientFactory();
+  private static final TransportClientFactory CLIENT_FACTORY = new HttpClientFactory.Builder().build();
   private static final String URI_PREFIX = "http://localhost:1338/";
 
   private static final PropertyProviderClient BASELINE_PROVIDER =
@@ -84,8 +84,8 @@ public class TestGreetingsClientProtocolVersionHeader extends RestLiIntegrationT
 
   private static class PropertyProviderClient extends AbstractClient
   {
-    private final Map<String, Object> __metadata;
-    private final Client __client;
+    private final Map<String, Object> _metadata;
+    private final Client _client;
 
     public PropertyProviderClient()
     {
@@ -94,30 +94,30 @@ public class TestGreetingsClientProtocolVersionHeader extends RestLiIntegrationT
 
     public PropertyProviderClient(String restliProtocolVersion)
     {
-      __metadata = new HashMap<String, Object>();
+      _metadata = new HashMap<>();
       if (restliProtocolVersion != null)
       {
-        __metadata.put(RestConstants.RESTLI_PROTOCOL_VERSION_PROPERTY, restliProtocolVersion);
+        _metadata.put(RestConstants.RESTLI_PROTOCOL_VERSION_PROPERTY, restliProtocolVersion);
       }
-      __client = new TransportClientAdapter(CLIENT_FACTORY.getClient(Collections.<String, String>emptyMap()));
+      _client = new TransportClientAdapter(CLIENT_FACTORY.getClient(Collections.<String, String>emptyMap()));
     }
 
     @Override
     public void restRequest(RestRequest request, RequestContext requestContext, Callback<RestResponse> callback)
     {
-      __client.restRequest(request, requestContext, callback);
+      _client.restRequest(request, requestContext, callback);
     }
 
     @Override
     public void shutdown(Callback<None> callback)
     {
-      __client.shutdown(callback);
+      _client.shutdown(callback);
     }
 
     @Override
-    public Map<String, Object> getMetadata(URI uri)
+    public void getMetadata(URI uri, Callback<Map<String, Object>> callback)
     {
-      return __metadata;
+      callback.onSuccess(_metadata);
     }
   }
 
@@ -202,7 +202,7 @@ public class TestGreetingsClientProtocolVersionHeader extends RestLiIntegrationT
       Assert.assertEquals(response.getHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION),
                           AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion().toString());
 
-      final DataMap exceptionDetail = DataMapUtils.readMap(response.getEntity().asInputStream());
+      final DataMap exceptionDetail = DataMapUtils.readMap(response.getEntity().asInputStream(), response.getHeaders());
       Assert.assertEquals(exceptionDetail.getString("exceptionClass"), RestLiServiceException.class.getName());
     }
   }

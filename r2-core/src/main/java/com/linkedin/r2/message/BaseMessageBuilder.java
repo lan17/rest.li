@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 
 
 /**
@@ -40,9 +41,11 @@ public abstract class BaseMessageBuilder<B extends BaseMessageBuilder<B>>
 {
   private static final String CANONICAL_REGEX = "[ \t\n\r]+";
 
+  private static final Pattern CANONICAL_PATTERN = Pattern.compile(CANONICAL_REGEX);
+
   private static final String CANONICAL_REPLACEMENT = " ";
 
-  private Map<String, String> _headers;
+  private TreeMap<String, String> _headers;
 
   private List<String> _cookies;
 
@@ -107,7 +110,7 @@ public abstract class BaseMessageBuilder<B extends BaseMessageBuilder<B>>
   @Override
   public B setCookies(List<String> cookies)
   {
-    _cookies = new ArrayList<String>(cookies);
+    _cookies = new ArrayList<>(cookies);
     return thisBuilder();
   }
 
@@ -115,6 +118,14 @@ public abstract class BaseMessageBuilder<B extends BaseMessageBuilder<B>>
   public B clearHeaders()
   {
     _headers.clear();
+    return thisBuilder();
+  }
+
+  @Override
+  public B removeHeader(String name)
+  {
+    validateFieldName(name);
+    _headers.remove(name);
     return thisBuilder();
   }
 
@@ -128,7 +139,7 @@ public abstract class BaseMessageBuilder<B extends BaseMessageBuilder<B>>
   @Override
   public Map<String, String> getHeaders()
   {
-    return Collections.unmodifiableMap(_headers);
+    return Collections.unmodifiableSortedMap(_headers);
   }
 
   @Override
@@ -205,7 +216,7 @@ public abstract class BaseMessageBuilder<B extends BaseMessageBuilder<B>>
    */
   public B unsafeSetHeaders(Map<String, String> headers)
   {
-    _headers = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+    _headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     return unsafeOverwriteHeaders(headers);
   }
 
@@ -293,14 +304,14 @@ public abstract class BaseMessageBuilder<B extends BaseMessageBuilder<B>>
   protected Map<String, String> getCanonicalHeaders()
   {
     final Map<String, String> orig = getHeaders();
-    final Map<String, String> headers = new HashMap<String, String>(orig.size());
+    final Map<String, String> headers = new HashMap<>(orig.size());
     for (Map.Entry<String, String> entry : orig.entrySet())
     {
       final String key = entry.getKey().toLowerCase();
 
       // Note: we don't handle null list elements because we don't know if the header is a list
       // or not.
-      final String value = entry.getValue().trim().replaceAll(CANONICAL_REGEX, CANONICAL_REPLACEMENT);
+      final String value = CANONICAL_PATTERN.matcher(entry.getValue().trim()).replaceAll(CANONICAL_REPLACEMENT);
       headers.put(key, value);
     }
 
@@ -310,10 +321,10 @@ public abstract class BaseMessageBuilder<B extends BaseMessageBuilder<B>>
   protected List<String> getCanonicalCookies()
   {
     final List<String> orig = getCookies();
-    final List<String> cookies = new ArrayList<String>(orig.size());
+    final List<String> cookies = new ArrayList<>(orig.size());
     for (String entry : orig)
     {
-      final String value = entry.trim().replaceAll(CANONICAL_REGEX, CANONICAL_REPLACEMENT);
+      final String value = CANONICAL_PATTERN.matcher(entry.trim()).replaceAll(CANONICAL_REPLACEMENT);
       cookies.add(value);
     }
 

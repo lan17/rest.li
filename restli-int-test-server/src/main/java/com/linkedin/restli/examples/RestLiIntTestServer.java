@@ -38,8 +38,7 @@ import com.linkedin.restli.server.DelegatingTransportDispatcher;
 import com.linkedin.restli.server.ParseqTraceDebugRequestHandler;
 import com.linkedin.restli.server.RestLiConfig;
 import com.linkedin.restli.server.RestLiServer;
-import com.linkedin.restli.server.filter.RequestFilter;
-import com.linkedin.restli.server.filter.ResponseFilter;
+import com.linkedin.restli.server.filter.Filter;
 import com.linkedin.restli.server.mock.InjectMockResourceFactory;
 import com.linkedin.restli.server.mock.SimpleBeanProvider;
 import com.linkedin.restli.server.resources.ResourceFactory;
@@ -59,10 +58,11 @@ public class RestLiIntTestServer
   public static final int      DEFAULT_PORT           = 1338;
   public static final int      NO_COMPRESSION_PORT    = 1339;
   public static final int      FILTERS_PORT           = 1340;
-  public static final String   supportedCompression   = "gzip,snappy,bzip2,deflate";
+  public static final String   supportedCompression   = "gzip,snappy,x-snappy-framed,bzip2,deflate";
   public static final String[] RESOURCE_PACKAGE_NAMES = {
       "com.linkedin.restli.examples.groups.server.rest.impl",
       "com.linkedin.restli.examples.greetings.server",
+      "com.linkedin.restli.examples.instrumentation.server",
       "com.linkedin.restli.examples.typeref.server"  };
 
   public static void main(String[] args) throws IOException
@@ -95,26 +95,71 @@ public class RestLiIntTestServer
                                         boolean useAsyncServletApi,
                                         int asyncTimeOut)
   {
-    final FilterChain fc = FilterChains.empty().addLastRest(new ServerCompressionFilter(supportedCompression, new CompressionConfig(0)))
-        .addLastRest(new SimpleLoggingFilter());
-    return createServer(engine, port, useAsyncServletApi, asyncTimeOut, null, null, fc);
+    return createServer(engine, port, supportedCompression, useAsyncServletApi, asyncTimeOut, new RestLiConfig());
   }
 
   public static HttpServer createServer(final Engine engine,
                                         int port,
+                                        String supportedCompression,
                                         boolean useAsyncServletApi,
                                         int asyncTimeOut,
-                                        List<? extends RequestFilter> requestFilters,
-                                        List<? extends ResponseFilter> responseFilters,
-                                        final FilterChain filterChain)
+                                        RestLiConfig config)
   {
-    RestLiConfig config = new RestLiConfig();
+    final FilterChain fc = FilterChains.empty().addLastRest(new ServerCompressionFilter(supportedCompression,
+                                                                                        new CompressionConfig(0)))
+        .addLastRest(new SimpleLoggingFilter());
+    return createServer(engine, port, useAsyncServletApi, asyncTimeOut, null, fc, true, true, true, config);
+  }
+
+  public static HttpServer createServer(Engine engine,
+                                        int port,
+                                        boolean useAsyncServletApi,
+                                        int asyncTimeOut,
+                                        List<? extends Filter> filters,
+                                        FilterChain filterChain,
+                                        boolean restOverStream)
+  {
+    return createServer(engine, port, useAsyncServletApi, asyncTimeOut, filters, filterChain, restOverStream,
+            true, true);
+  }
+
+  public static HttpServer createServer(Engine engine,
+                                        int port,
+                                        boolean useAsyncServletApi,
+                                        int asyncTimeOut,
+                                        List<? extends Filter> filters,
+                                        FilterChain filterChain,
+                                        boolean restOverStream,
+                                        boolean useDocumentHandler,
+                                        boolean useDebugHandler)
+  {
+    return createServer(engine, port, useAsyncServletApi, asyncTimeOut, filters, filterChain, restOverStream,
+        useDocumentHandler, useDebugHandler, new RestLiConfig());
+  }
+
+  public static HttpServer createServer(Engine engine,
+                                        int port,
+                                        boolean useAsyncServletApi,
+                                        int asyncTimeOut,
+                                        List<? extends Filter> filters,
+                                        FilterChain filterChain,
+                                        boolean restOverStream,
+                                        boolean useDocumentHandler,
+                                        boolean useDebugHandler,
+                                        RestLiConfig config)
+  {
     config.addResourcePackageNames(RESOURCE_PACKAGE_NAMES);
     config.setServerNodeUri(URI.create("http://localhost:" + port));
-    config.setDocumentationRequestHandler(new DefaultDocumentationRequestHandler());
-    config.addDebugRequestHandlers(new ParseqTraceDebugRequestHandler());
-    config.setRequestFilters(requestFilters);
-    config.setResponseFilters(responseFilters);
+    if (useDocumentHandler && config.getDocumentationRequestHandler() == null)
+    {
+      config.setDocumentationRequestHandler(new DefaultDocumentationRequestHandler());
+    }
+    if (useDebugHandler)
+    {
+      config.addDebugRequestHandlers(new ParseqTraceDebugRequestHandler());
+    }
+    config.setFilters(filters);
+    config.setUseStreamCodec(Boolean.parseBoolean(System.getProperty("test.useStreamCodecServer", "false")));
 
     GroupMembershipMgr membershipMgr = new HashGroupMembershipMgr();
     GroupMgr groupMgr = new HashMapGroupMgr(membershipMgr);
@@ -124,15 +169,17 @@ public class RestLiIntTestServer
     //using InjectMockResourceFactory to keep examples spring-free
     ResourceFactory factory = new InjectMockResourceFactory(beanProvider);
 
-    TransportDispatcher dispatcher = new DelegatingTransportDispatcher(new RestLiServer(config, factory, engine));
+    RestLiServer restLiServer = new RestLiServer(config, factory, engine);
+    TransportDispatcher dispatcher = new DelegatingTransportDispatcher(restLiServer, restLiServer);
 
     return new HttpServerFactory(filterChain).createServer(port,
-                                                           HttpServerFactory.DEFAULT_CONTEXT_PATH,
-                                                           HttpServerFactory.DEFAULT_THREAD_POOL_SIZE,
-                                                           dispatcher,
-                                                           useAsyncServletApi ?
-                                                               HttpJettyServer.ServletType.ASYNC_EVENT :
-                                                               HttpJettyServer.ServletType.RAP,
-                                                           asyncTimeOut, false);
+            HttpServerFactory.DEFAULT_CONTEXT_PATH,
+            HttpServerFactory.DEFAULT_THREAD_POOL_SIZE,
+            dispatcher,
+            useAsyncServletApi ?
+                    HttpJettyServer.ServletType.ASYNC_EVENT :
+                    HttpJettyServer.ServletType.RAP,
+            asyncTimeOut,
+            restOverStream);
   }
 }

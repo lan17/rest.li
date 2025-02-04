@@ -21,7 +21,6 @@
 package com.linkedin.r2.transport.http.server;
 
 import com.linkedin.r2.transport.common.bridge.server.TransportDispatcher;
-import java.util.concurrent.TimeUnit;
 
 
 /**
@@ -43,12 +42,12 @@ public class RAPServlet extends AbstractR2Servlet
 
   public RAPServlet(TransportDispatcher dispatcher)
   {
-    this(new HttpDispatcher(dispatcher));
+    this(HttpDispatcherFactory.create((dispatcher)));
   }
 
   /**
    * Initialize the RAPServlet.
-   * @see AbstractR2Servlet#AbstractR2Servlet(boolean, int, int)
+   * @see #AbstractR2Servlet
    */
   public RAPServlet(HttpDispatcher dispatcher,
                     boolean useContinuations,
@@ -61,14 +60,14 @@ public class RAPServlet extends AbstractR2Servlet
 
   /**
    * Initialize the RAPServlet.
-   * @see AbstractR2Servlet#AbstractR2Servlet(boolean, int, int)
+   * @see #AbstractR2Servlet
    */
   public RAPServlet(TransportDispatcher dispatcher,
                     boolean useContinuations,
                     int timeOut,
                     int timeOutDelta)
   {
-    this(new HttpDispatcher(dispatcher), useContinuations, timeOut, timeOutDelta);
+    this(HttpDispatcherFactory.create((dispatcher)), useContinuations, timeOut, timeOutDelta);
   }
 
 

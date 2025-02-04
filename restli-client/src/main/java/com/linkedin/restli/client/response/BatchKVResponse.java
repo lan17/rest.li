@@ -49,6 +49,8 @@ public class BatchKVResponse<K, V extends RecordTemplate> extends RecordTemplate
   public static final String RESULTS = "results";
   public static final String ERRORS = "errors";
 
+  private static final String BATCH_KV_RESPONSE_CLASSNAME = BatchKVResponse.class.getSimpleName();
+
   private RecordDataSchema _schema;
   private Class<V> _valueClass;
   private Map<K, V> _results;
@@ -189,7 +191,7 @@ public class BatchKVResponse<K, V extends RecordTemplate> extends RecordTemplate
   {
     super(data, null);
 
-    createSchema(valueType.getType());
+    _valueClass = valueType.getType();
     deserializeData(keyType, keyParts, complexKeyType, version);
   }
 
@@ -213,35 +215,29 @@ public class BatchKVResponse<K, V extends RecordTemplate> extends RecordTemplate
   {
     _valueClass = valueClass;
 
-    final StringBuilder errorMessageBuilder = new StringBuilder(10);
-    final Name elementSchemaName = new Name(valueClass.getSimpleName(), errorMessageBuilder);
-    final MapDataSchema resultsSchema = new MapDataSchema(new RecordDataSchema(elementSchemaName, RecordDataSchema.RecordType.RECORD));
-    final RecordDataSchema.Field resultsField = new RecordDataSchema.Field(resultsSchema);
-    resultsField.setName(RESULTS, errorMessageBuilder);
-
-    final Name errorSchemaName = new Name(ErrorResponse.class.getSimpleName(), errorMessageBuilder);
-    final MapDataSchema errorsSchema = new MapDataSchema(new RecordDataSchema(errorSchemaName, RecordDataSchema.RecordType.RECORD));
-    final RecordDataSchema.Field errorsField = new RecordDataSchema.Field(errorsSchema);
-    errorsField.setName(ERRORS, errorMessageBuilder);
-
-    final Name name = new Name(BatchKVResponse.class.getSimpleName(), errorMessageBuilder);
-    _schema = new RecordDataSchema(name, RecordDataSchema.RecordType.RECORD);
-    _schema.setFields(Arrays.asList(resultsField, errorsField), errorMessageBuilder);
   }
 
   protected void deserializeData(TypeSpec<K> keyType,
-                                 Map<String, CompoundKey.TypeInfo> keyParts,
-                                 ComplexKeySpec<?, ?> complexKeyType,
-                                 ProtocolVersion version)
+      Map<String, CompoundKey.TypeInfo> keyParts,
+      ComplexKeySpec<?, ?> complexKeyType,
+      ProtocolVersion version)
   {
-    final DataMap resultsRaw = data().getDataMap(RESULTS);
+    deserializeData(data(), keyType, keyParts, complexKeyType, version);
+  }
+
+  protected void deserializeData(DataMap data, TypeSpec<K> keyType,
+      Map<String, CompoundKey.TypeInfo> keyParts,
+      ComplexKeySpec<?, ?> complexKeyType,
+      ProtocolVersion version)
+  {
+    final DataMap resultsRaw = data.getDataMap(RESULTS);
     if (resultsRaw == null)
     {
-      _results = new ParamlessKeyHashMap<V>(complexKeyType);
+      _results = new ParamlessKeyHashMap<>(complexKeyType);
     }
     else
     {
-      _results = new ParamlessKeyHashMap<V>(
+      _results = new ParamlessKeyHashMap<>(
           CollectionUtils.getMapInitialCapacity(resultsRaw.size(), 0.75f), 0.75f, complexKeyType);
       for (Map.Entry<String, Object> entry : resultsRaw.entrySet())
       {
@@ -252,14 +248,14 @@ public class BatchKVResponse<K, V extends RecordTemplate> extends RecordTemplate
       }
     }
 
-    final DataMap errorsRaw = data().getDataMap(ERRORS);
+    final DataMap errorsRaw = data.getDataMap(ERRORS);
     if (errorsRaw == null)
     {
-      _errors = new ParamlessKeyHashMap<ErrorResponse>(complexKeyType);
+      _errors = new ParamlessKeyHashMap<>(complexKeyType);
     }
     else
     {
-      _errors = new ParamlessKeyHashMap<ErrorResponse>(
+      _errors = new ParamlessKeyHashMap<>(
           CollectionUtils.getMapInitialCapacity(errorsRaw.size(), 0.75f), 0.75f, complexKeyType);
       for (Map.Entry<String, Object> entry : errorsRaw.entrySet())
       {
@@ -271,11 +267,23 @@ public class BatchKVResponse<K, V extends RecordTemplate> extends RecordTemplate
     }
   }
 
+  /**
+   * Returns the results of batch operation. Please note differences between Rest.li protocol before and after 2.0
+   * @return
+   * For Rest.li protocol ver. <  2.0: entries which succeeded
+   * For Rest.li protocol ver. >= 2.0: all entries as EntityResponse, including successful and failed ones.
+   */
   public Map<K, V> getResults()
   {
     return _results;
   }
 
+  /**
+   * Returns the errors of batch operation. Please note differences between Rest.li protocol before and after 2.0
+   * @return
+   * For Rest.li protocol ver. <  2.0: entries which failed
+   * For Rest.li protocol ver. >= 2.0: ignore, please use getResults() instead
+   */
   public Map<K, ErrorResponse> getErrors()
   {
     return _errors;
@@ -284,6 +292,27 @@ public class BatchKVResponse<K, V extends RecordTemplate> extends RecordTemplate
   @Override
   public RecordDataSchema schema()
   {
+    synchronized (this)
+    {
+      // Don't use double-checked locking because _schema isn't volatile
+      if (_schema == null)
+      {
+        final StringBuilder errorMessageBuilder = new StringBuilder(10);
+        final Name elementSchemaName = new Name(_valueClass.getSimpleName(), errorMessageBuilder);
+        final MapDataSchema resultsSchema = new MapDataSchema(new RecordDataSchema(elementSchemaName, RecordDataSchema.RecordType.RECORD));
+        final RecordDataSchema.Field resultsField = new RecordDataSchema.Field(resultsSchema);
+        resultsField.setName(RESULTS, errorMessageBuilder);
+
+        final MapDataSchema errorsSchema = new MapDataSchema(DataTemplateUtil.getSchema(ErrorResponse.class));
+        final RecordDataSchema.Field errorsField = new RecordDataSchema.Field(errorsSchema);
+        errorsField.setName(ERRORS, errorMessageBuilder);
+
+        final Name name = new Name(BATCH_KV_RESPONSE_CLASSNAME, errorMessageBuilder);
+        _schema = new RecordDataSchema(name, RecordDataSchema.RecordType.RECORD);
+        _schema.setFields(Arrays.asList(resultsField, errorsField), errorMessageBuilder);
+      }
+    }
+
     return _schema;
   }
 

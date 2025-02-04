@@ -34,9 +34,17 @@ public class AsyncEventIOHandler extends SyncIOHandler
   private volatile boolean _responseWriteStarted = false;
   private boolean _inLoop = false;
 
-  public AsyncEventIOHandler(ServletInputStream is, ServletOutputStream os, AbstractAsyncR2StreamServlet.WrappedAsyncContext ctx, int bufferCapacity)
+  @Deprecated
+  public AsyncEventIOHandler(ServletInputStream is, ServletOutputStream os,
+      AbstractAsyncR2StreamServlet.WrappedAsyncContext ctx, int bufferCapacity)
   {
-    super(is, os, bufferCapacity, Integer.MAX_VALUE);
+    this(is, os, UNKNOWN_REMOTE_ADDRESS, ctx, bufferCapacity, false);
+  }
+
+  public AsyncEventIOHandler(ServletInputStream is, ServletOutputStream os, String remoteAddress,
+      AbstractAsyncR2StreamServlet.WrappedAsyncContext ctx, int bufferCapacity, boolean logServletExceptions)
+  {
+    super(is, os, remoteAddress, bufferCapacity, Integer.MAX_VALUE, logServletExceptions);
     _ctx = ctx;
   }
 
@@ -69,13 +77,9 @@ public class AsyncEventIOHandler extends SyncIOHandler
   }
 
   @Override
-  public void onInit(ReadHandle rh)
-  {
-    synchronized (this)
-    {
-      _responseWriteStarted = true;
-    }
-    super.onInit(rh);
+  public void writeResponseHeaders(Runnable writeResponse) {
+    _responseWriteStarted = true;
+    super.writeResponseHeaders(writeResponse);
   }
 
   @Override

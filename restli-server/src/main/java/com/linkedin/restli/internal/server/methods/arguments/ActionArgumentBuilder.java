@@ -27,11 +27,9 @@ import com.linkedin.data.schema.validation.ValidateDataAgainstSchema;
 import com.linkedin.data.schema.validation.ValidationOptions;
 import com.linkedin.data.schema.validation.ValidationResult;
 import com.linkedin.data.template.DynamicRecordTemplate;
-import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.internal.server.RoutingResult;
 import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
-import com.linkedin.restli.internal.server.util.DataMapUtils;
 import com.linkedin.restli.server.RestLiRequestData;
 import com.linkedin.restli.server.RestLiRequestDataImpl;
 import com.linkedin.restli.server.RoutingException;
@@ -50,31 +48,31 @@ public class ActionArgumentBuilder implements RestLiArgumentBuilder
     return ArgumentBuilder.buildArgs(new Object[0],
                                      routingResult.getResourceMethod(),
                                      routingResult.getContext(),
-                                     template);
+                                     template,
+                                     routingResult.getResourceMethodConfig());
   }
 
   @Override
-  public RestLiRequestData extractRequestData(RoutingResult routingResult, RestRequest request)
+  public RestLiRequestData extractRequestData(RoutingResult routingResult, DataMap data)
   {
     ResourceMethodDescriptor resourceMethodDescriptor = routingResult.getResourceMethod();
-    final DataMap data;
-    if (request.getEntity() == null || request.getEntity().length() == 0)
+    if (data == null)
     {
       data = new DataMap();
     }
-    else
-    {
-      data = DataMapUtils.readMap(request);
-    }
     DynamicRecordTemplate template = new DynamicRecordTemplate(data, resourceMethodDescriptor.getRequestDataSchema());
     ValidationResult result =
-        ValidateDataAgainstSchema.validate(data, template.schema(), new ValidationOptions(RequiredMode.IGNORE,
-                                                                                          CoercionMode.NORMAL));
+        ValidateDataAgainstSchema.validate(data, template.schema(), getValidationOptions());
     if (!result.isValid())
     {
       throw new RoutingException("Parameters of method '" + resourceMethodDescriptor.getActionName()
           + "' failed validation with error '" + result.getMessages() + "'", HttpStatus.S_400_BAD_REQUEST.getCode());
     }
     return new RestLiRequestDataImpl.Builder().entity(template).build();
+  }
+
+  protected ValidationOptions getValidationOptions()
+  {
+    return new ValidationOptions(RequiredMode.IGNORE, CoercionMode.NORMAL);
   }
 }

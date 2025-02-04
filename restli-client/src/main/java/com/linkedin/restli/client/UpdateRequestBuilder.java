@@ -19,19 +19,48 @@ package com.linkedin.restli.client;
 
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.restli.common.ResourceSpec;
+import com.linkedin.restli.common.attachments.RestLiAttachmentDataSourceWriter;
+import com.linkedin.restli.common.attachments.RestLiDataSourceIterator;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 
 public class UpdateRequestBuilder<K, V extends RecordTemplate> extends
     SingleEntityRequestBuilder<K, V, UpdateRequest<V>>
 {
+  private List<Object> _streamingAttachments; //We initialize only when we need to.
+
   public UpdateRequestBuilder(String baseUriTemplate,
                               Class<V> valueClass,
                               ResourceSpec resourceSpec,
                               RestliRequestOptions requestOptions)
   {
     super(baseUriTemplate, valueClass, resourceSpec, requestOptions);
+  }
+
+  public UpdateRequestBuilder<K, V> appendSingleAttachment(final RestLiAttachmentDataSourceWriter streamingAttachment)
+  {
+    if (_streamingAttachments == null)
+    {
+      _streamingAttachments = new ArrayList<>();
+    }
+
+    _streamingAttachments.add(streamingAttachment);
+    return this;
+  }
+
+  public UpdateRequestBuilder<K, V> appendMultipleAttachments(final RestLiDataSourceIterator dataSourceIterator)
+  {
+    if (_streamingAttachments == null)
+    {
+      _streamingAttachments = new ArrayList<>();
+    }
+
+    _streamingAttachments.add(dataSourceIterator);
+    return this;
   }
 
   @Override
@@ -107,15 +136,16 @@ public class UpdateRequestBuilder<K, V extends RecordTemplate> extends
   @Override
   public UpdateRequest<V> build()
   {
-    return new UpdateRequest<V>(buildReadOnlyInput(),
-                                buildReadOnlyHeaders(),
-                                buildReadOnlyCookies(),
-                                _resourceSpec,
-                                buildReadOnlyQueryParameters(),
-                                getQueryParamClasses(),
-                                getBaseUriTemplate(),
-                                buildReadOnlyPathKeys(),
-                                getRequestOptions(),
-                                buildReadOnlyId());
+    return new UpdateRequest<>(buildReadOnlyInput(),
+        buildReadOnlyHeaders(),
+        buildReadOnlyCookies(),
+        _resourceSpec,
+        buildReadOnlyQueryParameters(),
+        getQueryParamClasses(),
+        getBaseUriTemplate(),
+        buildReadOnlyPathKeys(),
+        getRequestOptions(),
+        buildReadOnlyId(),
+        _streamingAttachments == null ? null : Collections.unmodifiableList(_streamingAttachments));
   }
 }

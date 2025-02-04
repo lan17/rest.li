@@ -22,19 +22,31 @@ package com.linkedin.restli.examples.greetings.server;
 
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.HttpStatus;
+import com.linkedin.restli.examples.greetings.api.Empty;
 import com.linkedin.restli.examples.greetings.api.Message;
+import com.linkedin.restli.examples.greetings.api.MessageCriteria;
+import com.linkedin.restli.examples.greetings.api.Tone;
+import com.linkedin.restli.server.BatchFinderResult;
 import com.linkedin.restli.server.BatchPatchRequest;
 import com.linkedin.restli.server.BatchUpdateRequest;
 import com.linkedin.restli.server.BatchUpdateResult;
+import com.linkedin.restli.server.CollectionResult;
 import com.linkedin.restli.server.CreateResponse;
+import com.linkedin.restli.server.PagingContext;
+import com.linkedin.restli.server.ResourceLevel;
 import com.linkedin.restli.server.RestLiServiceException;
 import com.linkedin.restli.server.UpdateResponse;
+import com.linkedin.restli.server.annotations.Action;
 import com.linkedin.restli.server.annotations.AssocKeyParam;
+import com.linkedin.restli.server.annotations.BatchFinder;
 import com.linkedin.restli.server.annotations.Finder;
 import com.linkedin.restli.server.annotations.Key;
 import com.linkedin.restli.server.annotations.Optional;
+import com.linkedin.restli.server.annotations.PagingContextParam;
+import com.linkedin.restli.server.annotations.QueryParam;
 import com.linkedin.restli.server.annotations.RestLiAssociation;
 import com.linkedin.restli.server.resources.AssociationResourceTemplate;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -43,7 +55,7 @@ import java.util.Set;
 
 import static com.linkedin.restli.examples.AssociationResourceHelpers.DB;
 import static com.linkedin.restli.examples.AssociationResourceHelpers.SIMPLE_COMPOUND_KEY;
-
+import static com.linkedin.restli.examples.AssociationResourceHelpers.URL_COMPOUND_KEY;
 
 /**
  * Demonstrates an assocation resource keyed by string.
@@ -72,7 +84,7 @@ public class AssociationsResource extends AssociationResourceTemplate<Message>
   @Override
   public Map<CompoundKey, Message> batchGet(Set<CompoundKey> ids)
   {
-    Map<CompoundKey, Message> result = new HashMap<CompoundKey, Message>();
+    Map<CompoundKey, Message> result = new HashMap<>();
     for (CompoundKey key: ids)
     {
       result.put(key, DB.get(key));
@@ -104,17 +116,25 @@ public class AssociationsResource extends AssociationResourceTemplate<Message>
 
   private BatchUpdateResult<CompoundKey, Message> buildUpdateResult(Set<CompoundKey> keys)
   {
-    Map<CompoundKey, UpdateResponse> result = new HashMap<CompoundKey, UpdateResponse>();
+    Map<CompoundKey, UpdateResponse> result = new HashMap<>();
     for (CompoundKey key: keys)
     {
       result.put(key, new UpdateResponse(HttpStatus.S_204_NO_CONTENT));
     }
-    return new BatchUpdateResult<CompoundKey, Message>(result);
+    return new BatchUpdateResult<>(result);
   }
 
   @Finder("assocKeyFinder")
   public List<Message> assocKeyFinder(@AssocKeyParam("src") String src)
   {
+    if (src.equals(SIMPLE_COMPOUND_KEY.getPartAsString("src")))
+    {
+      return Collections.singletonList(DB.get(SIMPLE_COMPOUND_KEY));
+    }
+    else if (src.equals(URL_COMPOUND_KEY.getPartAsString("src")))
+    {
+      return Collections.singletonList(DB.get(URL_COMPOUND_KEY));
+    }
     return Collections.emptyList();
   }
 
@@ -123,4 +143,35 @@ public class AssociationsResource extends AssociationResourceTemplate<Message>
   {
     return Collections.emptyList();
   }
+
+
+  private static final Message m1 = new Message().setMessage("hello").setTone(Tone.FRIENDLY);
+  private static final Message m2 = new Message().setMessage("world").setTone(Tone.FRIENDLY);
+
+  @BatchFinder(value = "searchMessages", batchParam = "criteria")
+  public BatchFinderResult<MessageCriteria, Message, Empty> searchMessages(@AssocKeyParam("src") String src, @PagingContextParam PagingContext context,
+      @QueryParam("criteria") MessageCriteria[] criteria)
+  {
+    BatchFinderResult<MessageCriteria, Message, Empty> batchFinderResult = new BatchFinderResult<>();
+
+    for (MessageCriteria currentCriteria: criteria) {
+      if (currentCriteria.getTone() == Tone.FRIENDLY) {
+        // on success
+        CollectionResult<Message, Empty> cr = new CollectionResult<>(Arrays.asList(m1, m2), 2);
+        batchFinderResult.putResult(currentCriteria, cr);
+      } else {
+        // on error: to construct error response for test
+        batchFinderResult.putError(currentCriteria, new RestLiServiceException(HttpStatus.S_404_NOT_FOUND, "Failed to find message!"));
+      }
+    }
+
+    return batchFinderResult;
+  }
+
+  @Action(name = "testAction", resourceLevel = ResourceLevel.ENTITY)
+  public String testAction()
+  {
+    return "Hello!";
+  }
+
 }

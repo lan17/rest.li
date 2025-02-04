@@ -16,8 +16,10 @@
 
 package com.linkedin.restli.examples;
 
-
+import com.linkedin.data.DataMap;
 import com.linkedin.r2.RemoteInvocationException;
+import com.linkedin.restli.client.ActionRequest;
+import com.linkedin.restli.client.ActionRequestBuilder;
 import com.linkedin.restli.client.BatchCreateIdRequest;
 import com.linkedin.restli.client.ErrorHandlingBehavior;
 import com.linkedin.restli.client.Request;
@@ -38,11 +40,18 @@ import com.linkedin.restli.examples.greetings.api.Greeting;
 import com.linkedin.restli.examples.greetings.api.Tone;
 import com.linkedin.restli.examples.greetings.client.ExceptionsBuilders;
 import com.linkedin.restli.examples.greetings.client.ExceptionsRequestBuilders;
+import com.linkedin.restli.examples.greetings.server.ExceptionsResource;
 import com.linkedin.restli.internal.common.ProtocolVersionUtil;
+import com.linkedin.restli.internal.server.util.DataMapUtils;
+import com.linkedin.restli.server.ErrorResponseFormat;
 import com.linkedin.restli.test.util.RootBuilderWrapper;
-
+import java.io.IOException;
 import java.util.List;
-
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
@@ -50,6 +59,9 @@ import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 
+/**
+ * Integration tests for {@link ExceptionsResource}.
+ */
 public class TestExceptionsResource extends RestLiIntegrationTest
 {
   @BeforeClass
@@ -64,6 +76,7 @@ public class TestExceptionsResource extends RestLiIntegrationTest
     super.shutdown();
   }
 
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "exceptionHandlingModesDataProvider")
   public void testException(boolean explicit, ErrorHandlingBehavior errorHandlingBehavior, RootBuilderWrapper<Long, Greeting> builders) throws RemoteInvocationException
   {
@@ -118,8 +131,13 @@ public class TestExceptionsResource extends RestLiIntegrationTest
     Assert.assertEquals(exception.getServiceErrorCode(), 42);
     Assert.assertEquals(exception.getServiceErrorMessage(), "error processing request");
     Assert.assertTrue(exception.getServiceErrorStackTrace().contains("at com.linkedin.restli.examples.greetings.server.ExceptionsResource.get("));
+    Assert.assertEquals(exception.getCode(), "PROCESSING_ERROR");
+    Assert.assertEquals(exception.getDocUrl(), "https://example.com/errors/processing-error");
+    Assert.assertEquals(exception.getRequestId(), "xyz123");
+    Assert.assertEquals(exception.getErrorDetailType(), Greeting.class.getCanonicalName());
   }
 
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "exceptionHandlingModesDataProvider")
   public void testCreateError(boolean explicit, ErrorHandlingBehavior errorHandlingBehavior, RootBuilderWrapper<Long, Greeting> builders) throws Exception
   {
@@ -179,8 +197,13 @@ public class TestExceptionsResource extends RestLiIntegrationTest
     Assert.assertEquals(exception.getErrorDetails().getString("reason"), "insultingGreeting");
     Assert.assertTrue(exception.getServiceErrorStackTrace().startsWith("com.linkedin.restli.server.RestLiServiceException [HTTP Status:406, serviceErrorCode:999]: I will not tolerate your insolence!"),
                       "stacktrace mismatch:" + exception.getStackTrace());
+    Assert.assertFalse(exception.hasCode());
+    Assert.assertFalse(exception.hasDocUrl());
+    Assert.assertFalse(exception.hasRequestId());
+    Assert.assertEquals(exception.getErrorDetailType(), EmptyRecord.class.getCanonicalName());
   }
 
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestOptionsDataProvider")
   public void testBatchCreateErrors(RestliRequestOptions requestOptions) throws Exception
   {
@@ -198,7 +221,7 @@ public class TestExceptionsResource extends RestLiIntegrationTest
     @SuppressWarnings("unchecked")
     CreateIdStatus<Long> status0 =  (CreateIdStatus<Long>)createStatuses.get(0);
     Assert.assertEquals(status0.getStatus().intValue(), HttpStatus.S_201_CREATED.getCode());
-    Assert.assertEquals(status0.getKey(), new Long(10));
+    Assert.assertEquals(status0.getKey(), Long.valueOf(10));
     @SuppressWarnings("deprecation")
     String id = status0.getId();
     Assert.assertEquals(BatchResponse.keyToString(status0.getKey(), ProtocolVersionUtil.extractProtocolVersion(response.getHeaders())),
@@ -217,8 +240,13 @@ public class TestExceptionsResource extends RestLiIntegrationTest
     Assert.assertTrue(error.getStackTrace().startsWith(
       "com.linkedin.restli.server.RestLiServiceException [HTTP Status:406, serviceErrorCode:999]: I will not tolerate your insolence!"),
                       "stacktrace mismatch:" + error.getStackTrace());
+    Assert.assertFalse(error.hasCode());
+    Assert.assertFalse(error.hasDocUrl());
+    Assert.assertFalse(error.hasRequestId());
+    Assert.assertEquals(error.getErrorDetailType(), EmptyRecord.class.getCanonicalName());
   }
 
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestOptionsDataProvider")
   public void testBatchCreateIdErrors(RestliRequestOptions requestOptions) throws Exception
   {
@@ -236,7 +264,7 @@ public class TestExceptionsResource extends RestLiIntegrationTest
     @SuppressWarnings("unchecked")
     CreateIdStatus<Long> status0 =  createStatuses.get(0);
     Assert.assertEquals(status0.getStatus().intValue(), HttpStatus.S_201_CREATED.getCode());
-    Assert.assertEquals(status0.getKey(), new Long(10));
+    Assert.assertEquals(status0.getKey(), Long.valueOf(10));
     @SuppressWarnings("deprecation")
     String id = status0.getId();
     Assert.assertEquals(BatchResponse.keyToString(status0.getKey(), ProtocolVersionUtil.extractProtocolVersion(response.getHeaders())),
@@ -255,6 +283,80 @@ public class TestExceptionsResource extends RestLiIntegrationTest
     Assert.assertTrue(error.getStackTrace().startsWith(
       "com.linkedin.restli.server.RestLiServiceException [HTTP Status:406, serviceErrorCode:999]: I will not tolerate your insolence!"),
                       "stacktrace mismatch:" + error.getStackTrace());
+    Assert.assertFalse(error.hasCode());
+    Assert.assertFalse(error.hasDocUrl());
+    Assert.assertFalse(error.hasRequestId());
+    Assert.assertEquals(error.getErrorDetailType(), EmptyRecord.class.getCanonicalName());
+  }
+
+  /**
+   * Ensures that the {@link RestLiResponseException} thrown on the client has the correct set of fields as specified by
+   * the {@link ErrorResponseFormat} override used when the exception is thrown in the resource.
+   */
+  @SuppressWarnings("deprecation")
+  @Test(dataProvider = "errorResponseFormatData")
+  public void testErrorResponseFormat(ActionRequestBuilder<?, ?> actionRequestBuilder,
+      ErrorResponseFormat expectedFormat, String expectedResponseString)
+      throws RemoteInvocationException
+  {
+    ActionRequest<?> actionRequest = actionRequestBuilder.build();
+
+    try
+    {
+      getClient().sendRequest(actionRequest).getResponse();
+    }
+    catch (RestLiResponseException e)
+    {
+      Assert.assertEquals(e.hasCode(), expectedFormat.showServiceErrorCode());
+      Assert.assertEquals(e.hasServiceErrorCode(), expectedFormat.showServiceErrorCode());
+      Assert.assertEquals(e.hasServiceErrorMessage(), expectedFormat.showMessage());
+      Assert.assertEquals(e.hasDocUrl(), expectedFormat.showDocUrl());
+      Assert.assertEquals(e.hasRequestId(), expectedFormat.showRequestId());
+      Assert.assertEquals(e.hasErrorDetails(), expectedFormat.showDetails());
+      Assert.assertEquals(e.hasErrorDetailType(), expectedFormat.showDetails());
+      Assert.assertEquals(e.hasServiceExceptionClass(), expectedFormat.showExceptionClass());
+      Assert.assertEquals(e.hasServiceErrorStackTrace(), expectedFormat.showStacktrace());
+
+      if (expectedFormat.showDetails())
+      {
+        Greeting errorDetail = e.getErrorDetailsRecord();
+        Assert.assertNotNull(errorDetail);
+      }
+
+      Assert.assertEquals(e.toString(), expectedResponseString);
+    }
+  }
+
+  @Test
+  public void testExceptionsWithNullStatus() throws Exception
+  {
+    ActionRequest<?> actionRequest = new ExceptionsBuilders().actionErrorWithEmptyStatus().build();
+
+    try
+    {
+      getClient().sendRequest(actionRequest).getResponse();
+    }
+    catch (RestLiResponseException e)
+    {
+      Assert.assertEquals(e.getStatus(), HttpStatus.S_500_INTERNAL_SERVER_ERROR.getCode());
+      Assert.assertEquals(e.toString(),
+          "com.linkedin.restli.client.RestLiResponseException: Response status 500, serviceErrorMessage: This is an exception with no status!");
+    }
+  }
+
+  @SuppressWarnings("deprecation")
+  @Test
+  public void testBadInputErrorResponse() throws IOException
+  {
+    HttpPost post = new HttpPost(URI_PREFIX + ExceptionsBuilders.getPrimaryResource());
+    post.setEntity(new StringEntity("{\"foo\",\"bar\"}"));
+    try (CloseableHttpClient httpClient = HttpClients.createDefault();
+        CloseableHttpResponse response = httpClient.execute(post))
+    {
+      Assert.assertEquals(response.getStatusLine().getStatusCode(), HttpStatus.S_400_BAD_REQUEST.getCode());
+      DataMap responseMap = DataMapUtils.readMap(response.getEntity().getContent());
+      Assert.assertEquals(responseMap.getString("message"), "Cannot parse request entity");
+    }
   }
 
   @DataProvider(name = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "exceptionHandlingModesDataProvider")
@@ -283,6 +385,40 @@ public class TestExceptionsResource extends RestLiIntegrationTest
       {
         { RestliRequestOptions.DEFAULT_OPTIONS },
         { TestConstants.FORCE_USE_NEXT_OPTIONS }
+      };
+  }
+
+  @DataProvider(name = "errorResponseFormatData")
+  private static Object[][] provideErrorResponseFormatData()
+  {
+    final ExceptionsBuilders exceptionsBuilders = new ExceptionsBuilders();
+    return new Object[][]
+      {
+        {
+          exceptionsBuilders.actionErrorResponseFormatMinimal(),
+          ErrorResponseFormat.MINIMAL,
+          "com.linkedin.restli.client.RestLiResponseException: Response status 500"
+        },
+        {
+          exceptionsBuilders.actionErrorResponseFormatMessageOnly(),
+          ErrorResponseFormat.MESSAGE_ONLY,
+          "com.linkedin.restli.client.RestLiResponseException: Response status 500, serviceErrorMessage: This is an exception, you dummy!"
+        },
+        {
+          exceptionsBuilders.actionErrorResponseFormatMessageAndDetails(),
+          ErrorResponseFormat.MESSAGE_AND_DETAILS,
+          "com.linkedin.restli.client.RestLiResponseException: Response status 500, serviceErrorMessage: This is an exception, you dummy!"
+        },
+        {
+          exceptionsBuilders.actionErrorResponseFormatMessageAndServiceCode(),
+          ErrorResponseFormat.MESSAGE_AND_SERVICECODE,
+          "com.linkedin.restli.client.RestLiResponseException: Response status 500, serviceErrorMessage: This is an exception, you dummy!, serviceErrorCode: 2147, code: DUMMY_EXCEPTION"
+        },
+        {
+          exceptionsBuilders.actionErrorResponseFormatMessageAndServiceCodeAndExceptionClass(),
+          ErrorResponseFormat.MESSAGE_AND_SERVICECODE_AND_EXCEPTIONCLASS,
+          "com.linkedin.restli.client.RestLiResponseException: Response status 500, serviceErrorMessage: This is an exception, you dummy!, serviceErrorCode: 2147, code: DUMMY_EXCEPTION"
+        }
       };
   }
 }

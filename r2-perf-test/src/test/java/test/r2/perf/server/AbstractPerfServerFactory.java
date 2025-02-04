@@ -45,6 +45,8 @@ import test.r2.perf.StringGenerator;
  */
 public abstract class AbstractPerfServerFactory
 {
+  private static final String STATIC_HEADER_PREFIX = "X-LI-HEADER-";
+
   public Server create(int port, URI echoUri, int msg_size)
   {
 
@@ -55,25 +57,28 @@ public abstract class AbstractPerfServerFactory
     return createServer(port, dispatcher, PerfConfig.serverRestOverStream());
   }
 
-  public Server createPureStreamServer(int port, URI echoUri, final int msg_size)
+  public Server createPureStreamServer(int port, URI echoUri, final int msg_size, int numHeaders, int headerSize)
   {
+    String headerContent = new StringGenerator(headerSize).nextMessage();
     StreamRequestHandler handler = new StreamRequestHandler()
     {
       @Override
       public void handleRequest(StreamRequest request, RequestContext requestContext, final Callback<StreamResponse> callback)
       {
-        request.getEntityStream().setReader(new PerfStreamReader<None>(new Callback<None>()
-        {
+        request.getEntityStream().setReader(new PerfStreamReader<>(new Callback<None>() {
           @Override
-          public void onError(Throwable e)
-          {
+          public void onError(Throwable e) {
             callback.onError(e);
           }
 
           @Override
-          public void onSuccess(None result)
-          {
-            callback.onSuccess(new StreamResponseBuilder().build(EntityStreams.newEntityStream(new PerfStreamWriter(msg_size))));
+          public void onSuccess(None result) {
+            StreamResponseBuilder builder = new StreamResponseBuilder();
+            for (int i = 0; i < numHeaders; i++) {
+              builder.setHeader(STATIC_HEADER_PREFIX + i, headerContent);
+            }
+
+            callback.onSuccess(builder.build(EntityStreams.newEntityStream(new PerfStreamWriter(msg_size))));
           }
         }, None.none()));
       }

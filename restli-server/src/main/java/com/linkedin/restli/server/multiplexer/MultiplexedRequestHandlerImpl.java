@@ -16,19 +16,22 @@
 
 package com.linkedin.restli.server.multiplexer;
 
-
 import com.linkedin.common.callback.Callback;
+import com.linkedin.data.ByteString;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.template.DataTemplateUtil;
 import com.linkedin.parseq.Engine;
 import com.linkedin.parseq.Task;
 import com.linkedin.parseq.Tasks;
+import com.linkedin.r2.message.Request;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestException;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.message.rest.RestResponseBuilder;
+import com.linkedin.r2.message.timing.TimingContextUtil;
 import com.linkedin.r2.transport.common.RestRequestHandler;
+import com.linkedin.restli.common.ContentType;
 import com.linkedin.restli.common.HttpMethod;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.common.RestConstants;
@@ -37,21 +40,19 @@ import com.linkedin.restli.common.multiplexer.IndividualRequestMap;
 import com.linkedin.restli.common.multiplexer.IndividualResponseMap;
 import com.linkedin.restli.common.multiplexer.MultiplexedRequestContent;
 import com.linkedin.restli.common.multiplexer.MultiplexedResponseContent;
-import com.linkedin.restli.internal.common.ContentTypeUtil;
-import com.linkedin.restli.internal.common.ContentTypeUtil.ContentType;
 import com.linkedin.restli.internal.common.CookieUtil;
+import com.linkedin.restli.internal.server.response.ErrorResponseBuilder;
 import com.linkedin.restli.internal.server.util.DataMapUtils;
 
 import java.net.HttpCookie;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
-
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import javax.activation.MimeTypeParseException;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -63,14 +64,17 @@ import org.slf4j.LoggerFactory;
  */
 public class MultiplexedRequestHandlerImpl implements MultiplexedRequestHandler
 {
+  private static final String MUX_PLAN_CLASS = "mux";
   private static final String MUX_URI_PATH = "/mux";
 
-  private final Logger _log = LoggerFactory.getLogger(MultiplexedRequestHandlerImpl.class);
+  private static final Logger _log = LoggerFactory.getLogger(MultiplexedRequestHandlerImpl.class);
   private final RestRequestHandler _requestHandler;
   private final Engine _engine;
   private final int _maximumRequestsNumber;
   private final MultiplexerSingletonFilter _multiplexerSingletonFilter;
   private final Set<String> _individualRequestHeaderWhitelist;
+  private final MultiplexerRunMode _multiplexerRunMode;
+  private final ErrorResponseBuilder _errorResponseBuilder;
 
   /**
    * @param requestHandler        the handler that will take care of individual requests
@@ -79,26 +83,31 @@ public class MultiplexedRequestHandlerImpl implements MultiplexedRequestHandler
    * @param individualRequestHeaderWhitelist a set of request header names to allow if specified in the individual request
    * @param multiplexerSingletonFilter the singleton filter that is used by multiplexer to pre-process individual request and
    *                                   post-process individual response. Pass in null if no pre-processing or post-processing are required.
+   * @param multiplexerRunMode    MultiplexedRequest run mode, see {@link MultiplexerRunMode}
    */
   public MultiplexedRequestHandlerImpl(RestRequestHandler requestHandler,
                                        Engine engine,
                                        int maximumRequestsNumber,
                                        Set<String> individualRequestHeaderWhitelist,
-                                       MultiplexerSingletonFilter multiplexerSingletonFilter)
+                                       MultiplexerSingletonFilter multiplexerSingletonFilter,
+                                       MultiplexerRunMode multiplexerRunMode,
+                                       ErrorResponseBuilder errorResponseBuilder)
   {
     _requestHandler = requestHandler;
     _engine = engine;
     _maximumRequestsNumber = maximumRequestsNumber;
-    _individualRequestHeaderWhitelist = new TreeSet<String>(String.CASE_INSENSITIVE_ORDER);
+    _individualRequestHeaderWhitelist = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
     if (individualRequestHeaderWhitelist != null)
     {
       _individualRequestHeaderWhitelist.addAll(individualRequestHeaderWhitelist);
     }
     _multiplexerSingletonFilter = multiplexerSingletonFilter;
+    _multiplexerRunMode = multiplexerRunMode;
+    _errorResponseBuilder = errorResponseBuilder;
   }
 
   @Override
-  public boolean isMultiplexedRequest(RestRequest request)
+  public boolean shouldHandle(Request request)
   {
     // we don't check the method here because we want to return 405 if it is anything but POST
     return MUX_URI_PATH.equals(request.getURI().getPath());
@@ -113,10 +122,17 @@ public class MultiplexedRequestHandlerImpl implements MultiplexedRequestHandler
       callback.onError(RestException.forError(HttpStatus.S_405_METHOD_NOT_ALLOWED.getCode(), "Invalid method"));
       return;
     }
+
+    // Disable server-side latency instrumentation for multiplexed requests
+    requestContext.putLocalAttr(TimingContextUtil.TIMINGS_DISABLED_KEY_NAME, true);
+
     IndividualRequestMap individualRequests;
     try
     {
       individualRequests = extractIndividualRequests(request);
+      if (_multiplexerSingletonFilter != null) {
+        individualRequests = _multiplexerSingletonFilter.filterRequests(individualRequests);
+      }
     }
     catch (RestException e)
     {
@@ -132,19 +148,16 @@ public class MultiplexedRequestHandlerImpl implements MultiplexedRequestHandler
     }
     // prepare the map of individual responses to be collected
     final IndividualResponseMap individualResponses = new IndividualResponseMap(individualRequests.size());
-    final Map<String, HttpCookie> responseCookies = new HashMap<String, HttpCookie>();
+    final Map<String, HttpCookie> responseCookies = new HashMap<>();
     // all tasks are Void and side effect based, that will be useful when we add streaming
-    Task<Void> requestProcessingTask = createParallelRequestsTask(request, requestContext, individualRequests, individualResponses, responseCookies);
-    Task<Void> responseAggregationTask = Tasks.action("send aggregated response", new Runnable()
-    {
-      @Override
-      public void run()
+    Task<?> requestProcessingTask = createParallelRequestsTask(request, requestContext, individualRequests, individualResponses, responseCookies);
+    Task<Void> responseAggregationTask = Task.action("send aggregated response", () ->
       {
         RestResponse aggregatedResponse = aggregateResponses(individualResponses, responseCookies);
         callback.onSuccess(aggregatedResponse);
       }
-    });
-    _engine.run(Tasks.seq(requestProcessingTask, responseAggregationTask));
+    );
+    _engine.run(requestProcessingTask.andThen(responseAggregationTask), MUX_PLAN_CLASS);
   }
 
   /**
@@ -188,7 +201,7 @@ public class MultiplexedRequestHandlerImpl implements MultiplexedRequestHandler
     boolean supported;
     try
     {
-      supported = (ContentType.JSON == ContentTypeUtil.getContentType(request.getHeader(RestConstants.HEADER_CONTENT_TYPE)));
+      supported = ContentType.getContentType(request.getHeader(RestConstants.HEADER_CONTENT_TYPE)).isPresent();
     }
     catch (MimeTypeParseException e)
     {
@@ -197,17 +210,19 @@ public class MultiplexedRequestHandlerImpl implements MultiplexedRequestHandler
 
     if (!supported)
     {
-      throw RestException.forError(HttpStatus.S_415_UNSUPPORTED_MEDIA_TYPE.getCode(), "Unsupported content type");
+      _log.warn("Unsupported content type: " + request.getHeader(RestConstants.HEADER_CONTENT_TYPE));
+      // TODO Add back the check for content type.
+      // throw RestException.forError(HttpStatus.S_415_UNSUPPORTED_MEDIA_TYPE.getCode(), "Unsupported content type");
     }
   }
 
-  private Task<Void> createParallelRequestsTask(RestRequest envelopeRequest,
+  private Task<?> createParallelRequestsTask(RestRequest envelopeRequest,
                                                 RequestContext requestContext,
                                                 IndividualRequestMap individualRequests,
                                                 IndividualResponseMap individualResponses,
                                                 Map<String, HttpCookie> responseCookies)
   {
-    List<Task<Void>> tasks = new ArrayList<Task<Void>>(individualRequests.size());
+    List<Task<?>> tasks = new ArrayList<>(individualRequests.size());
     for (IndividualRequestMap.Entry<String, IndividualRequest> individualRequestMapEntry : individualRequests.entrySet())
     {
       String id = individualRequestMapEntry.getKey();
@@ -222,14 +237,15 @@ public class MultiplexedRequestHandlerImpl implements MultiplexedRequestHandler
       else
       {
         // recursively process dependent requests
-        Task<Void> dependentRequestsTask = createParallelRequestsTask(envelopeRequest, requestContext, dependentRequests, individualResponses, responseCookies);
+        Task<?> dependentRequestsTask = createParallelRequestsTask(envelopeRequest, requestContext, dependentRequests, individualResponses, responseCookies);
         // tasks for dependant requests are executed after the current request's task
-        tasks.add(Tasks.seq(individualRequestTask, dependentRequestsTask));
+        tasks.add(individualRequestTask.andThen(dependentRequestsTask));
       }
     }
-    return toVoid(Tasks.par(tasks));
+    return Task.par(tasks);
   }
 
+  @SuppressWarnings("deprecation")
   private Task<Void> createRequestHandlingTask(final String id,
                                                final RestRequest envelopeRequest,
                                                final RequestContext requestContext,
@@ -237,23 +253,19 @@ public class MultiplexedRequestHandlerImpl implements MultiplexedRequestHandler
                                                final IndividualResponseMap individualResponses,
                                                final Map<String, HttpCookie> responseCookies)
   {
-    final RequestSanitizationTask requestSanitizationTask = new RequestSanitizationTask(individualRequest, _individualRequestHeaderWhitelist);
+    final RequestSanitizationTask requestSanitizationTask = new RequestSanitizationTask(individualRequest, _individualRequestHeaderWhitelist, _errorResponseBuilder);
     final InheritEnvelopeRequestTask inheritEnvelopeRequestTask = new InheritEnvelopeRequestTask(envelopeRequest, requestSanitizationTask);
-    final RequestFilterTask requestFilterTask = new RequestFilterTask(_multiplexerSingletonFilter, inheritEnvelopeRequestTask);
-    final SyntheticRequestCreationTask syntheticRequestCreationTask = new SyntheticRequestCreationTask(id, envelopeRequest, requestFilterTask);
-    final RequestHandlingTask requestHandlingTask = new RequestHandlingTask(_requestHandler, syntheticRequestCreationTask, requestContext);
-    final IndividualResponseConversionTask toIndividualResponseTask = new IndividualResponseConversionTask(id, requestHandlingTask);
-    final ResponseFilterTask responseFilterTask = new ResponseFilterTask(_multiplexerSingletonFilter, toIndividualResponseTask);
-    final Task<Void> addResponseTask = Tasks.action("add response", new Runnable()
-    {
-      @Override
-      public void run()
+    final RequestFilterTask requestFilterTask = new RequestFilterTask(_multiplexerSingletonFilter, _errorResponseBuilder, inheritEnvelopeRequestTask);
+    final SyntheticRequestCreationTask syntheticRequestCreationTask = new SyntheticRequestCreationTask(id, envelopeRequest, _errorResponseBuilder, requestFilterTask);
+    final RequestHandlingTask requestHandlingTask = new RequestHandlingTask(_requestHandler, syntheticRequestCreationTask, requestContext, _multiplexerRunMode);
+    final IndividualResponseConversionTask toIndividualResponseTask = new IndividualResponseConversionTask(id, _errorResponseBuilder, requestHandlingTask);
+    final ResponseFilterTask responseFilterTask = new ResponseFilterTask(_multiplexerSingletonFilter, _errorResponseBuilder, toIndividualResponseTask);
+    final Task<Void> addResponseTask = Task.action("add response", () ->
       {
         IndividualResponseWithCookies individualResponseWithCookies = responseFilterTask.get();
         individualResponses.put(id, individualResponseWithCookies.getIndividualResponse());
         addResponseCookies(responseCookies, individualResponseWithCookies.getCookies());
-      }
-    });
+      });
     return Tasks.seq(
       requestSanitizationTask,
       inheritEnvelopeRequestTask,
@@ -283,28 +295,12 @@ public class MultiplexedRequestHandlerImpl implements MultiplexedRequestHandler
   {
     MultiplexedResponseContent aggregatedResponseContent = new MultiplexedResponseContent();
     aggregatedResponseContent.setResponses(responses);
-    byte[] aggregatedResponseData = DataMapUtils.mapToBytes(aggregatedResponseContent.data());
+    ByteString aggregatedResponseData = DataMapUtils.mapToByteString(aggregatedResponseContent.data(),
+        Collections.singletonMap(RestConstants.HEADER_CONTENT_TYPE, RestConstants.HEADER_VALUE_APPLICATION_JSON));
     return new RestResponseBuilder()
         .setStatus(HttpStatus.S_200_OK.getCode())
         .setEntity(aggregatedResponseData)
-        .setCookies(CookieUtil.encodeSetCookies(new ArrayList(responseCookies.values())))
+        .setCookies(CookieUtil.encodeSetCookies(new ArrayList<>(responseCookies.values())))
       .build();
-  }
-
-  /**
-   * Converts a Task<List<Void>> into a Task<Void>. That is a hack to make the type system happy.
-   * This method adds an unneeded empty task to the execution plan.
-   */
-  private static Task<Void> toVoid(Task<List<Void>> task)
-  {
-    Task<Void> doNothingTask = Tasks.action("do nothing", new Runnable()
-    {
-      @Override
-      public void run()
-      {
-        // seriously, nothing
-      }
-    });
-    return Tasks.seq(task, doNothingTask);
   }
 }

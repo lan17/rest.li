@@ -17,7 +17,6 @@
 package com.linkedin.restli.server.testutils;
 
 
-import com.linkedin.parseq.AsyncCallableTask;
 import com.linkedin.parseq.Engine;
 import com.linkedin.parseq.EngineBuilder;
 import com.linkedin.r2.filter.FilterChain;
@@ -51,6 +50,7 @@ import java.util.concurrent.ScheduledExecutorService;
  *
  * @author kparikh
  */
+@SuppressWarnings("deprecation")
 public class MockHttpServerFactory
 {
   private static final String LOCALHOST = "http://localhost:";
@@ -61,7 +61,6 @@ public class MockHttpServerFactory
    * Creates {@link RestLiConfig} to be used by a {@link RestLiServer}
    *
    * @param port the port the server will run on
-   * @return
    */
   private static RestLiConfig createConfig(int port)
   {
@@ -75,7 +74,6 @@ public class MockHttpServerFactory
    * Creates a {@link ResourceFactory} to inject dependencies into your Rest.li resource
    *
    * @param beans
-   * @return
    */
   private static ResourceFactory createResourceFactory(Map<String, ?> beans)
   {
@@ -104,8 +102,7 @@ public class MockHttpServerFactory
    * @param port the port the server will run on on localhost
    * @param resourceClasses the Rest.li resource classes
    * @param beans beans you want to inject into your Rest.li resource.
-   * @param enableAsync true if the server should be async , false otherwise
-   * @return
+   * @param enableAsync true if the server should be async, false otherwise
    */
   public static HttpServer create(int port,
                                   Set<Class<?>> resourceClasses,
@@ -113,7 +110,7 @@ public class MockHttpServerFactory
                                   boolean enableAsync)
   {
     RestLiConfig config = createConfig(port);
-    Set<String> resourceClassNames = new HashSet<String>();
+    Set<String> resourceClassNames = new HashSet<>();
     for (Class<?> clazz: resourceClasses)
     {
       resourceClassNames.add(clazz.getName());
@@ -166,15 +163,14 @@ public class MockHttpServerFactory
    * @param port the port the server will run on on localhost
    * @param config the {@link RestLiConfig} to be used by the {@link RestLiServer}
    * @param beans beans you want to inject into your Rest.li resource.
-   * @param enableAsync true if the server should be async , false otherwise
-   * @return
+   * @param enableAsync true if the server should be async, false otherwise
    */
   private static HttpServer create(int port, RestLiConfig config, Map<String, ?> beans, boolean enableAsync)
   {
     final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(NUM_THREADS);
     final ExecutorService executor = Executors.newFixedThreadPool(NUM_THREADS);
     EngineBuilder engineBuilder = new EngineBuilder().setTaskExecutor(scheduler).setTimerScheduler(scheduler);
-    AsyncCallableTask.register(engineBuilder, executor);
+    com.linkedin.parseq.AsyncCallableTask.register(engineBuilder, executor);
 
     final Engine engine = engineBuilder.build();
     ResourceFactory resourceFactory = createResourceFactory(beans);

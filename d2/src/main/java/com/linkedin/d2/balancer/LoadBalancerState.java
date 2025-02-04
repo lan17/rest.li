@@ -20,15 +20,19 @@ import com.linkedin.common.callback.Callback;
 import com.linkedin.common.util.None;
 import com.linkedin.d2.balancer.clients.TrackerClient;
 import com.linkedin.d2.balancer.properties.ClusterProperties;
+import com.linkedin.d2.balancer.properties.FailoutProperties;
 import com.linkedin.d2.balancer.properties.ServiceProperties;
 import com.linkedin.d2.balancer.properties.UriProperties;
 import com.linkedin.d2.balancer.strategies.LoadBalancerStrategy;
+import com.linkedin.d2.balancer.subsetting.SubsettingState;
 import com.linkedin.d2.balancer.util.partitions.PartitionAccessor;
 import com.linkedin.d2.discovery.event.PropertyEventThread.PropertyEventShutdownCallback;
 import com.linkedin.r2.transport.common.bridge.client.TransportClient;
 
 import java.net.URI;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 
 /**
@@ -69,6 +73,13 @@ public interface LoadBalancerState
 
   void listenToCluster(String clusterName, LoadBalancerStateListenerCallback callback);
 
+  /**
+   * Stops listening to a cluster
+   * @param clusterName the cluster to stop listening to.
+   * @param callback callback to be invoked after stopped listening to the cluster.
+   */
+  default void stopListenToCluster(String clusterName, LoadBalancerStateListenerCallback callback) {}
+
   void start(Callback<None> callback);
 
   void shutdown(PropertyEventShutdownCallback shutdown);
@@ -76,6 +87,8 @@ public interface LoadBalancerState
   LoadBalancerStateItem<UriProperties> getUriProperties(String clusterName);
 
   LoadBalancerStateItem<ClusterProperties> getClusterProperties(String clusterName);
+
+  LoadBalancerStateItem<FailoutProperties> getFailoutProperties(String clusterName);
 
   LoadBalancerStateItem<PartitionAccessor> getPartitionAccessor(String clusterName);
 
@@ -90,15 +103,39 @@ public interface LoadBalancerState
   List<SchemeStrategyPair> getStrategiesForService(String serviceName,
                                                     List<String> prioritizedSchemes);
 
-  public static interface LoadBalancerStateListenerCallback
+  default SubsettingState.SubsetItem getClientsSubset(String serviceName,
+                                                   int minClusterSubsetSize,
+                                                   int partitionId,
+                                                   Map<URI, Double> possibleUris,
+                                                   long version)
   {
-    public static int SERVICE = 0;
-    public static int CLUSTER = 1;
+    return new SubsettingState.SubsetItem(false, false, possibleUris, Collections.emptySet());
+  }
+
+  /**
+   * This registers the LoadBalancerClusterListener with the LoadBalancerState, so that
+   * the user can receive updates.
+   */
+  default void registerClusterListener(LoadBalancerClusterListener clusterListener)
+  {
+  }
+
+  /**
+   * Unregister the LoadBalancerClusterListener.
+   */
+  default void unregisterClusterListener(LoadBalancerClusterListener clusterListener)
+  {
+  }
+
+  interface LoadBalancerStateListenerCallback
+  {
+    int SERVICE = 0;
+    int CLUSTER = 1;
 
     void done(int type, String name);
   }
 
-  public static class NullStateListenerCallback implements
+  class NullStateListenerCallback implements
       LoadBalancerStateListenerCallback
   {
     @Override
@@ -107,7 +144,7 @@ public interface LoadBalancerState
     }
   }
 
-  public static class SchemeStrategyPair
+  class SchemeStrategyPair
   {
     private final String _scheme;
     private final LoadBalancerStrategy _strategy;

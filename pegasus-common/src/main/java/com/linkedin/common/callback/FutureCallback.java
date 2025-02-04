@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class FutureCallback<T> implements Future<T>, Callback<T>
 {
-  private final AtomicReference<Result<T>> _result = new AtomicReference<Result<T>>();
+  private final AtomicReference<Result<T>> _result = new AtomicReference<>();
   private final CountDownLatch _doneLatch = new CountDownLatch(1);
 
   @Override
@@ -100,12 +100,8 @@ public class FutureCallback<T> implements Future<T>, Callback<T>
   @Override
   public void onError(final Throwable e)
   {
-    if (e == null)
-    {
-      throw new NullPointerException();
-    }
-
-    safeSetValue(Result.<T>createError(e));
+    Throwable error = e != null ? e : new NullPointerException("Null error is passed to onError!");
+    safeSetValue(Result.<T>createError(error));
     _doneLatch.countDown();
   }
 
@@ -156,12 +152,12 @@ public class FutureCallback<T> implements Future<T>, Callback<T>
 
     public static <T> Result<T> createSuccess(final T t)
     {
-      return new Result<T>(t, null, true);
+      return new Result<>(t, null, true);
     }
 
     public static <T> Result<T> createError(final Throwable e)
     {
-      return new Result<T>(null, e, false);
+      return new Result<>(null, e, false);
     }
 
     private Result(final T result, final Throwable ex, final boolean isSuccess)

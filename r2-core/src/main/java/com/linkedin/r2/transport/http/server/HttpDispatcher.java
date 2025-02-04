@@ -26,6 +26,8 @@ import com.linkedin.r2.message.stream.StreamResponse;
 import com.linkedin.r2.message.stream.entitystream.BaseConnector;
 import com.linkedin.r2.message.stream.entitystream.EntityStreams;
 import com.linkedin.r2.message.stream.entitystream.Observer;
+import com.linkedin.r2.message.timing.FrameworkTimingKeys;
+import com.linkedin.r2.message.timing.TimingContextUtil;
 import com.linkedin.r2.transport.common.MessageType;
 import com.linkedin.r2.transport.common.WireAttributeHelper;
 import com.linkedin.r2.transport.common.bridge.common.TransportCallback;
@@ -51,7 +53,9 @@ public class HttpDispatcher
    * Construct a new instance which delegates to the specified dispatcher.
    *
    * @param dispatcher the {@link com.linkedin.r2.transport.common.bridge.server.TransportDispatcher} to which requests are delegated.
+   * @deprecated Use {@link HttpDispatcherFactory#create(TransportDispatcher)} instead.
    */
+  @Deprecated
   public HttpDispatcher(TransportDispatcher dispatcher)
   {
     _dispatcher = dispatcher;
@@ -82,7 +86,9 @@ public class HttpDispatcher
                             RequestContext context,
                             TransportCallback<RestResponse> callback)
   {
-    final Map<String, String> headers = new HashMap<String, String>(req.getHeaders());
+    markOnRequestTimings(context);
+
+    final Map<String, String> headers = new HashMap<>(req.getHeaders());
     final Map<String, String> wireAttrs = WireAttributeHelper.removeWireAttributes(headers);
 
     try
@@ -129,7 +135,9 @@ public class HttpDispatcher
                             RequestContext context,
                             final TransportCallback<StreamResponse> callback)
   {
-    final Map<String, String> headers = new HashMap<String, String>(req.getHeaders());
+    markOnRequestTimings(context);
+
+    final Map<String, String> headers = new HashMap<>(req.getHeaders());
     final Map<String, String> wireAttrs = WireAttributeHelper.removeWireAttributes(headers);
 
     final BaseConnector connector = new BaseConnector();
@@ -194,5 +202,11 @@ public class HttpDispatcher
       connector.cancel();
       callback.onResponse(TransportResponseImpl.<StreamResponse>error(e, Collections.<String, String>emptyMap()));
     }
+  }
+
+  private static void markOnRequestTimings(RequestContext requestContext)
+  {
+    TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST.key());
+    TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_R2.key());
   }
 }

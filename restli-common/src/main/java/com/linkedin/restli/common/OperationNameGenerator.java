@@ -24,9 +24,6 @@ public class OperationNameGenerator
 {
   /**
    * Builds the operation string for a method
-   * @param method
-   * @param methodName
-   * @return
    */
   public static String generate(ResourceMethod method, String methodName)
   {
@@ -39,6 +36,9 @@ public class OperationNameGenerator
         operation += (ACTION_AND_FINDER_SEPARATOR + methodName);
         break;
       case FINDER:
+        operation += (ACTION_AND_FINDER_SEPARATOR + methodName);
+        break;
+      case BATCH_FINDER:
         operation += (ACTION_AND_FINDER_SEPARATOR + methodName);
         break;
     }

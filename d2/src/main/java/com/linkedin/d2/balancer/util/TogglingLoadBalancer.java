@@ -23,9 +23,17 @@ package com.linkedin.d2.balancer.util;
 import com.linkedin.common.callback.Callback;
 import com.linkedin.common.callback.Callbacks;
 import com.linkedin.common.util.None;
+import com.linkedin.d2.DarkClusterConfigMap;
 import com.linkedin.d2.balancer.LoadBalancer;
+import com.linkedin.d2.balancer.LoadBalancerClusterListener;
 import com.linkedin.d2.balancer.ServiceUnavailableException;
+import com.linkedin.d2.balancer.WarmUpService;
+import com.linkedin.d2.balancer.clusterfailout.FailoutConfig;
+import com.linkedin.d2.balancer.properties.ClusterProperties;
 import com.linkedin.d2.balancer.properties.ServiceProperties;
+import com.linkedin.d2.balancer.properties.UriProperties;
+import com.linkedin.d2.balancer.simple.SimpleLoadBalancer;
+import com.linkedin.d2.balancer.util.hashing.HashFunction;
 import com.linkedin.d2.balancer.util.hashing.HashRingProvider;
 import com.linkedin.d2.balancer.util.hashing.Ring;
 import com.linkedin.d2.balancer.util.partitions.PartitionAccessor;
@@ -36,10 +44,11 @@ import com.linkedin.r2.message.Request;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.transport.common.TransportClientFactory;
 import com.linkedin.r2.transport.common.bridge.client.TransportClient;
-
 import java.net.URI;
 import java.util.Collection;
 import java.util.Map;
+import org.apache.commons.lang3.tuple.Pair;
+
 
 /**
  * TogglingLoadBalancer encapsulates a load balancer which has a primary and backup source
@@ -48,15 +57,30 @@ import java.util.Map;
  * @version $Revision: $
  */
 
-public class TogglingLoadBalancer implements LoadBalancer, HashRingProvider, ClientFactoryProvider, PartitionInfoProvider
+public class TogglingLoadBalancer implements LoadBalancer, HashRingProvider, ClientFactoryProvider, PartitionInfoProvider, WarmUpService, ClusterInfoProvider
 {
   private final LoadBalancer _balancer;
+  private final WarmUpService _warmUpService;
+  private final HashRingProvider _hashRingProvider;
+  private final PartitionInfoProvider _partitionInfoProvider;
+  private final ClientFactoryProvider _clientFactoryProvider;
   private final TogglingPublisher<?>[] _toggles;
+  private final ClusterInfoProvider _clusterInfoProvider;
 
-  public TogglingLoadBalancer(LoadBalancer balancer, TogglingPublisher<?> ... toggles)
+  public TogglingLoadBalancer(SimpleLoadBalancer balancer, TogglingPublisher<?>... toggles)
   {
     _balancer = balancer;
+    _warmUpService = balancer;
+    _hashRingProvider = balancer;
+    _partitionInfoProvider = balancer;
+    _clientFactoryProvider = balancer;
     _toggles = toggles;
+    _clusterInfoProvider = balancer;
+  }
+
+  public TogglingLoadBalancer(LoadBalancer balancer, TogglingPublisher<?>... toggles)
+  {
+    this((SimpleLoadBalancer) balancer, toggles);
   }
 
   public void enablePrimary(Callback<None> callback)
@@ -90,49 +114,62 @@ public class TogglingLoadBalancer implements LoadBalancer, HashRingProvider, Cli
   }
 
   @Override
-  public ServiceProperties getLoadBalancedServiceProperties(String serviceName)
-      throws ServiceUnavailableException
+  public void getLoadBalancedServiceProperties(String serviceName, Callback<ServiceProperties> clientCallback)
   {
-    return _balancer.getLoadBalancedServiceProperties(serviceName);
+    _balancer.getLoadBalancedServiceProperties(serviceName, clientCallback);
   }
 
   @Override
-  public TransportClient getClient(Request request, RequestContext requestContext) throws ServiceUnavailableException
+  public void getLoadBalancedClusterAndUriProperties(String clusterName,
+      Callback<Pair<ClusterProperties, UriProperties>> callback)
   {
-    return _balancer.getClient(request, requestContext);
+    _balancer.getLoadBalancedClusterAndUriProperties(clusterName, callback);
+  }
+
+  @Override
+  public void getClient(Request request, RequestContext requestContext, Callback<TransportClient> clientCallback)
+  {
+     _balancer.getClient(request, requestContext, clientCallback);
   }
 
   @Override
   public <K> MapKeyResult<Ring<URI>, K> getRings(URI serviceUri, Iterable<K> keys) throws ServiceUnavailableException
   {
     checkLoadBalancer();
-    return ((HashRingProvider)_balancer).getRings(serviceUri, keys);
+    return _hashRingProvider.getRings(serviceUri, keys);
   }
 
   @Override
   public Map<Integer, Ring<URI>> getRings(URI serviceUri) throws ServiceUnavailableException
   {
     checkLoadBalancer();
-    return ((HashRingProvider)_balancer).getRings(serviceUri);
+    return _hashRingProvider.getRings(serviceUri);
+  }
+
+  @Override
+  public HashFunction<Request> getRequestHashFunction(String serviceName) throws ServiceUnavailableException
+  {
+    checkLoadBalancer();
+    return _hashRingProvider.getRequestHashFunction(serviceName);
   }
 
   @Override
   public <K> HostToKeyMapper<K> getPartitionInformation(URI serviceUri, Collection<K> keys, int limitHostPerPartition, int hash) throws ServiceUnavailableException
   {
     checkPartitionInfoProvider();
-    return ((PartitionInfoProvider)_balancer).getPartitionInformation(serviceUri, keys, limitHostPerPartition, hash);
+    return _partitionInfoProvider.getPartitionInformation(serviceUri, keys, limitHostPerPartition, hash);
   }
 
   @Override
-  public PartitionAccessor getPartitionAccessor(URI serviceUri) throws ServiceUnavailableException
+  public PartitionAccessor getPartitionAccessor(String serviceName) throws ServiceUnavailableException
   {
     checkPartitionInfoProvider();
-    return ((PartitionInfoProvider)_balancer).getPartitionAccessor(serviceUri);
+    return _partitionInfoProvider.getPartitionAccessor(serviceName);
   }
 
   private void checkLoadBalancer()
   {
-    if (_balancer == null || !(_balancer instanceof HashRingProvider))
+    if (_hashRingProvider == null)
     {
       throw new IllegalStateException("No HashRingProvider available to TogglingLoadBalancer - this could be because the load balancer " +
           "is not yet initialized, or because it has been configured with strategies that do not support " +
@@ -142,7 +179,7 @@ public class TogglingLoadBalancer implements LoadBalancer, HashRingProvider, Cli
 
   private void checkPartitionInfoProvider()
   {
-    if (_balancer == null || !(_balancer instanceof PartitionInfoProvider))
+    if (_partitionInfoProvider == null)
     {
       throw new IllegalStateException("No PartitionInfoProvider available to TogglingLoadBalancer - this could be because the load balancer " +
                                           "is not yet initialized, or because it has been configured with strategies that do not support " +
@@ -153,7 +190,7 @@ public class TogglingLoadBalancer implements LoadBalancer, HashRingProvider, Cli
   @Override
   public TransportClientFactory getClientFactory(String scheme)
   {
-    if (_balancer == null || !(_balancer instanceof ClientFactoryProvider))
+    if (_clientFactoryProvider == null)
     {
       throw new IllegalStateException("No ClientFactoryProvider available to TogglingLoadBalancer - " +
                                               "this could be because the load balancer " +
@@ -161,6 +198,48 @@ public class TogglingLoadBalancer implements LoadBalancer, HashRingProvider, Cli
                                               "configured with a LoadBalancer which does not" +
                                               "support obtaining client factories");
     }
-    return ((ClientFactoryProvider)_balancer).getClientFactory(scheme);
+    return _clientFactoryProvider.getClientFactory(scheme);
+  }
+
+  @Override
+  public void warmUpService(String serviceName, Callback<None> callback)
+  {
+    _warmUpService.warmUpService(serviceName, callback);
+  }
+
+  @Override
+  public int getClusterCount(String clusterName, String scheme, int partitionId) throws ServiceUnavailableException {
+    return _clusterInfoProvider.getClusterCount(clusterName, scheme, partitionId);
+  }
+
+  @Override
+  public DarkClusterConfigMap getDarkClusterConfigMap(String clusterName)
+    throws ServiceUnavailableException
+  {
+    return _clusterInfoProvider.getDarkClusterConfigMap(clusterName);
+  }
+
+  @Override
+  public void getDarkClusterConfigMap(String clusterName, Callback<DarkClusterConfigMap> callback)
+  {
+    _clusterInfoProvider.getDarkClusterConfigMap(clusterName, callback);
+  }
+
+  @Override
+  public FailoutConfig getFailoutConfig(String clusterName)
+  {
+    return _clusterInfoProvider.getFailoutConfig(clusterName);
+  }
+
+  @Override
+  public void registerClusterListener(LoadBalancerClusterListener clusterListener)
+  {
+    _clusterInfoProvider.registerClusterListener(clusterListener);
+  }
+
+  @Override
+  public void unregisterClusterListener(LoadBalancerClusterListener clusterListener)
+  {
+    _clusterInfoProvider.unregisterClusterListener(clusterListener);
   }
 }

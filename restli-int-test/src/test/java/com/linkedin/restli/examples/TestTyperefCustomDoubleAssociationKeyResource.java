@@ -16,7 +16,6 @@
 
 package com.linkedin.restli.examples;
 
-
 import com.linkedin.data.template.DynamicRecordMetadata;
 import com.linkedin.r2.RemoteInvocationException;
 import com.linkedin.r2.transport.common.Client;
@@ -26,18 +25,24 @@ import com.linkedin.restli.client.GetRequest;
 import com.linkedin.restli.client.GetRequestBuilder;
 import com.linkedin.restli.client.Response;
 import com.linkedin.restli.client.RestClient;
+import com.linkedin.restli.client.RestLiResponseException;
 import com.linkedin.restli.client.RestliRequestOptions;
 import com.linkedin.restli.common.CompoundKey;
+import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.common.ResourceMethod;
 import com.linkedin.restli.common.ResourceSpecImpl;
+import com.linkedin.restli.examples.custom.types.CustomDouble;
 import com.linkedin.restli.examples.greetings.api.Message;
+import com.linkedin.restli.examples.typeref.api.CustomDoubleRef;
+import com.linkedin.restli.examples.typeref.api.UriRef;
 import com.linkedin.restli.internal.common.TestConstants;
-
+import com.linkedin.restli.server.RestLiConfig;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
-
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
@@ -50,7 +55,7 @@ import org.testng.annotations.Test;
  */
 public class TestTyperefCustomDoubleAssociationKeyResource extends RestLiIntegrationTest
 {
-  private static final Client CLIENT = new TransportClientAdapter(new HttpClientFactory().getClient(Collections.<String, String>emptyMap()));
+  private static final Client CLIENT = new TransportClientAdapter(new HttpClientFactory.Builder().build().getClient(Collections.<String, String>emptyMap()));
   private static final String URI_PREFIX = "http://localhost:1338/";
   private static final RestClient REST_CLIENT = new RestClient(CLIENT, URI_PREFIX);
 
@@ -64,7 +69,9 @@ public class TestTyperefCustomDoubleAssociationKeyResource extends RestLiIntegra
   @BeforeClass
   public void initClass() throws Exception
   {
-    super.init();
+    RestLiConfig config = new RestLiConfig();
+    config.setValidateResourceKeys(true);
+    super.init(false, config);
   }
 
   @AfterClass
@@ -74,32 +81,49 @@ public class TestTyperefCustomDoubleAssociationKeyResource extends RestLiIntegra
   }
 
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestOptionsDataProvider")
-  public void testGet(RestliRequestOptions requestOptions) throws RemoteInvocationException
+  public void testGet(RestliRequestOptions requestOptions) throws RemoteInvocationException, URISyntaxException
   {
-    HashMap<String, CompoundKey.TypeInfo> keyParts = new HashMap<String, CompoundKey.TypeInfo>();
-    keyParts.put("src", new CompoundKey.TypeInfo(Double.class, Double.class));
-    keyParts.put("dest", new CompoundKey.TypeInfo(Double.class, Double.class));
-    GetRequestBuilder<CompoundKey, Message> getBuilder = new GetRequestBuilder<CompoundKey, Message>(
+    HashMap<String, CompoundKey.TypeInfo> keyParts = new HashMap<>();
+    keyParts.put("src", new CompoundKey.TypeInfo(CustomDouble.class, CustomDoubleRef.class));
+    keyParts.put("dest", new CompoundKey.TypeInfo(URI.class, UriRef.class));
+    GetRequestBuilder<CompoundKey, Message> getBuilder = new GetRequestBuilder<>(
         "typerefCustomDoubleAssociationKeyResource",
         Message.class,
         new ResourceSpecImpl(EnumSet.of(ResourceMethod.GET),
-                             new HashMap<String, DynamicRecordMetadata>(),
-                             new HashMap<String, DynamicRecordMetadata>(),
-                             CompoundKey.class,
-                             null,
-                             null,
-                             Message.class,
-                             keyParts),
+            new HashMap<>(),
+            new HashMap<>(),
+            CompoundKey.class,
+            null,
+            null,
+            Message.class,
+            keyParts),
         requestOptions);
 
     final String[] stringArray = {"foo"};
-    GetRequest<Message> req = getBuilder.id(new CompoundKey().append("src", 100.0).append("dest", 200.0))
-                                        .setReqParam("array", stringArray)
-                                        .build();
+    GetRequest<Message> req = getBuilder
+        .id(new CompoundKey()
+            .append("src", new CustomDouble(100.0))
+            .append("dest", new URI("http://www.linkedin.com/")))
+        .setReqParam("array", stringArray)
+        .build();
     Response<Message> resp = REST_CLIENT.sendRequest(req).getResponse();
     Message result = resp.getEntity();
-    Assert.assertEquals(result.getId(), "100.0->200.0");
+    Assert.assertEquals(result.getId(), "100.0->www.linkedin.com");
     Assert.assertEquals(result.getMessage(),
                         String.format("I need some $20. Array contents %s.", Arrays.asList(stringArray)));
+
+    // key validation failure scenario
+    try
+    {
+      req = getBuilder.id(
+          new CompoundKey().append("src", new CustomDouble(100.02)).append("dest", new URI("http://www.linkedin.com/")))
+          .setReqParam("array", stringArray).build();
+      REST_CLIENT.sendRequest(req).getResponse();
+    }
+    catch (RestLiResponseException ex)
+    {
+      Assert.assertEquals(ex.getServiceErrorMessage(), "Input field validation failure, reason: ERROR ::  :: \"100.02\" does not match [0-9]*\\.[0-9]\n");
+      Assert.assertEquals(ex.getStatus(), HttpStatus.S_400_BAD_REQUEST.getCode());
+    }
   }
 }

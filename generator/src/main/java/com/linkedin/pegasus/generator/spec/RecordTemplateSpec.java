@@ -19,8 +19,10 @@ package com.linkedin.pegasus.generator.spec;
 
 import com.linkedin.data.schema.RecordDataSchema;
 
+import com.linkedin.pegasus.generator.CodeUtil;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 
 /**
@@ -33,7 +35,7 @@ public class RecordTemplateSpec extends ClassTemplateSpec
   public RecordTemplateSpec(RecordDataSchema schema)
   {
     setSchema(schema);
-    _fields = new ArrayList<Field>();
+    _fields = new ArrayList<>();
   }
 
   @Override
@@ -45,6 +47,12 @@ public class RecordTemplateSpec extends ClassTemplateSpec
   public List<Field> getFields()
   {
     return _fields;
+  }
+
+  public List<Field> getWrappedFields()
+  {
+    return _fields.stream().filter(field ->
+        !CodeUtil.isDirectType(field.getSchemaField().getType())).collect(Collectors.toList());
   }
 
   public void addField(Field field)

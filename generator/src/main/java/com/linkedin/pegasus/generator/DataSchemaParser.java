@@ -1,67 +1,113 @@
 /*
-   Copyright (c) 2015 LinkedIn Corp.
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
-*/
+ * Copyright 2015 Coursera Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 package com.linkedin.pegasus.generator;
 
-
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.DataSchemaLocation;
+import com.linkedin.data.schema.DataSchemaParserFactory;
 import com.linkedin.data.schema.DataSchemaResolver;
-import com.linkedin.data.schema.NamedDataSchema;
-import com.linkedin.data.schema.PegasusSchemaParser;
-import com.linkedin.data.schema.SchemaParserFactory;
+import com.linkedin.data.schema.resolver.AbstractMultiFormatDataSchemaResolver;
 import com.linkedin.data.schema.resolver.FileDataSchemaLocation;
-import com.linkedin.data.schema.resolver.FileDataSchemaResolver;
 import com.linkedin.data.schema.resolver.InJarFileDataSchemaLocation;
+import com.linkedin.data.schema.resolver.MultiFormatDataSchemaResolver;
+import com.linkedin.data.schema.resolver.SchemaDirectory;
+import com.linkedin.data.schema.resolver.SchemaDirectoryName;
 import com.linkedin.util.FileUtil;
-
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
+import java.io.FileFilter;
 import java.io.IOException;
-import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.jar.JarEntry;
-import java.util.jar.JarFile;
+import java.util.stream.Collectors;
+import org.apache.commons.io.FilenameUtils;
 
 
 /**
- * Parse various forms of source into {@link DataSchema}.
+ * Combines multiple file format specific parsers into a single parser for ".pdsc" and ".pdl" files. Use {@link Builder}
+ * to create instances of this parser.
  *
- * @author Keren Jin
+ * @author Joe Betz
  */
 public class DataSchemaParser
 {
   private final String _resolverPath;
-  private final DataSchemaResolver _schemaResolver;
-  private final SchemaParserFactory _schemaParserFactory;
-  private final String _fileExtension;
+  private final Map<String, FileFormatDataSchemaParser> _parserByFileExtension;
+  private final AbstractMultiFormatDataSchemaResolver _resolver;
 
   /**
-   * Initialize my {@link DataSchemaResolver} with the resolver path.
+   * @param resolverPath provides the search paths separated by the system file separator, or null for no search paths.
+   * @deprecated Use {@link Builder} to construct the parser.
    */
+  @Deprecated
   public DataSchemaParser(String resolverPath)
   {
-    this(resolverPath, CodeUtil.createSchemaResolver(resolverPath), SchemaParserFactory.instance(), FileDataSchemaResolver.DEFAULT_EXTENSION);
+    this(resolverPath, AbstractMultiFormatDataSchemaResolver.BUILTIN_FORMAT_PARSER_FACTORIES,
+        Collections.singletonList(SchemaDirectoryName.PEGASUS),
+        Collections.singletonList(SchemaDirectoryName.PEGASUS));
+  }
+
+  /**
+   * @param resolverPath provides the search paths separated by the system file separator, or null for no search paths.
+   * @param parserFactoriesForFormats list of different formats that we want to parse
+   * @deprecated Use {@link Builder} to construct the parser.
+   */
+  @Deprecated
+  public DataSchemaParser(
+      String resolverPath,
+      List<DataSchemaParserFactory> parserFactoriesForFormats)
+  {
+    this(resolverPath, parserFactoriesForFormats, Collections.singletonList(SchemaDirectoryName.PEGASUS),
+        Collections.singletonList(SchemaDirectoryName.PEGASUS));
+  }
+
+  /**
+   * @param resolverPath provides the search paths separated by the system file separator, or null for no search paths.
+   * @param resolver A resolver that address its own specific requirement, for example, resolving extension schemas in a Jar file
+   * @deprecated Use {@link Builder} to construct the parser.
+   */
+  @Deprecated
+  public DataSchemaParser(String resolverPath, AbstractMultiFormatDataSchemaResolver resolver)
+  {
+    _parserByFileExtension = new HashMap<>();
+    _resolverPath = resolverPath;
+    this._resolver = resolver;
+    init(resolver, MultiFormatDataSchemaResolver.BUILTIN_FORMAT_PARSER_FACTORIES,
+        resolver.getSchemaDirectories());
+  }
+
+  private DataSchemaParser(String resolverPath,
+      List<DataSchemaParserFactory> parserFactoriesForFormats,
+      List<SchemaDirectory> sourceDirectories,
+      List<SchemaDirectory> resolverDirectories)
+  {
+    _parserByFileExtension = new HashMap<>();
+    _resolverPath = resolverPath;
+    MultiFormatDataSchemaResolver resolver =
+        new MultiFormatDataSchemaResolver(resolverPath, parserFactoriesForFormats, resolverDirectories);
+    this._resolver = resolver;
+    init(resolver, MultiFormatDataSchemaResolver.BUILTIN_FORMAT_PARSER_FACTORIES,
+        sourceDirectories);
   }
 
   public String getResolverPath()
@@ -69,225 +115,110 @@ public class DataSchemaParser
     return _resolverPath;
   }
 
-  public DataSchemaResolver getSchemaResolver()
+  private static class FileExtensionFilter implements FileFilter
   {
-    return _schemaResolver;
+    private final Set<String> extensions;
+
+    public FileExtensionFilter(Set<String> extensions)
+    {
+      this.extensions = extensions;
+    }
+
+    @Override
+    public boolean accept(File file)
+    {
+      return extensions.contains(FilenameUtils.getExtension(file.getName()));
+    }
   }
 
-  public DataSchemaParser(String resolverPath, DataSchemaResolver schemaResolver, SchemaParserFactory schemaParserFactory, String fileExtension)
+  public DataSchemaResolver getSchemaResolver()
   {
-    _resolverPath = resolverPath;
-    _schemaResolver = schemaResolver;
-    _schemaParserFactory = schemaParserFactory;
-    _fileExtension = fileExtension;
+    return _resolver;
   }
 
   /**
-   * Parses sources that specify paths to schema files and/or fully qualified schema names.
+   * Parses all schemas from the specified sources. Sources can be schema files, jars containing schemas or directories
+   * with schema files.
    *
-   * @param sources provides the paths to schema files and/or fully qualified schema names.
-   * @return {@link ParseResult} for what were read.
-   * @throws IOException if there are problems opening or deleting files.
+   * @param rawSources sources to scan and parse for pegasus schemas.
    */
-  public ParseResult parseSources(String sources[]) throws IOException
+  public DataSchemaParser.ParseResult parseSources(String[] rawSources) throws IOException
   {
-    final ParseResult result = new ParseResult();
-
-    try
+    Set<String> fileExtensions = _parserByFileExtension.keySet();
+    Map<String, List<String>> byExtension = new HashMap<>(fileExtensions.size());
+    for (String fileExtension : fileExtensions)
     {
-      for (String source : sources)
-      {
-        final File sourceFile = new File(source);
-        if (sourceFile.exists())
-        {
-          if (sourceFile.isDirectory())
-          {
-            final FileUtil.FileExtensionFilter filter = new FileUtil.FileExtensionFilter(_fileExtension);
-            final List<File> sourceFilesInDirectory = FileUtil.listFiles(sourceFile, filter);
-            for (File f : sourceFilesInDirectory)
-            {
-              parseFile(f, result);
-              result._sourceFiles.add(f);
-            }
-          }
-          else
-          {
-            if (sourceFile.getName().endsWith(".jar"))
-            {
-              final JarFile jarFile = new JarFile(sourceFile);
-              final Enumeration<JarEntry> entries = jarFile.entries();
-              while (entries.hasMoreElements())
-              {
-                final JarEntry entry = entries.nextElement();
-                if (!entry.isDirectory() && entry.getName().endsWith(FileDataSchemaResolver.DEFAULT_EXTENSION))
-                {
-                  parseJarEntry(jarFile, entry, result);
-                }
-              }
-            }
-            else
-            {
-              parseFile(sourceFile, result);
-            }
+      byExtension.put(fileExtension, new ArrayList<>());
+    }
 
-            result._sourceFiles.add(sourceFile);
+    String[] sortedSources = Arrays.copyOf(rawSources, rawSources.length);
+    Arrays.sort(sortedSources);
+
+    // Extract all schema files from the given source paths and group by extension (JARs are handled specially)
+    for (String source : sortedSources)
+    {
+      final File sourceFile = new File(source);
+      if (sourceFile.exists())
+      {
+        if (sourceFile.isDirectory())
+        {
+          // Source path is a directory, so recursively find all schema files contained therein
+          final FileExtensionFilter filter = new FileExtensionFilter(fileExtensions);
+          final List<File> sourceFilesInDirectory = FileUtil.listFiles(sourceFile, filter);
+          // Add each schema to the corresponding extension's source list
+          for (File f : sourceFilesInDirectory)
+          {
+            String ext = FilenameUtils.getExtension(f.getName());
+            List<String> filesForExtension = byExtension.get(ext);
+            if (filesForExtension != null)
+            {
+              filesForExtension.add(f.getAbsolutePath());
+            }
           }
+        }
+        else if (sourceFile.getName().endsWith(".jar"))
+        {
+          // Source path is a JAR, so add it to each extension's source list.
+          // The file-based parser for each extension will extract the JAR and process only files matching the extension
+          byExtension.values().forEach(files -> files.add(sourceFile.getAbsolutePath()));
         }
         else
         {
-          final StringBuilder errorMessage = new StringBuilder();
-          final DataSchema schema = _schemaResolver.findDataSchema(source, errorMessage);
-          if (schema == null)
+          // Source path is a non-JAR file, so add it to the corresponding extension's source list
+          String ext = FilenameUtils.getExtension(sourceFile.getName());
+          List<String> filesForExtension = byExtension.get(ext);
+          if (filesForExtension != null)
           {
-            result._messageBuilder.append("File cannot be opened or schema name cannot be resolved: ").append(source).append("\n");
-          }
-          if (errorMessage.length() > 0)
-          {
-            result._messageBuilder.append(errorMessage.toString());
+            filesForExtension.add(sourceFile.getAbsolutePath());
           }
         }
       }
-
-      if (result._messageBuilder.length() > 0)
-      {
-        throw new IOException(result.getMessage());
-      }
-
-      for (Map.Entry<String, DataSchemaLocation> entry : _schemaResolver.nameToDataSchemaLocations().entrySet()) {
-        final DataSchema schema = _schemaResolver.bindings().get(entry.getKey());
-        result._schemaAndLocations.put(schema, entry.getValue());
-      }
-
-      return result;
     }
-    catch (RuntimeException e)
+
+    // Parse all schema files and JARs using the appropriate file format parser
+    final ParseResult result = new ParseResult();
+    for (Map.Entry<String, List<String>> entry : byExtension.entrySet())
     {
-      if (result._messageBuilder.length() > 0)
-      {
-        e = new RuntimeException("Unexpected " + e.getClass().getSimpleName() + " encountered.\n" +
-                                     "This may be caused by the following parsing or processing errors:\n" +
-                                     result.getMessage(), e);
-      }
-      throw e;
+      String ext = entry.getKey();
+      List<String> files = entry.getValue();
+      _parserByFileExtension.get(ext).parseSources(files.toArray(new String[files.size()]), result);
     }
+
+    return result;
   }
 
-  /**
-   * Parse a source that specifies a file (not a fully qualified schema name).
-   *
-   * @param schemaSourceFile provides the source file.
-   * @throws IOException if there is a file access error.
-   */
-  private void parseFile(File schemaSourceFile, ParseResult result)
-      throws IOException
+  private void init(AbstractMultiFormatDataSchemaResolver resolver,
+      List<DataSchemaParserFactory> parserFactoriesForFormats,
+      List<SchemaDirectory> sourceDirectories)
   {
-    final DataSchemaLocation location = getSchemaLocation(schemaSourceFile);
-    // if a the data schema has been resolved before, must skip parsing again, because one name can't be bound to two data schemas
-    if (_schemaResolver.locationResolved(location))
+    for (DataSchemaParserFactory parserForFormat : parserFactoriesForFormats)
     {
-      return;
-    }
-
-    final InputStream inputStream = new SchemaFileInputStream(schemaSourceFile);
-    final List<DataSchema> schemas = parseSchemaStream(inputStream, location, result);
-
-    for (DataSchema schema : schemas)
-    {
-      if (schema instanceof NamedDataSchema)
-      {
-        validateSchemaWithPath(schemaSourceFile.getAbsolutePath(), (NamedDataSchema) schema);
-      }
-
-      result._schemaAndLocations.put(schema, location);
+      FileFormatDataSchemaParser fileFormatParser =
+          new FileFormatDataSchemaParser(resolver, parserForFormat, sourceDirectories);
+      _parserByFileExtension.put(parserForFormat.getLanguageExtension(), fileFormatParser);
     }
   }
 
-  private void parseJarEntry(JarFile schemaJarFile, JarEntry jarEntry, ParseResult result)
-      throws IOException
-  {
-    final DataSchemaLocation location = getSchemaLocation(schemaJarFile, jarEntry.getName());
-    if (_schemaResolver.locationResolved(location))
-    {
-      return;
-    }
-
-    final InputStream jarStream = schemaJarFile.getInputStream(jarEntry);
-    final List<DataSchema> schemas = parseSchemaStream(jarStream, location, result);
-
-    for (DataSchema schema : schemas)
-    {
-      if (schema instanceof NamedDataSchema)
-      {
-        validateSchemaWithPath(location.toString(), (NamedDataSchema) schema);
-      }
-
-      result._schemaAndLocations.put(schema, location);
-    }
-  }
-
-  private DataSchemaLocation getSchemaLocation(File schemaFile)
-  {
-    return new FileDataSchemaLocation(schemaFile);
-  }
-
-  private DataSchemaLocation getSchemaLocation(JarFile jarFile, String pathInJar)
-  {
-    return new InJarFileDataSchemaLocation(jarFile, pathInJar);
-  }
-
-  /**
-   * Checks that the schema name and namespace match the file name and path.  These must match for FileDataSchemaResolver to find a schema pdscs by fully qualified name.
-   */
-  private void validateSchemaWithPath(String path, NamedDataSchema namedDataSchema)
-  {
-    final String namespace = namedDataSchema.getNamespace();
-
-    if (!FileUtil.removeFileExtension(path.substring(path.lastIndexOf(File.separator) + 1)).equalsIgnoreCase(namedDataSchema.getName()))
-    {
-      throw new IllegalArgumentException(namedDataSchema.getFullName() + " has name that does not match path '" +
-                                             path + "'");
-    }
-
-    final String parent = path.substring(0, path.lastIndexOf(File.separator));
-    if (!parent.endsWith(namespace.replace('.', File.separatorChar)))
-    {
-      throw new IllegalArgumentException(namedDataSchema.getFullName() + " has namespace that does not match " +
-                                             "parent path '" + parent + "'");
-    }
-  }
-
-  /**
-   * Parse a source file to obtain the data schemas contained within.
-   * This method will cause the {@link DataSchemaResolver} to resolve any referenced named and unnamed schemas,
-   * as well as registering named schemas in its bindings.
-   *
-   * @param schemaInputStream provides the source data.
-   * @return the top-level data schemas within the source file.
-   * @throws IOException if there is a file access error.
-   */
-  private List<DataSchema> parseSchemaStream(InputStream schemaInputStream, DataSchemaLocation schemaLocation, ParseResult result)
-      throws IOException
-  {
-    PegasusSchemaParser parser = _schemaParserFactory.create(_schemaResolver);
-    try
-    {
-      parser.setLocation(schemaLocation);
-      parser.parse(schemaInputStream);
-      if (parser.hasError())
-      {
-        return Collections.emptyList();
-      }
-      return parser.topLevelDataSchemas();
-    }
-    finally
-    {
-      schemaInputStream.close();
-      if (parser.hasError())
-      {
-        result._messageBuilder.append(schemaLocation.toString()).append(",").append(parser.errorMessage());
-      }
-    }
-  }
 
   /**
    * Represent the result of schema parsing. Consist of two parts: schema from file path and from schema name, based on user input.
@@ -298,13 +229,58 @@ public class DataSchemaParser
    */
   public static class ParseResult
   {
-    private final Map<DataSchema, DataSchemaLocation> _schemaAndLocations = new HashMap<DataSchema, DataSchemaLocation>();
-    private final Set<File> _sourceFiles = new HashSet<File>();
-    private final StringBuilder _messageBuilder = new StringBuilder();
+    private static final String EXTENSION_FILENAME_SUFFIX = "Extensions.pdl";
+    // Store the results in a LinkedHashMap to ensure ordering is deterministic for a given set of source inputs
+    private final Map<DataSchema, DataSchemaLocation> _schemaAndLocations = new LinkedHashMap<>();
+    private final Set<File> _sourceFiles = new HashSet<>();
+    protected final StringBuilder _messageBuilder = new StringBuilder();
 
+    /**
+     * Get all schema and schemaLocations in one shot
+     * @return a map of data schema locations keyed by DataSchema object
+     */
     public Map<DataSchema, DataSchemaLocation> getSchemaAndLocations()
     {
       return _schemaAndLocations;
+    }
+
+    /**
+     * Get all base schemas from the parsing result. The base schema is judged by non-extension schemas.
+     * @return a map of non-extension data schema locations keyed by DataSchema object
+     */
+    public Map<DataSchema, DataSchemaLocation> getBaseDataSchemaAndLocations()
+    {
+      return _schemaAndLocations.entrySet().stream().filter(entry -> !isExtensionSchemaLocation(entry))
+          .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    /**
+     * Get all extension schema, the criteria is as:
+     * 1. The path suffix is like Extensions.pdl
+     * 2. The path prefix contains "extensions" substring.
+     * @return a map of extension schema and location
+     */
+    public Map<DataSchema, DataSchemaLocation> getExtensionDataSchemaAndLocations()
+    {
+      return _schemaAndLocations.entrySet().stream().filter(DataSchemaParser.ParseResult::isExtensionSchemaLocation)
+          .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    static boolean isExtensionSchemaLocation(Map.Entry<DataSchema, DataSchemaLocation> entry)
+    {
+      DataSchemaLocation dataSchemaLocation = entry.getValue();
+      if (dataSchemaLocation instanceof InJarFileDataSchemaLocation)
+      {
+        InJarFileDataSchemaLocation inJarFileDataSchemaLocation = (InJarFileDataSchemaLocation) dataSchemaLocation;
+        return inJarFileDataSchemaLocation.getPathInJar().startsWith(SchemaDirectoryName.EXTENSIONS.getName());
+      }
+      else if (dataSchemaLocation instanceof FileDataSchemaLocation)
+      {
+        FileDataSchemaLocation fileDataSchemaLocation = (FileDataSchemaLocation) dataSchemaLocation;
+        return fileDataSchemaLocation.getSourceFile().getName().endsWith(EXTENSION_FILENAME_SUFFIX) &&
+            fileDataSchemaLocation.getSourceFile().getParent().indexOf(SchemaDirectoryName.EXTENSIONS.getName()) > 0;
+      }
+      return false;
     }
 
     public Set<File> getSourceFiles()
@@ -316,23 +292,66 @@ public class DataSchemaParser
     {
       return _messageBuilder.toString();
     }
+
+    public ParseResult addMessage(String message)
+    {
+      _messageBuilder.append(message);
+      return this;
+    }
   }
 
-  private static class SchemaFileInputStream extends FileInputStream
+  public static class Builder
   {
-    private File _schemaSourceFile;
+    private final String _resolverPath;
+    private List<DataSchemaParserFactory> _parserFactoriesForFormats = AbstractMultiFormatDataSchemaResolver.BUILTIN_FORMAT_PARSER_FACTORIES;
+    private List<SchemaDirectory> _sourceDirectories = Collections.singletonList(SchemaDirectoryName.PEGASUS);
+    private List<SchemaDirectory> _resolverDirectories = Collections.singletonList(SchemaDirectoryName.PEGASUS);
 
-    private SchemaFileInputStream(File file)
-        throws FileNotFoundException
+    public Builder(String resolverPath)
     {
-      super(file);
-      _schemaSourceFile = file;
+      _resolverPath = resolverPath;
     }
 
-    @Override
-    public String toString()
+    /**
+     * Create a new instance of the builder.
+     * @param resolverPath Resolver path to use for resolving schema references.
+     */
+    public static Builder newBuilder(String resolverPath)
     {
-      return _schemaSourceFile.toString();
+      return new Builder(resolverPath);
+    }
+
+    /**
+     * Set the parser factories to use for different schema file formats. Defaults to
+     * {@link AbstractMultiFormatDataSchemaResolver#BUILTIN_FORMAT_PARSER_FACTORIES}
+     */
+    public Builder setParserFactoriesForFormats(List<DataSchemaParserFactory> parserFactoriesForFormats)
+    {
+      _parserFactoriesForFormats = parserFactoriesForFormats;
+      return this;
+    }
+
+    /**
+     * Set the schema directories to use for parsing source schema files.
+     */
+    public Builder setSourceDirectories(List<SchemaDirectory> sourceDirectories)
+    {
+      _sourceDirectories = sourceDirectories;
+      return this;
+    }
+
+    /**
+     * Set the schema directories to use for resolving referenced schemas.
+     */
+    public Builder setResolverDirectories(List<SchemaDirectory> resolverDirectories)
+    {
+      _resolverDirectories = resolverDirectories;
+      return this;
+    }
+
+    public DataSchemaParser build()
+    {
+      return new DataSchemaParser(_resolverPath, _parserFactoriesForFormats, _sourceDirectories, _resolverDirectories);
     }
   }
 }

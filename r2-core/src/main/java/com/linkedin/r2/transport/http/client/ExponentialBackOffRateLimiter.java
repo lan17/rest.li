@@ -45,7 +45,7 @@ public class ExponentialBackOffRateLimiter implements RateLimiter
   private final long _initialIncrement;
   private final long _maxPeriod;
   private final int _maxRunningTasks;
-  private final Queue<Task> _pending = new LinkedList<Task>();
+  private final Queue<Task> _pending = new LinkedList<>();
   private long _period;
   private int  _runningTasks;
   private ScheduledFuture<?> _task;
@@ -173,24 +173,10 @@ public class ExponentialBackOffRateLimiter implements RateLimiter
   @Override
   public void submit(Task t)
   {
-    boolean runNow = false;
     synchronized (this)
     {
-      if (_period == 0 && _pending.isEmpty() && _runningTasks < _maxRunningTasks)
-      {
-        _runningTasks ++;
-        runNow = true;
-      }
-      else
-      {
-        _pending.add(t);
-        schedule();
-      }
-    }
-
-    if (runNow)
-    {
-      t.run(_doneCallback);
+      _pending.add(t);
+      schedule();
     }
   }
 
@@ -199,13 +185,18 @@ public class ExponentialBackOffRateLimiter implements RateLimiter
   {
     synchronized (this)
     {
-      Collection<Task> cancelled = new ArrayList<Task>(_pending.size());
+      Collection<Task> cancelled = new ArrayList<>(_pending.size());
       for (Task item; (item = _pending.poll()) != null;)
       {
         cancelled.add(item);
       }
       return cancelled;
     }
+  }
+
+  public int numberOfPendingTasks()
+  {
+    return _pending.size();
   }
 
   /**

@@ -17,8 +17,11 @@
 package com.linkedin.data.codec;
 
 
+import com.linkedin.data.ByteString;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
+import com.linkedin.util.FastByteArrayOutputStream;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -51,6 +54,34 @@ public interface DataCodec
    * @throws IOException if there is a serialization error.
    */
   byte[] listToBytes(DataList list) throws IOException;
+
+  /**
+   * Serialize a {@link DataMap} to a {@link ByteString}.
+   *
+   * @param map to serialize.
+   * @return the output serialized from the {@link DataMap}.
+   * @throws IOException if there is a serialization error.
+   */
+  default ByteString mapToByteString(DataMap map) throws IOException
+  {
+    FastByteArrayOutputStream outputStream = new FastByteArrayOutputStream();
+    writeMap(map, outputStream);
+    return outputStream.toUnsafeByteString();
+  }
+
+  /**
+   * Serialize a {@link DataList} to a {@link ByteString}
+   *
+   * @param list to serialize.
+   * @return the output serialized from the {@link DataList}.
+   * @throws IOException if there is a serialization error.
+   */
+  default ByteString listToByteString(DataList list) throws IOException
+  {
+    FastByteArrayOutputStream outputStream = new FastByteArrayOutputStream();
+    writeList(list, outputStream);
+    return outputStream.toUnsafeByteString();
+  }
 
   /**
    * De-serialize a byte array to a {@link DataMap}.
@@ -105,4 +136,47 @@ public interface DataCodec
    * @throws IOException if there is an error during de-serialization.
    */
   DataList readList(InputStream in) throws IOException;
+
+  /**
+   * Returns a {@link DataMap} from data consumed from the given {@link ByteString}.
+   *
+   * @param in the {@link ByteString} from which to read.
+   * @return a {@link DataMap} representation of read from the {@link ByteString}.
+   * @throws IOException if there is an error during de-serialization.
+   */
+  default DataMap readMap(ByteString in) throws IOException
+  {
+    return readMap(in.asInputStream());
+  }
+
+  /**
+   * Returns a {@link DataList} from data consumed from the given {@link ByteString}.
+   *
+   * @param in the {@link ByteString} from which to read.
+   * @return a {@link DataList} representation of read from the {@link ByteString}.
+   * @throws IOException if there is an error during de-serialization.
+   */
+  default DataList readList(ByteString in) throws IOException
+  {
+    return readList(in.asInputStream());
+  }
+
+  /**
+   * Close the given closeable, silently swallowing any {@link IOException} that arises as a result of
+   * invoking {@link Closeable#close()}.
+   */
+  static void closeQuietly(Closeable closeable)
+  {
+    if (closeable != null)
+    {
+      try
+      {
+        closeable.close();
+      }
+      catch (IOException e)
+      {
+        // TODO: use Java 7 try-with-resources statement and Throwable.getSuppressed()
+      }
+    }
+  }
 }

@@ -16,14 +16,16 @@
 
 package com.linkedin.d2.balancer.config;
 
+import com.linkedin.d2.ConsistentHashAlgorithmEnum;
 import com.linkedin.d2.D2LoadBalancerStrategyProperties;
 import com.linkedin.d2.balancer.properties.PropertyKeys;
+import com.linkedin.d2.balancer.strategies.DelegatingRingFactory;
 import com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategyV3;
 import com.linkedin.d2.balancer.util.hashing.URIRegexHash;
 import com.linkedin.d2.hashConfigType;
 import com.linkedin.d2.hashMethodEnum;
+import com.linkedin.d2.quarantineInfo;
 import com.linkedin.data.template.StringArray;
-import com.linkedin.data.template.StringMap;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -83,6 +85,10 @@ public class LoadBalancerStrategyPropertiesConverter
     {
       map.put(PropertyKeys.HTTP_LB_CLUSTER_MIN_CALL_COUNT_HIGH_WATER_MARK, config.getMinCallCountHighWaterMark().toString());
     }
+    if (config.hasHashRingPointCleanupRate())
+    {
+      map.put(PropertyKeys.HTTP_LB_HASHRING_POINT_CLEANUP_RATE, config.getHashRingPointCleanupRate().toString());
+    }
     if (config.hasMinCallCountLowWaterMark())
     {
       map.put(PropertyKeys.HTTP_LB_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK, config.getMinCallCountLowWaterMark().toString());
@@ -110,11 +116,67 @@ public class LoadBalancerStrategyPropertiesConverter
       {
         hashConfigProperties.put(URIRegexHash.KEY_REGEXES, hashConfig.getUriRegexes().stream().collect(Collectors.toList()));
       }
+      if (hashConfig.hasFailOnNoMatch()) {
+        hashConfigProperties.put(URIRegexHash.KEY_FAIL_ON_NO_MATCH, hashConfig.isFailOnNoMatch().toString());
+      }
+      if (hashConfig.hasWarnOnNoMatch()) {
+        hashConfigProperties.put(URIRegexHash.KEY_WARN_ON_NO_MATCH, hashConfig.isWarnOnNoMatch().toString());
+      }
       map.put(PropertyKeys.HTTP_LB_HASH_CONFIG, hashConfigProperties);
     }
     if (config.hasUpdateOnlyAtInterval())
     {
       map.put(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_ONLY_AT_INTERVAL, config.isUpdateOnlyAtInterval().toString());
+    }
+    if (config.hasConsistentHashAlgorithm())
+    {
+      switch (config.getConsistentHashAlgorithm())
+      {
+        case MULTI_PROBE:
+          map.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM, DelegatingRingFactory.MULTI_PROBE_CONSISTENT_HASH);
+          break;
+        case POINT_BASED:
+          map.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM, DelegatingRingFactory.POINT_BASED_CONSISTENT_HASH);
+          break;
+        case DISTRIBUTION_BASED:
+          map.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM, DelegatingRingFactory.DISTRIBUTION_NON_HASH);
+      }
+    }
+    if (config.hasNumberOfProbes())
+    {
+      map.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_NUM_PROBES, config.getNumberOfProbes().toString());
+    }
+    if (config.hasNumberOfPointsPerHost())
+    {
+      map.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_POINTS_PER_HOST, config.getNumberOfPointsPerHost().toString());
+    }
+    if (config.hasBoundedLoadBalancingFactor())
+    {
+      map.put(PropertyKeys.HTTP_LB_CONSISTENT_HASH_BOUNDED_LOAD_BALANCING_FACTOR, config.getBoundedLoadBalancingFactor().toString());
+    }
+    if (config.hasQuarantineCfg())
+    {
+      quarantineInfo quarantineInfo = config.getQuarantineCfg();
+      if (quarantineInfo.hasQuarantineMaxPercent())
+      {
+        map.put(PropertyKeys.HTTP_LB_QUARANTINE_MAX_PERCENT, quarantineInfo.getQuarantineMaxPercent().toString());
+      }
+      if (quarantineInfo.hasQuarantineMethod())
+      {
+        map.put(PropertyKeys.HTTP_LB_QUARANTINE_METHOD, quarantineInfo.getQuarantineMethod().toString());
+      }
+    }
+    if (config.hasErrorStatusRegex())
+    {
+      map.put(PropertyKeys.HTTP_LB_ERROR_STATUS_REGEX, config.getErrorStatusRegex());
+    }
+    if (config.hasLowEmittingInterval())
+    {
+      map.put(PropertyKeys.HTTP_LB_LOW_EVENT_EMITTING_INTERVAL, config.getLowEmittingInterval().toString());
+    }
+    if (config.hasHighEmittingInterval())
+    {
+      map.put(PropertyKeys.HTTP_LB_HIGH_EVENT_EMITTING_INTERVAL, config.getHighEmittingInterval().toString());
     }
     return map;
   }
@@ -167,6 +229,11 @@ public class LoadBalancerStrategyPropertiesConverter
       config.setMinCallCountLowWaterMark(
           coerce(properties.get(PropertyKeys.HTTP_LB_CLUSTER_MIN_CALL_COUNT_LOW_WATER_MARK), Long.class));
     }
+    if (properties.containsKey(PropertyKeys.HTTP_LB_HASHRING_POINT_CLEANUP_RATE))
+    {
+      config.setHashRingPointCleanupRate(
+          coerce(properties.get(PropertyKeys.HTTP_LB_HASHRING_POINT_CLEANUP_RATE), Double.class));
+    }
     if (properties.containsKey(PropertyKeys.HTTP_LB_HASH_METHOD))
     {
       String hashMethodString = coerce(properties.get(PropertyKeys.HTTP_LB_HASH_METHOD), String.class);
@@ -184,8 +251,16 @@ public class LoadBalancerStrategyPropertiesConverter
       Map<String, Object> hashConfigProperties = (Map<String, Object>)properties.get(PropertyKeys.HTTP_LB_HASH_CONFIG);
       if (hashConfigProperties.containsKey(URIRegexHash.KEY_REGEXES))
       {
-        List<String> uriRegexes = (List<String>)hashConfigProperties.remove(URIRegexHash.KEY_REGEXES);
+        List<String> uriRegexes = (List<String>)hashConfigProperties.get(URIRegexHash.KEY_REGEXES);
         hashConfig.setUriRegexes(new StringArray(uriRegexes));
+      }
+      if (hashConfigProperties.containsKey(URIRegexHash.KEY_WARN_ON_NO_MATCH)) {
+        String warnOnNoMatchString = (String) hashConfigProperties.get(URIRegexHash.KEY_WARN_ON_NO_MATCH);
+        hashConfig.setWarnOnNoMatch(Boolean.parseBoolean(warnOnNoMatchString));
+      }
+      if (hashConfigProperties.containsKey(URIRegexHash.KEY_FAIL_ON_NO_MATCH)) {
+        String failOnNoMatchString = (String) hashConfigProperties.get(URIRegexHash.KEY_FAIL_ON_NO_MATCH);
+        hashConfig.setFailOnNoMatch(Boolean.parseBoolean(failOnNoMatchString));
       }
       config.setHashConfig(hashConfig);
     }
@@ -195,6 +270,61 @@ public class LoadBalancerStrategyPropertiesConverter
           coerce(properties.get(PropertyKeys.HTTP_LB_STRATEGY_PROPERTIES_UPDATE_ONLY_AT_INTERVAL),
               Boolean.class));
     }
+    if (properties.containsKey(PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM))
+    {
+      String consistentHashAlgorithm = coerce(properties.get(PropertyKeys.HTTP_LB_CONSISTENT_HASH_ALGORITHM), String.class);
+      if (DelegatingRingFactory.POINT_BASED_CONSISTENT_HASH.equalsIgnoreCase(consistentHashAlgorithm))
+      {
+        config.setConsistentHashAlgorithm(ConsistentHashAlgorithmEnum.POINT_BASED);
+      }
+      else if (DelegatingRingFactory.MULTI_PROBE_CONSISTENT_HASH.equalsIgnoreCase(consistentHashAlgorithm))
+      {
+        config.setConsistentHashAlgorithm(ConsistentHashAlgorithmEnum.MULTI_PROBE);
+      }
+      else if (DelegatingRingFactory.DISTRIBUTION_NON_HASH.equalsIgnoreCase(consistentHashAlgorithm))
+      {
+        config.setConsistentHashAlgorithm(ConsistentHashAlgorithmEnum.DISTRIBUTION_BASED);
+      }
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_LB_CONSISTENT_HASH_NUM_PROBES))
+    {
+      config.setNumberOfProbes(coerce(properties.get(PropertyKeys.HTTP_LB_CONSISTENT_HASH_NUM_PROBES), Integer.class));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_LB_CONSISTENT_HASH_POINTS_PER_HOST))
+    {
+      config.setNumberOfPointsPerHost(coerce(properties.get(PropertyKeys.HTTP_LB_CONSISTENT_HASH_POINTS_PER_HOST), Integer.class));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_LB_CONSISTENT_HASH_BOUNDED_LOAD_BALANCING_FACTOR))
+    {
+      config.setBoundedLoadBalancingFactor(coerce(properties.get(PropertyKeys.HTTP_LB_CONSISTENT_HASH_BOUNDED_LOAD_BALANCING_FACTOR), Double.class));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_LB_QUARANTINE_MAX_PERCENT) ||
+        properties.containsKey(PropertyKeys.HTTP_LB_QUARANTINE_METHOD))
+    {
+      quarantineInfo quarantineInfo = new quarantineInfo();
+      if (properties.containsKey(PropertyKeys.HTTP_LB_QUARANTINE_MAX_PERCENT))
+      {
+        quarantineInfo.setQuarantineMaxPercent(coerce(properties.get(PropertyKeys.HTTP_LB_QUARANTINE_MAX_PERCENT), Double.class));
+      }
+      if (properties.containsKey(PropertyKeys.HTTP_LB_QUARANTINE_METHOD))
+      {
+        quarantineInfo.setQuarantineMethod(coerce(properties.get(PropertyKeys.HTTP_LB_QUARANTINE_METHOD), String.class));
+      }
+      config.setQuarantineCfg(quarantineInfo);
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_LB_ERROR_STATUS_REGEX))
+    {
+      config.setErrorStatusRegex(coerce(properties.get(PropertyKeys.HTTP_LB_ERROR_STATUS_REGEX), String.class));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_LB_LOW_EVENT_EMITTING_INTERVAL))
+    {
+      config.setLowEmittingInterval(coerce(properties.get(PropertyKeys.HTTP_LB_LOW_EVENT_EMITTING_INTERVAL), Integer.class));
+    }
+    if (properties.containsKey(PropertyKeys.HTTP_LB_HIGH_EVENT_EMITTING_INTERVAL))
+    {
+      config.setHighEmittingInterval(coerce(properties.get(PropertyKeys.HTTP_LB_HIGH_EVENT_EMITTING_INTERVAL), Integer.class));
+    }
+
     return config;
   }
 }

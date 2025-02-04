@@ -32,6 +32,7 @@ import com.linkedin.r2.message.stream.entitystream.ByteStringWriter;
 import com.linkedin.r2.message.stream.entitystream.EntityStream;
 import com.linkedin.r2.message.stream.entitystream.EntityStreams;
 import com.linkedin.r2.message.stream.entitystream.FullEntityReader;
+import com.linkedin.r2.message.stream.entitystream.Reader;
 import com.linkedin.r2.transport.http.common.HttpConstants;
 
 import java.io.ByteArrayInputStream;
@@ -73,16 +74,19 @@ public class TestClientStreamCompressionFilter
     private String _headerName;
     private int _entityLength = 0;
     private EntityStream _entityStream;
+    private final Reader _entityReader;
 
-    public HeaderCaptureFilter(String headerName, boolean shouldBePresent)
+    public HeaderCaptureFilter(String headerName, boolean shouldBePresent, Reader entityReader)
     {
       _shouldBePresent = shouldBePresent;
       _headerName = headerName;
+      _entityReader = entityReader;
+
     }
 
-    public HeaderCaptureFilter(String headerName, boolean shouldBePresent, int entityLength)
+    public HeaderCaptureFilter(String headerName, boolean shouldBePresent, int entityLength, Reader entityReader)
     {
-      this(headerName, shouldBePresent);
+      this(headerName, shouldBePresent, entityReader);
       _entityLength = entityLength;
     }
 
@@ -101,6 +105,10 @@ public class TestClientStreamCompressionFilter
       if (_entityLength > 0)
       {
         _entityStream = streamRequest.getEntityStream();
+        if (_entityReader != null)
+        {
+          _entityStream.setReader(_entityReader);
+        }
       }
     }
 
@@ -164,7 +172,7 @@ public class TestClientStreamCompressionFilter
       context.putLocalAttr(R2Constants.OPERATION, operation);
 
       clientCompressionFilter.onStreamRequest(streamRequest, context, Collections.<String, String>emptyMap(),
-          new HeaderCaptureFilter(HttpConstants.ACCEPT_ENCODING, headerShouldBePresent));
+          new HeaderCaptureFilter(HttpConstants.ACCEPT_ENCODING, headerShouldBePresent,null));
     }
   }
 
@@ -175,24 +183,39 @@ public class TestClientStreamCompressionFilter
     CompressionConfig largeThresholdConfig = new CompressionConfig(10000);
 
     return new Object[][] {
-        {new CompressionConfig(Integer.MAX_VALUE), CompressionOption.FORCE_OFF, false},
-        {new CompressionConfig(Integer.MAX_VALUE), CompressionOption.FORCE_ON, true},
-        {new CompressionConfig(Integer.MAX_VALUE), null, false},
-        {new CompressionConfig(0), CompressionOption.FORCE_OFF, false},
-        {new CompressionConfig(0), CompressionOption.FORCE_ON, true},
-        {new CompressionConfig(0), null, true},
-        {smallThresholdConfig, CompressionOption.FORCE_OFF, false},
-        {smallThresholdConfig, CompressionOption.FORCE_ON, true},
-        {smallThresholdConfig, null, true},
-        {largeThresholdConfig, CompressionOption.FORCE_OFF, false},
-        {largeThresholdConfig, CompressionOption.FORCE_ON, true},
-        {largeThresholdConfig, null, false}
+        {new CompressionConfig(Integer.MAX_VALUE), CompressionOption.FORCE_OFF, false, ""},
+        {new CompressionConfig(Integer.MAX_VALUE), CompressionOption.FORCE_ON, true, ""},
+        {new CompressionConfig(Integer.MAX_VALUE), null, false, ""},
+        {new CompressionConfig(0), CompressionOption.FORCE_OFF, false, ""},
+        {new CompressionConfig(0), CompressionOption.FORCE_ON, true, ""},
+        {new CompressionConfig(0), null, true, ""},
+        {smallThresholdConfig, CompressionOption.FORCE_OFF, false, ""},
+        {smallThresholdConfig, CompressionOption.FORCE_ON, true, ""},
+        {smallThresholdConfig, null, true, ""},
+        {largeThresholdConfig, CompressionOption.FORCE_OFF, false, ""},
+        {largeThresholdConfig, CompressionOption.FORCE_ON, true, ""},
+        {largeThresholdConfig, null, false, ""},
+        // The same tests, but with null instead of an empty string
+        {new CompressionConfig(Integer.MAX_VALUE), CompressionOption.FORCE_OFF, false, null},
+        {new CompressionConfig(Integer.MAX_VALUE), CompressionOption.FORCE_ON, true, null},
+        {new CompressionConfig(Integer.MAX_VALUE), null, false, null},
+        {new CompressionConfig(0), CompressionOption.FORCE_OFF, false, null},
+        {new CompressionConfig(0), CompressionOption.FORCE_ON, true, null},
+        {new CompressionConfig(0), null, true, null},
+        {smallThresholdConfig, CompressionOption.FORCE_OFF, false, null},
+        {smallThresholdConfig, CompressionOption.FORCE_ON, true, null},
+        {smallThresholdConfig, null, true, null},
+        {largeThresholdConfig, CompressionOption.FORCE_OFF, false, null},
+        {largeThresholdConfig, CompressionOption.FORCE_ON, true, null},
+        {largeThresholdConfig, null, false, null}
     };
   }
 
   @Test(dataProvider = "requestData")
   public void testRequestCompressionRules(CompressionConfig requestCompressionConfig,
-                                          CompressionOption requestCompressionOverride, boolean headerShouldBePresent)
+                                          CompressionOption requestCompressionOverride,
+                                          boolean headerShouldBePresent,
+                                          String operation)
       throws CompressionException, URISyntaxException, InterruptedException, ExecutionException, TimeoutException {
     Executor executor = Executors.newCachedThreadPool();
     ClientStreamCompressionFilter clientCompressionFilter = new ClientStreamCompressionFilter(
@@ -200,7 +223,7 @@ public class TestClientStreamCompressionFilter
         requestCompressionConfig,
         ACCEPT_COMPRESSIONS,
         new CompressionConfig(Integer.MAX_VALUE),
-        Collections.<String>emptyList(),
+        Arrays.asList(ClientCompressionHelper.COMPRESS_ALL_RESPONSES_INDICATOR),
         executor);
     // The entity should be compressible for this test.
     int original = 100;
@@ -213,21 +236,59 @@ public class TestClientStreamCompressionFilter
 
     int compressed = EncodingType.GZIP.getCompressor().deflate(new ByteArrayInputStream(entity)).length;
     RequestContext context = new RequestContext();
-    context.putLocalAttr(R2Constants.OPERATION, "");
+    if (operation != null)
+    {
+      context.putLocalAttr(R2Constants.OPERATION, operation);
+    }
     context.putLocalAttr(R2Constants.REQUEST_COMPRESSION_OVERRIDE, requestCompressionOverride);
     int entityLength = headerShouldBePresent ? compressed : original;
 
+    FutureCallback<ByteString> callback = new FutureCallback<>();
+    FullEntityReader reader = new FullEntityReader(callback);
+
     HeaderCaptureFilter captureFilter =
-        new HeaderCaptureFilter(HttpConstants.CONTENT_ENCODING, headerShouldBePresent, entityLength);
+        new HeaderCaptureFilter(HttpConstants.CONTENT_ENCODING, headerShouldBePresent, entityLength, reader);
+
     clientCompressionFilter.onStreamRequest(streamRequest, context, Collections.<String, String>emptyMap(),
         captureFilter);
 
-    FutureCallback<ByteString> callback = new FutureCallback<ByteString>();
-    FullEntityReader reader = new FullEntityReader(callback);
-    captureFilter.getEntityStream().setReader(reader);
-
-
     ByteString entityRead = callback.get(10, TimeUnit.SECONDS);
     Assert.assertEquals(entityRead.length(), entityLength);
+  }
+
+  @Test(dataProvider = "requestData")
+  public void testAcceptEncodingHeader(CompressionConfig requestCompressionConfig,
+                                       CompressionOption requestCompressionOverride,
+                                       boolean headerShouldBePresent,
+                                       String operation)
+      throws CompressionException, URISyntaxException, InterruptedException, ExecutionException, TimeoutException {
+    Executor executor = Executors.newCachedThreadPool();
+    ClientStreamCompressionFilter clientCompressionFilter = new ClientStreamCompressionFilter(
+        StreamEncodingType.GZIP.getHttpName(),
+        requestCompressionConfig,
+        ACCEPT_COMPRESSIONS,
+        new CompressionConfig(Integer.MAX_VALUE),
+        Arrays.asList(ClientCompressionHelper.COMPRESS_ALL_RESPONSES_INDICATOR),
+        executor);
+    // The entity should be compressible for this test.
+    int original = 100;
+    byte[] entity = new byte[original];
+    Arrays.fill(entity, (byte)'A');
+    StreamRequest streamRequest =
+        new StreamRequestBuilder(new URI(URI))
+            .setMethod(RestMethod.POST)
+            .build(EntityStreams.newEntityStream(new ByteStringWriter(ByteString.copy(entity))));
+
+    int compressed = EncodingType.GZIP.getCompressor().deflate(new ByteArrayInputStream(entity)).length;
+    RequestContext context = new RequestContext();
+    if (operation != null)
+    {
+      context.putLocalAttr(R2Constants.OPERATION, operation);
+    }
+    context.putLocalAttr(R2Constants.REQUEST_COMPRESSION_OVERRIDE, requestCompressionOverride);
+    int entityLength = headerShouldBePresent ? compressed : original;
+
+    clientCompressionFilter.onStreamRequest(streamRequest, context, Collections.<String, String>emptyMap(),
+                                            new HeaderCaptureFilter(HttpConstants.ACCEPT_ENCODING, true, null));
   }
 }

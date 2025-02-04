@@ -20,16 +20,14 @@ package com.linkedin.data.schema;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import static com.linkedin.data.schema.DataSchemaConstants.*;
 
 /**
  * Encodes a {@link DataSchema} to a JSON representation.
  */
-public class SchemaToJsonEncoder
+public class SchemaToJsonEncoder extends AbstractSchemaEncoder
 {
   /**
    * Encode a {@link DataSchema} to a JSON encoded string.
@@ -96,7 +94,14 @@ public class SchemaToJsonEncoder
 
   protected final JsonBuilder _builder;
   protected String _currentNamespace = "";
-  protected final Set<String> _alreadyDumped = new HashSet<String>();
+  protected String _currentPackage = "";
+  private boolean _alwaysUseFullyQualifedName = false;
+
+  public SchemaToJsonEncoder(JsonBuilder builder, TypeReferenceFormat typeReferenceFormat)
+  {
+    super(typeReferenceFormat);
+    this._builder = builder;
+  }
 
   public SchemaToJsonEncoder(JsonBuilder builder)
   {
@@ -124,19 +129,42 @@ public class SchemaToJsonEncoder
   }
 
   /**
+   * Configure the encoder to always use fully qualified names when encoding named type references.
+   * When encoding a type-reference that is in the current namespace (eg, com.linkedin.Foo), there are two options:
+   * <ul>
+   *   <li>Omit the namespace part and write only the simple name (Foo). This is the default behavior.</li>
+   *   <li>Encode the fully qualified name (com.linkedin.Foo).</li>
+   * </ul>
+   * Both options are equivalent and represents the same schema. Setting this flag to true enables using the second
+   * option while encoding.
+   */
+  public void setAlwaysUseFullyQualifiedName(boolean alwaysUseFullyQualifiedName)
+  {
+    _alwaysUseFullyQualifedName = alwaysUseFullyQualifiedName;
+  }
+
+  /**
    * Encode the specified {@link DataSchema}.
    * @param schema to encode.
    * @throws IOException if there is an error while encoding.
    */
   public void encode(DataSchema schema) throws IOException
   {
+    encode(schema, true);
+  }
+
+  protected void encode(DataSchema schema, boolean originallyInlined) throws IOException
+  {
+    TypeRepresentation representation = selectTypeRepresentation(schema, originallyInlined);
+    markEncountered(schema);
+
     if (schema.isPrimitive())
     {
       _builder.writeString(schema.getUnionMemberKey());
     }
     else if (schema instanceof NamedDataSchema)
     {
-      encodeNamed((NamedDataSchema) schema);
+      encodeNamed((NamedDataSchema) schema, representation);
     }
     else
     {
@@ -162,7 +190,8 @@ public class SchemaToJsonEncoder
         _builder.writeStartObject();
         _builder.writeStringField(TYPE_KEY, ARRAY_TYPE, true);
         _builder.writeFieldName(ITEMS_KEY);
-        encode(((ArrayDataSchema) schema).getItems());
+        ArrayDataSchema arrayDataSchema = (ArrayDataSchema) schema;
+        encode(arrayDataSchema.getItems(), arrayDataSchema.isItemsDeclaredInline());
         encodeProperties(schema);
         _builder.writeEndObject();
         break;
@@ -170,17 +199,13 @@ public class SchemaToJsonEncoder
         _builder.writeStartObject();
         _builder.writeStringField(TYPE_KEY, MAP_TYPE, true);
         _builder.writeFieldName(VALUES_KEY);
-        encode(((MapDataSchema) schema).getValues());
+        MapDataSchema mapDataSchema = (MapDataSchema) schema;
+        encode(mapDataSchema.getValues(), mapDataSchema.isValuesDeclaredInline());
         encodeProperties(schema);
         _builder.writeEndObject();
         break;
       case UNION:
-        _builder.writeStartArray();
-        for (DataSchema memberSchema : ((UnionDataSchema) schema).getTypes())
-        {
-          encode(memberSchema);
-        }
-        _builder.writeEndArray();
+        encodeUnion((UnionDataSchema) schema);
         break;
       default:
         throw new IllegalStateException("schema type " + schema.getType() + " is not a known unnamed DataSchema type");
@@ -198,24 +223,39 @@ public class SchemaToJsonEncoder
    */
   protected void encodeNamed(NamedDataSchema schema) throws IOException
   {
-    if (_alreadyDumped.contains(schema.getFullName()))
+    TypeRepresentation representation = selectTypeRepresentation(schema, true);
+    markEncountered(schema);
+    encodeNamed(schema, representation);
+  }
+
+  protected void encodeNamed(NamedDataSchema schema, TypeRepresentation representation) throws IOException
+  {
+    if (representation == TypeRepresentation.REFERENCED_BY_NAME)
     {
       writeSchemaName(schema);
       return;
     }
 
     String saveCurrentNamespace = _currentNamespace;
+    String saveCurrentPackage = _currentPackage;
 
     _builder.writeStartObject();
     _builder.writeStringField(TYPE_KEY, schema.getType().toString().toLowerCase(), true);
-    encodeName(NAME_KEY, schema);
+    encodeName(schema);
+    final String packageName = schema.getPackage();
+    if (packageName != null && !_currentPackage.equals(packageName))
+    {
+      _builder.writeStringField(PACKAGE_KEY, packageName, false);
+      _currentPackage = packageName;
+    }
     _builder.writeStringField(DOC_KEY, schema.getDoc(), false);
 
     switch(schema.getType())
     {
       case TYPEREF:
         _builder.writeFieldName(REF_KEY);
-        encode(((TyperefDataSchema) schema).getRef());
+        TyperefDataSchema typerefDataSchema = (TyperefDataSchema) schema;
+        encode(typerefDataSchema.getRef(), typerefDataSchema.isRefDeclaredInline());
         break;
       case ENUM:
         _builder.writeStringArrayField(SYMBOLS_KEY, ((EnumDataSchema) schema).getSymbols(), true);
@@ -226,25 +266,25 @@ public class SchemaToJsonEncoder
         break;
       case RECORD:
         RecordDataSchema recordDataSchema = (RecordDataSchema) schema;
-        if (isEncodeInclude() && recordDataSchema.getInclude().isEmpty() == false)
+        boolean hasIncludes = isEncodeInclude() && !recordDataSchema.getInclude().isEmpty();
+        boolean fieldsBeforeIncludes = recordDataSchema.isFieldsBeforeIncludes();
+        if (hasIncludes && !fieldsBeforeIncludes)
         {
-          _builder.writeFieldName(INCLUDE_KEY);
-          _builder.writeStartArray();
-          for (NamedDataSchema includedSchema : recordDataSchema.getInclude())
-          {
-            encode(includedSchema);
-          }
-          _builder.writeEndArray();
+          writeIncludes(recordDataSchema);
         }
         _builder.writeFieldName(FIELDS_KEY);
         encodeFields(recordDataSchema);
+        if (hasIncludes && fieldsBeforeIncludes)
+        {
+          writeIncludes(recordDataSchema);
+        }
         break;
       default:
         throw new IllegalStateException("schema type " + schema.getType() + " is not a known NamedDataSchema type");
     }
 
     encodeProperties(schema);
-    List<String> aliases = new ArrayList<String>();
+    List<String> aliases = new ArrayList<>();
     for (Name name : schema.getAliases())
     {
       aliases.add(name.getFullName());
@@ -253,11 +293,31 @@ public class SchemaToJsonEncoder
     _builder.writeEndObject();
 
     _currentNamespace = saveCurrentNamespace;
+    _currentPackage = saveCurrentPackage;
+  }
+
+  private void writeIncludes(RecordDataSchema recordDataSchema) throws IOException {
+    _builder.writeFieldName(INCLUDE_KEY);
+    _builder.writeStartArray();
+    for (NamedDataSchema includedSchema : recordDataSchema.getInclude())
+    {
+      encode(includedSchema, recordDataSchema.isIncludeDeclaredInline(includedSchema));
+    }
+    _builder.writeEndArray();
   }
 
   protected void writeSchemaName(NamedDataSchema schema) throws IOException
   {
-    _builder.writeString(_currentNamespace.equals(schema.getNamespace()) ? schema.getName() : schema.getFullName());
+    if (!_alwaysUseFullyQualifedName && _currentNamespace.equals(schema.getNamespace())) {
+      _builder.writeString(schema.getName());
+    } else {
+      // when the model is DENORMALIZE and turn on the override namespace option, add namespace prefix for all schema reference
+      if (_typeReferenceFormat == TypeReferenceFormat.DENORMALIZE) {
+        _builder.writeString(encodeNamespace(schema).isEmpty() ? schema.getName() : encodeNamespace(schema) + "." + schema.getName());
+      } else {
+        _builder.writeString(schema.getFullName());
+      }
+    }
   }
 
   /**
@@ -269,6 +329,60 @@ public class SchemaToJsonEncoder
   protected void encodeProperties(DataSchema schema) throws IOException
   {
     _builder.writeProperties(schema.getProperties());
+  }
+
+  /**
+   * Encode the members of an {@link UnionDataSchema}.
+   *
+   * @param unionDataSchema The union schema whose members needs to be encoded.
+   * @throws IOException if there is an error while encoding.
+   */
+  protected void encodeUnion(UnionDataSchema unionDataSchema) throws IOException
+  {
+    List<UnionDataSchema.Member> members = unionDataSchema.getMembers();
+
+    _builder.writeStartArray();
+
+    for (UnionDataSchema.Member member: members)
+    {
+      encodeUnionMember(member);
+    }
+
+    _builder.writeEndArray();
+  }
+
+  /**
+   * Encode a specific {@link com.linkedin.data.schema.UnionDataSchema.Member} of a union.
+   *
+   * @param member The specific union member that needs to be encoded.
+   * @throws IOException if there is an error while encoding.
+   */
+  protected void encodeUnionMember(UnionDataSchema.Member member) throws IOException
+  {
+    if (member.hasAlias())
+    {
+      _builder.writeStartObject();
+
+      // alias
+      _builder.writeStringField(ALIAS_KEY, member.getAlias(), true);
+
+      // type
+      _builder.writeFieldName(TYPE_KEY);
+      encode(member.getType(), member.isDeclaredInline());
+
+      // doc
+      _builder.writeStringField(DOC_KEY, member.getDoc(), false);
+
+      // properties
+      _builder.writeProperties(member.getProperties());
+
+      _builder.writeEndObject();
+    }
+    else
+    {
+      // for member without aliases, encode the type
+      encode(member.getType(), member.isDeclaredInline());
+    }
   }
 
   /**
@@ -332,7 +446,7 @@ public class SchemaToJsonEncoder
     }
 
     // properties
-    _builder.writeProperties(field.getProperties());
+    encodeFieldProperties(field);
 
     // aliases
     _builder.writeStringArrayField(ALIASES_KEY, field.getAliases(), false);
@@ -351,7 +465,8 @@ public class SchemaToJsonEncoder
   {
     _builder.writeFieldName(TYPE_KEY);
     DataSchema fieldSchema = field.getType();
-    encode(fieldSchema);
+
+    encode(fieldSchema, field.isDeclaredInline());
   }
 
   /**
@@ -384,6 +499,11 @@ public class SchemaToJsonEncoder
     }
   }
 
+  protected void encodeFieldProperties(RecordDataSchema.Field field) throws IOException
+  {
+    _builder.writeProperties(field.getProperties());
+  }
+
   /**
    * Encode a {@link Named}.
    *
@@ -394,24 +514,34 @@ public class SchemaToJsonEncoder
    * It also adds the fully qualified name to the set of names already dumped
    * and updates the current namespace.
    *
-   * @param nameKey provides the key used for the name.
    * @param schema provides the {@link NamedDataSchema}.
    * @throws IOException if there is an error while encoding.
    */
-  protected void encodeName(String nameKey, Named schema) throws IOException
+  protected void encodeName(Named schema) throws IOException
   {
     String fullName = schema.getFullName();
     if (fullName.isEmpty() == false)
     {
-      String namespace = schema.getNamespace();
-      _alreadyDumped.add(fullName);
-      _builder.writeStringField(nameKey, schema.getName(), true);
+      String namespace = encodeNamespace(schema);
+      _builder.writeStringField(NAME_KEY, schema.getName(), true);
       if (_currentNamespace.equals(namespace) == false)
       {
         _builder.writeStringField(NAMESPACE_KEY, namespace, true);
       }
       _currentNamespace = namespace;
     }
+  }
+
+  /**
+   * Encode namespace in the {@link Named}.
+   *
+   * This method encodes the namespace fields.
+   *
+   * @param schema provides the {@link NamedDataSchema}.
+   */
+  protected String encodeNamespace(Named schema)
+  {
+    return schema.getNamespace();
   }
 
   /**

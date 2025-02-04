@@ -16,57 +16,77 @@
 
 package com.linkedin.d2.discovery.stores.file;
 
-import static com.linkedin.d2.discovery.util.LogUtil.debug;
-import static com.linkedin.d2.discovery.util.LogUtil.error;
-import static com.linkedin.d2.discovery.util.LogUtil.info;
-import static com.linkedin.d2.discovery.util.LogUtil.warn;
-
+import com.linkedin.common.callback.Callback;
+import com.linkedin.common.util.None;
+import com.linkedin.d2.balancer.util.FileSystemDirectory;
+import com.linkedin.d2.discovery.PropertySerializationException;
+import com.linkedin.d2.discovery.PropertySerializer;
+import com.linkedin.d2.discovery.event.PropertyEventSubscriber;
+import com.linkedin.d2.discovery.stores.PropertyStore;
+import com.linkedin.d2.discovery.util.Stats;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-
-import com.linkedin.d2.discovery.PropertySerializationException;
-import com.linkedin.common.callback.Callback;
-import com.linkedin.common.util.None;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import javax.annotation.Nullable;
+import org.apache.commons.io.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.linkedin.d2.discovery.PropertySerializer;
-import com.linkedin.d2.discovery.event.PropertyEventSubscriber;
-import com.linkedin.d2.discovery.event.PropertyEventThread.PropertyEventShutdownCallback;
-import com.linkedin.d2.discovery.stores.PropertyStore;
-import com.linkedin.d2.discovery.util.Stats;
+import static com.linkedin.d2.discovery.util.LogUtil.error;
+import static com.linkedin.d2.discovery.util.LogUtil.info;
+import static com.linkedin.d2.discovery.util.LogUtil.warn;
 
+/**
+ * The following class provides the data structure to write props-values on disk
+ *
+ * It has implements a global (non-per-prop) fair read-write lock to access the database,
+ * allowing multiple reads at the same time.
+ */
 public class FileStore<T> implements PropertyStore<T>, PropertyEventSubscriber<T>
 {
   private static final Logger         _log = LoggerFactory.getLogger(FileStore.class);
   private static final String         TMP_FILE_PREFIX = "d2-";
 
-  private final String                _path;
-  private final String                _extension;
+  private final String _fsPath;
+  private final String _fsFileExtension;
   private final PropertySerializer<T> _serializer;
-  private final Stats                 _getStats;
-  private final Stats                 _putStats;
-  private final Stats                 _removeStats;
+  private final Stats _getStats;
+  private final Stats _putStats;
+  private final Stats _removeStats;
 
-  public FileStore(String path, String extension, PropertySerializer<T> serializer)
+  private final ReentrantReadWriteLock rwl = new ReentrantReadWriteLock(true);
+  private final Lock r = rwl.readLock();
+  private final Lock w = rwl.writeLock();
+
+  public FileStore(String fsPath, PropertySerializer<T> serializer)
+  {
+    this(fsPath, FileSystemDirectory.FILE_STORE_EXTENSION, serializer);
+  }
+
+  public FileStore(String fsPath, String fsFileExtension, PropertySerializer<T> serializer)
   {
     _getStats = new Stats(60000);
     _putStats = new Stats(60000);
     _removeStats = new Stats(60000);
-    _path = path;
-    _extension = extension;
+    _fsPath = fsPath;
+    _fsFileExtension = fsFileExtension;
     _serializer = serializer;
 
-    File file = new File(_path);
+    File file = new File(_fsPath);
 
     if (!file.exists())
     {
       if (!file.mkdirs())
       {
-        error(_log, "unable to create file path: " + _path);
+        error(_log, "unable to create file path: " + _fsPath);
       }
     }
   }
@@ -74,112 +94,212 @@ public class FileStore<T> implements PropertyStore<T>, PropertyEventSubscriber<T
   @Override
   public void start(Callback<None> callback)
   {
-    File file = new File(_path);
-    if (!file.exists())
+    if (start())
     {
-      if (!file.mkdirs())
-      {
-        callback.onError(new IOException("unable to create file path: " + _path));
-      }
-      else
-      {
-        callback.onSuccess(None.none());
-      }
+      callback.onSuccess(None.none());
+    }
+    else
+    {
+      callback.onError(new IOException("unable to create file path: " + _fsPath));
     }
   }
 
+  public boolean start()
+  {
+    File file = new File(_fsPath);
+    w.lock();
+    try
+    {
+      if (!file.exists() || !file.isDirectory())
+      {
+        return file.mkdirs();
+      }
+    }
+    finally
+    {
+      w.unlock();
+    }
+    return true;
+  }
+
+  /**
+   * @return The deserialized property or null if the file does not exist or
+   *         there was an error deserializing the property.
+   */
+  @Nullable
   @Override
   public T get(String listenTo)
   {
-    _getStats.inc();
-
-    File file = getFile(listenTo);
-
-    if (file.exists())
+    r.lock();
+    try
     {
-      try
-      {
-        byte content[] = new byte[(int) file.length()];
-        int offset = 0;
-        int read = 0;
-        int length = (int) file.length();
-        FileInputStream inputStream = new FileInputStream(file);
+      _getStats.inc();
 
-        while ((read = inputStream.read(content, offset, length - offset)) > 0)
+      File file = getFile(listenTo);
+
+      if (file.exists())
+      {
+        try
         {
-          offset += read;
+          byte content[] = new byte[(int) file.length()];
+          int offset = 0;
+          int read = 0;
+          int length = (int) file.length();
+          FileInputStream inputStream = new FileInputStream(file);
+
+          while ((read = inputStream.read(content, offset, length - offset)) > 0)
+          {
+            offset += read;
+          }
+
+          inputStream.close();
+
+          return _serializer.fromBytes(content);
         }
+        catch (IOException e)
+        {
+          _log.error("Error reading file: " + file.getAbsolutePath(), e);
+        }
+        catch (PropertySerializationException e)
+        {
+          _log.error("Error deserializing property " + listenTo + " for file " + file.getAbsolutePath(), e);
+        }
+      }
 
-        inputStream.close();
+      warn(_log, "file didn't exist on get: ", file);
 
-        return _serializer.fromBytes(content);
-      }
-      catch (IOException e)
-      {
-        _log.error("Error reading file: " + file.getAbsolutePath(), e);
-      }
-      catch (PropertySerializationException e)
-      {
-        _log.error("Error deserializing property " + listenTo + " for file " + file.getAbsolutePath(), e);
-      }
+      return null;
     }
+    finally
+    {
+      r.unlock();
+    }
+  }
 
-    warn(_log, "file didn't exist on get: ", file);
+  /**
+   * @return All deserialized properties, filtering out those that were unable to be deserialized properly.
+   */
+  public Map<String, T> getAll()
+  {
+    r.lock();
+    List<String> propertyNames;
+    try
+    {
+      propertyNames = FileSystemDirectory.getFileListWithoutExtension(_fsPath, _fsFileExtension);
 
-    return null;
+      Map<String, T> result = new HashMap<>();
+      for (String propertyName : propertyNames)
+      {
+        T property = get(propertyName);
+        if (property != null)
+        {
+          result.put(propertyName, property);
+        }
+      }
+      return result;
+    }
+    finally
+    {
+      r.unlock();
+    }
   }
 
   @Override
   public void put(String listenTo, T discoveryProperties)
   {
-    if (discoveryProperties == null)
+    w.lock();
+    try
     {
-      warn(_log, "received a null property for resource ", listenTo, " received a null property");
-    }
-    else
-    {
-      _putStats.inc();
-
-      File file = getFile(listenTo);
-
-      try
+      if (discoveryProperties == null)
       {
-        File tempFile = getTempFile(listenTo);
-        FileOutputStream outputStream = new FileOutputStream(tempFile);
+        _log.warn("Received and ignored a null property for resource: {}", listenTo);
+      }
+      else
+      {
+        _putStats.inc();
 
-        outputStream.write(_serializer.toBytes(discoveryProperties));
-        outputStream.close();
-
-        if (!tempFile.renameTo(file))
+        File file = getFile(listenTo);
+        try
         {
-          error(_log, "unable to move temp file ", tempFile, " to ", file);
+          file.createNewFile();
+
+          FileOutputStream outputStream = new FileOutputStream(file,false);
+
+          outputStream.write(_serializer.toBytes(discoveryProperties));
+          outputStream.close();
+        }
+        catch (FileNotFoundException e)
+        {
+          error(_log, "unable to find file on put: ", file);
+        }
+        catch (IOException e)
+        {
+          error(_log, "unable to read file on put: ", file);
         }
       }
-      catch (FileNotFoundException e)
-      {
-        error(_log, "unable to find file on put: ", file);
-      }
-      catch (IOException e)
-      {
-        error(_log, "unable to read file on put: ", file);
-      }
+    }
+    finally
+    {
+      w.unlock();
     }
   }
 
   @Override
   public void remove(String listenTo)
   {
-    _removeStats.inc();
-
-    File file = getFile(listenTo);
-
-    if (file.exists())
+    w.lock();
+    try
     {
-      file.delete();
+      _removeStats.inc();
+
+      File file = getFile(listenTo);
+
+      if (file.exists())
+      {
+        file.delete();
+      }
+      else
+      {
+        warn(_log, "file didn't exist on remove: ", file);
+      }
     }
-    else
+    finally
     {
-      warn(_log, "file didn't exist on remove: ", file);
+      w.unlock();
+    }
+  }
+
+  public boolean removeDirectory()
+  {
+    w.lock();
+    try
+    {
+      return FileStore.removeDirectory(_fsPath);
+    }
+    finally
+    {
+      w.unlock();
+    }
+  }
+
+  public static boolean removeDirectory(String fsPath)
+  {
+    try
+    {
+      File file = new File(fsPath);
+      try
+      {
+        FileUtils.deleteDirectory(file);
+        return true;
+      }
+      catch (IOException e)
+      {
+        _log.info("Couldn't remove directory: " + fsPath, e);
+        return false;
+      }
+    }
+    finally
+    {
     }
   }
 
@@ -203,25 +323,20 @@ public class FileStore<T> implements PropertyStore<T>, PropertyEventSubscriber<T
 
   private File getFile(String listenTo)
   {
-    return new File(_path + File.separatorChar + listenTo + _extension);
-  }
-
-  private File getTempFile(String listenTo) throws IOException
-  {
-    return File.createTempFile(TMP_FILE_PREFIX+listenTo, "tmp", new File(_path));
+    return new File(_fsPath + File.separatorChar + listenTo + _fsFileExtension);
   }
 
   @Override
-  public void shutdown(PropertyEventShutdownCallback shutdown)
+  public void shutdown(Callback<None> shutdown)
   {
     info(_log, "shutting down");
 
-    shutdown.done();
+    shutdown.onSuccess(None.none());
   }
 
   public String getPath()
   {
-    return _path;
+    return _fsPath;
   }
 
   public PropertySerializer<T> getSerializer()

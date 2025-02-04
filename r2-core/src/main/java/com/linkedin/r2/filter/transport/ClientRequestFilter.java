@@ -27,12 +27,13 @@ import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.message.stream.StreamRequest;
 import com.linkedin.r2.message.stream.StreamResponse;
+import com.linkedin.r2.message.timing.FrameworkTimingKeys;
+import com.linkedin.r2.message.timing.TimingContextUtil;
+import com.linkedin.r2.transport.common.WireAttributeHelper;
 import com.linkedin.r2.transport.common.bridge.client.TransportClient;
 import com.linkedin.r2.transport.common.bridge.common.TransportCallback;
-import com.linkedin.r2.transport.common.bridge.common.TransportResponse;
-
-import java.util.HashMap;
 import java.util.Map;
+
 
 /**
  * Filter implementation which sends requests through a specified {@link TransportClient}.
@@ -40,7 +41,6 @@ import java.util.Map;
  * @author Chris Pettitt
  * @version $Revision$
  */
-
 public class ClientRequestFilter implements StreamFilter, RestFilter
 {
   private final TransportClient _client;
@@ -61,13 +61,15 @@ public class ClientRequestFilter implements StreamFilter, RestFilter
                             Map<String, String> wireAttrs,
                             final NextFilter<RestRequest, RestResponse> nextFilter)
   {
+    markOnRequestTimings(requestContext);
+
     try
     {
       _client.restRequest(req, requestContext, wireAttrs, createCallback(requestContext, nextFilter));
     }
     catch (Exception e)
     {
-      nextFilter.onError(e, requestContext, new HashMap<String, String>());
+      nextFilter.onError(e, requestContext, WireAttributeHelper.newWireAttributes());
     }
   }
 
@@ -76,13 +78,15 @@ public class ClientRequestFilter implements StreamFilter, RestFilter
                             Map<String, String> wireAttrs,
                             final NextFilter<StreamRequest, StreamResponse> nextFilter)
   {
+    markOnRequestTimings(requestContext);
+
     try
     {
       _client.streamRequest(req, requestContext, wireAttrs, createCallback(requestContext, nextFilter));
     }
     catch (Exception e)
     {
-      nextFilter.onError(e, requestContext, new HashMap<String, String>());
+      nextFilter.onError(e, requestContext, WireAttributeHelper.newWireAttributes());
     }
   }
 
@@ -90,21 +94,31 @@ public class ClientRequestFilter implements StreamFilter, RestFilter
           final RequestContext requestContext,
           final NextFilter<REQ, RES> nextFilter)
   {
-    return new TransportCallback<RES>()
-    {
-      @Override
-      public void onResponse(TransportResponse<RES> res)
+    return res -> {
+      markOnResponseTimings(requestContext);
+      final Map<String, String> wireAttrs = res.getWireAttributes();
+      if (res.hasError())
       {
-        final Map<String, String> wireAttrs = new HashMap<String, String>(res.getWireAttributes());
-        if (res.hasError())
-        {
-          nextFilter.onError(res.getError(), requestContext, wireAttrs);
-        }
-        else
-        {
-          nextFilter.onResponse(res.getResponse(), requestContext, wireAttrs);
-        }
+        nextFilter.onError(res.getError(), requestContext, wireAttrs);
+      }
+      else
+      {
+        nextFilter.onResponse(res.getResponse(), requestContext, wireAttrs);
       }
     };
+  }
+
+  private static void markOnRequestTimings(RequestContext requestContext)
+  {
+    TimingContextUtil.endTiming(requestContext, FrameworkTimingKeys.CLIENT_REQUEST_R2_FILTER_CHAIN.key());
+    TimingContextUtil.endTiming(requestContext, FrameworkTimingKeys.CLIENT_REQUEST_R2.key());
+    TimingContextUtil.endTiming(requestContext, FrameworkTimingKeys.CLIENT_REQUEST.key());
+  }
+
+  private static void markOnResponseTimings(RequestContext requestContext)
+  {
+    TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.CLIENT_RESPONSE.key());
+    TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.CLIENT_RESPONSE_R2.key());
+    TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.CLIENT_RESPONSE_R2_FILTER_CHAIN.key());
   }
 }

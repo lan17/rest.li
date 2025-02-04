@@ -26,18 +26,25 @@ import com.linkedin.r2.message.rest.RestResponse;
 /**
  * The interface for Rest.li debug request handlers. Debug request handlers are registered with {@link RestLiServer}
  * through {@link RestLiConfig}. Every debug request handler has a handler id which determines the uri
- * sub-path that {@link RestLiServer} will route the requests to that debug request handler
- * ({@see RestLiDebugRequestHandler#getHandlerId}). The Rest.li requests which have a
- * "/__debug/<Debug request handler id>" appended to their path will be routed to the corresponding debug request
- * handler ({@see RestLiDebugRequestHandler#handleRequest}). At that point, the debug request handler gets a chance
+ * sub-path that {@link RestLiServer} will route the requests to that debug request handler.
+ * The Rest.li requests which have a "/__debug/<Debug request handler id>" appended to their path will be routed to
+ * the corresponding debug request handler. At that point, the debug request handler gets a chance
  * to inspect the request, modify it, execute it through normal Rest.li method invocation pipeline, get the response
  * and shape it in any way it determines.
+ *
+ * @see RestLiDebugRequestHandler#getHandlerId()
+ * @see RestLiDebugRequestHandler#handleRequest(RestRequest, RequestContext, ResourceDebugRequestHandler, Callback)
  */
 public interface RestLiDebugRequestHandler
 {
   /**
    * Handles a debug request. The implementation of this method can optionally execute the request through
-   * the {@code resourceDebugRequestHandler} parameter. The implementation of this method is responsible for invoking
+   * the {@code resourceDebugRequestHandler} parameter which would execute it through the normal rest.li method
+   * invocation pipeline.
+   *
+   * It is the responsibility of this debug request handler to also absorb any incoming request attachments provided.
+   *
+   * The implementation of this method is responsible for invoking
    * the right method on the {@code callback} parameter to return a response.
    * @param request The debug request.
    * @param context The request context.
@@ -45,9 +52,9 @@ public interface RestLiDebugRequestHandler
    * @param callback The callback to be invoked with a response at the end of the execution.
    */
   void handleRequest(final RestRequest request,
-                     final RequestContext context,
-                     final ResourceDebugRequestHandler resourceDebugRequestHandler,
-                     final Callback<RestResponse> callback);
+      final RequestContext context,
+      final ResourceDebugRequestHandler resourceDebugRequestHandler,
+      final Callback<RestResponse> callback);
 
   /**
    * Gets the handler id for this debug request handler. The handler id uniquely identifies the debug request handler
@@ -72,6 +79,6 @@ public interface RestLiDebugRequestHandler
      */
     void handleRequest(final RestRequest request,
                        final RequestContext requestContext,
-                       final RequestExecutionCallback<RestResponse> callback);
+                       final Callback<RestResponse> callback);
   }
 }

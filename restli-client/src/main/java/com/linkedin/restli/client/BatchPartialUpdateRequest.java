@@ -33,6 +33,7 @@ import com.linkedin.restli.common.UpdateStatus;
 import com.linkedin.restli.internal.client.BatchUpdateResponseDecoder;
 
 import java.net.HttpCookie;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -45,8 +46,10 @@ import java.util.Map;
 public class BatchPartialUpdateRequest<K, V extends RecordTemplate> extends
     com.linkedin.restli.client.BatchRequest<BatchKVResponse<K, UpdateStatus>>
 {
+  private final Map<K, PatchRequest<V>> _partialUpdateInputMap;
+
   @SuppressWarnings("unchecked")
-  BatchPartialUpdateRequest(Map<String, String> headers,
+  public BatchPartialUpdateRequest(Map<String, String> headers,
                             List<HttpCookie> cookies,
                             CollectionRequest<KeyValueRecord<K, PatchRequest<V>>> entities,
                             Map<String, Object> queryParams,
@@ -54,20 +57,29 @@ public class BatchPartialUpdateRequest<K, V extends RecordTemplate> extends
                             ResourceSpec resourceSpec,
                             String baseUriTemplate,
                             Map<String, Object> pathKeys,
-                            RestliRequestOptions requestOptions)
+                            RestliRequestOptions requestOptions,
+                            Map<K, PatchRequest<V>> patchInputMap,
+                            List<Object> streamingAttachments)
   {
     super(ResourceMethod.BATCH_PARTIAL_UPDATE,
           entities,
           headers,
           cookies,
-          new BatchUpdateResponseDecoder<K>((TypeSpec<K>) resourceSpec.getKeyType(),
-                                            resourceSpec.getKeyParts(),
-                                            resourceSpec.getComplexKeyType()),
+        new BatchUpdateResponseDecoder<>((TypeSpec<K>) resourceSpec.getKeyType(),
+            resourceSpec.getKeyParts(),
+            resourceSpec.getComplexKeyType()),
           resourceSpec,
           queryParams,
           queryParamClasses,
           baseUriTemplate,
           pathKeys,
-          requestOptions);
+          requestOptions,
+          streamingAttachments);
+    _partialUpdateInputMap = Collections.unmodifiableMap(patchInputMap);
+  }
+
+  public Map<K, PatchRequest<V>> getPartialUpdateInputMap()
+  {
+    return _partialUpdateInputMap;
   }
 }

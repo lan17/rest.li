@@ -147,7 +147,7 @@ public class TestMIMEReaderR2Error extends AbstractMIMEUnitTest
 
     //Delegate to the top level for now for these two
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       Assert.fail();
     }
@@ -161,7 +161,7 @@ public class TestMIMEReaderR2Error extends AbstractMIMEUnitTest
 
   private class MultiPartMIMEReaderCallbackImpl implements MultiPartMIMEReaderCallback
   {
-    final List<SinglePartMIMEReaderCallbackImpl> _singlePartMIMEReaderCallbacks = new ArrayList<SinglePartMIMEReaderCallbackImpl>();
+    final List<SinglePartMIMEReaderCallbackImpl> _singlePartMIMEReaderCallbacks = new ArrayList<>();
     Throwable _streamError = null;
     final CountDownLatch _latch;
 
@@ -196,7 +196,7 @@ public class TestMIMEReaderR2Error extends AbstractMIMEUnitTest
     }
 
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       Assert.fail();
     }

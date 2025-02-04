@@ -24,8 +24,6 @@ import com.linkedin.multipart.MultiPartMIMEReader;
 import com.linkedin.multipart.MultiPartMIMEReaderCallback;
 import com.linkedin.multipart.SinglePartMIMEReaderCallback;
 
-import com.google.common.collect.ImmutableMap;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -33,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 
 import javax.mail.internet.ContentType;
@@ -53,32 +52,32 @@ public final class MIMETestUtils
   public static final String TEXT_PLAIN_CONTENT_TYPE = "text/plain";
   public static final String BINARY_CONTENT_TYPE = "application/octet-stream";
 
-  //For the abandoning tests:
-  public static final String ABANDON_HEADER = "AbandonMe";
+  //For the draining tests:
+  public static final String DRAIN_HEADER = "DrainMe";
 
   //Header values for different server side behavior:
 
-  //Top level abandon all after registering a callback with the MultiPartMIMEReader. This abandon call will happen
+  //Top level drain all after registering a callback with the MultiPartMIMEReader. This drain call will happen
   //upon the first invocation on onNewPart():
   public static final String TOP_ALL_WITH_CALLBACK = "TOP_ALL_WITH_CALLBACK";
 
-  //Top level abandon without registering a callback with the MultipartMIMEReader:
+  //Top level drain without registering a callback with the MultipartMIMEReader:
   public static final String TOP_ALL_NO_CALLBACK = "TOP_ALL_NO_CALLBACK";
 
-  //Single part abandons all individually but doesn't use a callback:
+  //Single part drain all individually but doesn't use a callback:
   public static final String SINGLE_ALL_NO_CALLBACK = "SINGLE_ALL_NO_CALLBACK";
 
-  //Single part abandons the first 6 (using registered callbacks) and then the top level abandons all of remaining:
+  //Single part drains the first 6 (using registered callbacks) and then the top level drains all of remaining:
   public static final String SINGLE_PARTIAL_TOP_REMAINING = "SINGLE_PARTIAL_TOP_REMAINING";
 
-  //Single part alternates between consumption and abandoning the first 6 parts (using registered callbacks), then top
-  //level abandons all of remaining. This means that parts 0, 2, 4 will be consumed and parts 1, 3, 5 will be abandoned.
+  //Single part alternates between consumption and draining the first 6 parts (using registered callbacks), then top
+  //level drains all of remaining. This means that parts 0, 2, 4 will be consumed and parts 1, 3, 5 will be drained.
   public static final String SINGLE_ALTERNATE_TOP_REMAINING = "SINGLE_ALTERNATE_TOP_REMAINING";
 
-  //Single part abandons all individually (using registered callbacks):
+  //Single part drains all individually (using registered callbacks):
   public static final String SINGLE_ALL = "SINGLE_ALL";
 
-  //Single part alternates between consumption and abandoning all the way through (using registered callbacks):
+  //Single part alternates between consumption and draining all the way through (using registered callbacks):
   public static final String SINGLE_ALTERNATE = "SINGLE_ALTERNATE";
 
   ///////////////////////////////////////////////////////////////////////////////////////
@@ -103,6 +102,11 @@ public final class MIMETestUtils
   public static final MIMEDataPart BODY_3;
   public static final MIMEDataPart BODY_4;
   public static final MIMEDataPart BODY_5;
+  public static final MIMEDataPart BODY_6;
+  public static final MIMEDataPart BODY_7;
+
+  public static final int BODY_6_SIZE = 15000000;
+  public static final int BODY_7_SIZE = MultiPartMIMEInputStream.DEFAULT_WRITE_CHUNK_SIZE * 3;
 
   //Disable instantiation
   private MIMETestUtils()
@@ -127,7 +131,7 @@ public final class MIMETestUtils
 
   public static List<Integer> generatePrimeNumbers(final int limit)
   {
-    final List<Integer> primeNumberList = new ArrayList<Integer>();
+    final List<Integer> primeNumberList = new ArrayList<>();
     for (int i = 1; i < limit; i++)
     {
       boolean isPrimeNumber = true;
@@ -155,11 +159,11 @@ public final class MIMETestUtils
   {
     //Non javax mail sources:
     final byte[] bodyAbytes = "BODY_A".getBytes();
-    final Map<String, String> bodyAHeaders = ImmutableMap.of("headerA", "valueA");
+    final Map<String, String> bodyAHeaders = Collections.unmodifiableMap(Collections.singletonMap("headerA", "valueA"));
     BODY_A = new MIMEDataPart(ByteString.copy(bodyAbytes), bodyAHeaders);
 
     final byte[] bodyBbytes = "BODY_B".getBytes();
-    final Map<String, String> bodyBHeaders = ImmutableMap.of("headerB", "valueB");
+    final Map<String, String> bodyBHeaders = Collections.unmodifiableMap(Collections.singletonMap("headerB", "valueB"));
     BODY_B = new MIMEDataPart(ByteString.copy(bodyBbytes), bodyBHeaders);
 
     //body c has no headers
@@ -167,27 +171,30 @@ public final class MIMETestUtils
     BODY_C = new MIMEDataPart(ByteString.copy(bodyCbytes), Collections.<String, String>emptyMap());
 
     final byte[] bodyDbytes = "BODY_D".getBytes();
-    final Map<String, String> bodyDHeaders = ImmutableMap.of("headerD", "valueD");
+    final Map<String, String> bodyDHeaders = Collections.unmodifiableMap(Collections.singletonMap("headerD", "valueD"));
     BODY_D = new MIMEDataPart(ByteString.copy(bodyDbytes), bodyDHeaders);
 
     final byte[] body1bytes = "BODY_1".getBytes();
-    final Map<String, String> body1Headers = ImmutableMap.of("header1", "value1");
+    final Map<String, String> body1Headers = Collections.unmodifiableMap(Collections.singletonMap("header1", "value1"));
     BODY_1 = new MIMEDataPart(ByteString.copy(body1bytes), body1Headers);
 
     final byte[] body2bytes = "BODY_2".getBytes();
-    final Map<String, String> body2Headers = ImmutableMap.of("header2", "value2");
+    final Map<String, String> body2Headers = Collections.unmodifiableMap(Collections.singletonMap("header2", "value2"));
     BODY_2 = new MIMEDataPart(ByteString.copy(body2bytes), body2Headers);
 
     //body 3 is completely empty
     BODY_3 = new MIMEDataPart(ByteString.empty(), Collections.<String, String>emptyMap());
 
     final byte[] body4bytes = "BODY_4".getBytes();
-    final Map<String, String> body4Headers = ImmutableMap.of("header4", "value4");
+    final Map<String, String> body4Headers = Collections.unmodifiableMap(Collections.singletonMap("header4", "value4"));
     BODY_4 = new MIMEDataPart(ByteString.copy(body4bytes), body4Headers);
 
     final byte[] localInputStreamBytes = "local input stream".getBytes();
-    final Map<String, String> localInputStreamHeaders = ImmutableMap.of("local1", "local2");
+    final Map<String, String> localInputStreamHeaders = Collections.unmodifiableMap(Collections.singletonMap("local1", "local2"));
     BODY_5 = new MIMEDataPart(ByteString.copy(localInputStreamBytes), localInputStreamHeaders);
+
+    BODY_6 = new MIMEDataPart(ByteString.copy(new byte[BODY_6_SIZE]), Collections.emptyMap());
+    BODY_7 = new MIMEDataPart(ByteString.copy(new byte[BODY_7_SIZE]), Collections.emptyMap());
   }
 
   //Now create the javax data sources:
@@ -372,7 +379,7 @@ public final class MIMETestUtils
         new MultiPartMIMEInputStream.Builder(new ByteArrayInputStream(BODY_D.getPartData().copyBytes()),
             executorService, BODY_D.getPartHeaders()).withWriteChunkSize(chunkSize).build();
 
-    final List<MultiPartMIMEDataSourceWriter> dataSources = new ArrayList<MultiPartMIMEDataSourceWriter>();
+    final List<MultiPartMIMEDataSourceWriter> dataSources = new ArrayList<>();
     dataSources.add(bodyADataSource);
     dataSources.add(bodyBDataSource);
     dataSources.add(bodyCDataSource);
@@ -431,7 +438,7 @@ public final class MIMETestUtils
     }
 
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       Assert.fail();
     }
@@ -445,10 +452,17 @@ public final class MIMETestUtils
 
   public static class MultiPartMIMEFullReaderCallback implements MultiPartMIMEReaderCallback
   {
-    final List<SinglePartMIMEFullReaderCallback> _singlePartMIMEReaderCallbacks = new ArrayList<SinglePartMIMEFullReaderCallback>();
+    private final List<SinglePartMIMEFullReaderCallback> _singlePartMIMEReaderCallbacks = new ArrayList<>();
+    private final CountDownLatch _finishCountDownLatch;
 
     public MultiPartMIMEFullReaderCallback()
     {
+      _finishCountDownLatch = null;
+    }
+
+    public MultiPartMIMEFullReaderCallback(final CountDownLatch finishCountDownLatch)
+    {
+      _finishCountDownLatch = finishCountDownLatch;
     }
 
     public List<SinglePartMIMEFullReaderCallback> getSinglePartMIMEReaderCallbacks()
@@ -468,11 +482,15 @@ public final class MIMETestUtils
     @Override
     public void onFinished()
     {
-      //We don't have to do anything here.
+      //If there was a latch given to us we count that down, otherwise do nothing.
+      if (_finishCountDownLatch != null)
+      {
+        _finishCountDownLatch.countDown();
+      }
     }
 
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       Assert.fail();
     }

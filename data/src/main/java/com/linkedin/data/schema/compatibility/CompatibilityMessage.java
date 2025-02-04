@@ -18,6 +18,7 @@ package com.linkedin.data.schema.compatibility;
 
 
 import com.linkedin.data.message.Message;
+import com.linkedin.data.schema.PathSpec;
 import java.util.Formatter;
 
 
@@ -26,7 +27,7 @@ import java.util.Formatter;
  */
 public class CompatibilityMessage extends Message
 {
-  public static enum Impact
+  public enum Impact
   {
     /**
      * New reader is incompatible with old writer.
@@ -52,11 +53,35 @@ public class CompatibilityMessage extends Message
     /**
      * Numeric promotion.
      */
-    VALUES_MAY_BE_TRUNCATED_OR_OVERFLOW(false);
+    VALUES_MAY_BE_TRUNCATED_OR_OVERFLOW(false),
+    /**
+     * Adding new schema is compatible change.
+     */
+    NEW_SCHEMA_ADDED(false),
+    /**
+     * Deleting an schema is incompatible change, it breaks old clients.
+     */
+    BREAK_OLD_CLIENTS(true),
+    /**
+     * Annotation incompatible change, which can be used in custom annotation compatibility check
+     */
+    ANNOTATION_INCOMPATIBLE_CHANGE(true),
+    /**
+     * Annotation compatible change, which can be used in custom annotation compatibility check
+     */
+    ANNOTATION_COMPATIBLE_CHANGE(false),
+    /**
+     * Enum symbol order changed, which is a compatible change.
+     */
+    ENUM_SYMBOLS_ORDER_CHANGE(false),
+    /**
+     * New enum value added, which is wire compatible change. However, old readers may not be able to handle it.
+     */
+    ENUM_VALUE_ADDED(false);
 
     private final boolean _error;
 
-    private Impact(boolean error)
+    Impact(boolean error)
     {
       _error = error;
     }
@@ -67,13 +92,21 @@ public class CompatibilityMessage extends Message
     }
   }
 
+  private final Impact _impact;
+
   public CompatibilityMessage(Object[] path, Impact impact, String format, Object... args)
   {
     super(path, impact.isError(), format, args);
     _impact = impact;
   }
 
-  protected CompatibilityMessage(CompatibilityMessage message, boolean error)
+  public CompatibilityMessage(PathSpec pathSpec, Impact impact, String format, Object... args)
+  {
+    super(pathSpec.getPathComponents().toArray(), impact.isError(), format, args);
+    _impact = impact;
+  }
+
+  private CompatibilityMessage(CompatibilityMessage message, boolean error)
   {
     super(message.getPath(), error, message.getFormat(), message.getArgs());
     _impact = message.getImpact();
@@ -106,13 +139,13 @@ public class CompatibilityMessage extends Message
     formatPath(formatter);
     formatSeparator(formatter, fieldSeparator);
     formatArgs(formatter);
+    formatErrorDetails(formatter);
+
     return formatter;
   }
 
-  protected void formatCompatibilityType(Formatter formatter)
+  private void formatCompatibilityType(Formatter formatter)
   {
     formatter.format(_impact.toString());
   }
-
-  private final Impact _impact;
 }

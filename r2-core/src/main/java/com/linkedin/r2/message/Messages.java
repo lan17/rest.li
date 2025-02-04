@@ -15,7 +15,12 @@ import com.linkedin.r2.message.stream.StreamResponseBuilder;
 import com.linkedin.r2.message.stream.entitystream.ByteStringWriter;
 import com.linkedin.r2.message.stream.entitystream.EntityStreams;
 import com.linkedin.r2.message.stream.entitystream.FullEntityReader;
+import com.linkedin.r2.transport.common.bridge.common.TransportCallback;
+import com.linkedin.r2.transport.common.bridge.common.TransportResponseImpl;
 import com.linkedin.r2.transport.http.common.HttpConstants;
+
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 
 
 /**
@@ -51,6 +56,29 @@ public class Messages
       }
     };
     streamRequest.getEntityStream().setReader(new FullEntityReader(assemblyCallback));
+  }
+
+  public static CompletionStage<RestRequest> toRestRequest(StreamRequest streamRequest)
+  {
+    CompletableFuture<RestRequest> completable = new CompletableFuture<>();
+    final RestRequestBuilder builder = new RestRequestBuilder(streamRequest);
+    streamRequest.getEntityStream().setReader(new FullEntityReader(new Callback<ByteString>()
+    {
+      @Override
+      public void onError(Throwable e)
+      {
+        completable.completeExceptionally(e);
+      }
+
+      @Override
+      public void onSuccess(ByteString result)
+      {
+        RestRequest restRequest = builder.setEntity(result).build();
+        completable.complete(restRequest);
+      }
+    }));
+
+    return completable;
   }
 
   /**
@@ -145,8 +173,7 @@ public class Messages
       @Override
       public void onSuccess(RestResponse result)
       {
-        callback.onSuccess(new RestException(result, streamException.getMessage(), streamException.getCause()));
-
+        callback.onSuccess(new RestException(result, streamException.getMessage(), streamException.getCause(), false));
       }
     }, addContentLengthHeader);
   }
@@ -158,7 +185,7 @@ public class Messages
    */
   public static StreamException toStreamException(final RestException restException)
   {
-    return new StreamException(toStreamResponse(restException.getResponse()), restException.getMessage(), restException.getCause());
+    return new StreamException(toStreamResponse(restException.getResponse()), restException.getMessage(), restException.getCause(), false);
   }
 
   /**
@@ -248,7 +275,7 @@ public class Messages
       {
         if (e instanceof RestException)
         {
-          callback.onError(toStreamException((RestException)e));
+          callback.onError(toStreamException((RestException) e));
         }
         else
         {
@@ -264,4 +291,87 @@ public class Messages
     };
   }
 
+  /**
+   * Creates a {@link TransportCallback} of {@link StreamResponse} based on a TransportCallback of {@link RestResponse}
+   *
+   * @param callback the callback of rest response
+   * @return callback of stream response
+   */
+  public static TransportCallback<StreamResponse> toStreamTransportCallback(final TransportCallback<RestResponse> callback)
+  {
+    return response -> {
+      if (response.hasError())
+      {
+        Throwable throwable = response.getError();
+        if (throwable instanceof StreamException)
+        {
+          toRestException((StreamException)throwable, new Callback<RestException>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              callback.onResponse(TransportResponseImpl.error(e, response.getWireAttributes()));
+            }
+
+            @Override
+            public void onSuccess(RestException restException)
+            {
+              callback.onResponse(TransportResponseImpl.error(restException, response.getWireAttributes()));
+            }
+          });
+        }
+        else
+        {
+          callback.onResponse(TransportResponseImpl.error(throwable, response.getWireAttributes()));
+        }
+      }
+      else
+      {
+        toRestResponse(response.getResponse(), new Callback<RestResponse>()
+        {
+          @Override
+          public void onError(Throwable e)
+          {
+            callback.onResponse(TransportResponseImpl.error(e, response.getWireAttributes()));
+          }
+
+          @Override
+          public void onSuccess(RestResponse result)
+          {
+            callback.onResponse(TransportResponseImpl.success(result, response.getWireAttributes()));
+          }
+        });
+      }
+    };
+  }
+
+  /**
+   * Creates a {@link TransportCallback} of {@link RestResponse} based on a TransportCallback of {@link StreamResponse}
+   *
+   * @param callback the callback of stream response
+   * @return callback of rest response
+   */
+  public static TransportCallback<RestResponse> toRestTransportCallback(final TransportCallback<StreamResponse> callback)
+  {
+    return response -> {
+      if (response.hasError())
+      {
+        Throwable throwable = response.getError();
+        if (throwable instanceof RestException)
+        {
+          callback.onResponse(TransportResponseImpl.error(
+              toStreamException((RestException)throwable), response.getWireAttributes()));
+        }
+        else
+        {
+          callback.onResponse(TransportResponseImpl.error(throwable, response.getWireAttributes()));
+        }
+      }
+      else
+      {
+        callback.onResponse(TransportResponseImpl.success(
+            toStreamResponse(response.getResponse()), response.getWireAttributes()));
+      }
+    };
+  }
 }

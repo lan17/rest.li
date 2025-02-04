@@ -16,10 +16,12 @@
 
 package com.linkedin.data.avro.util;
 
-import com.linkedin.data.avro.AvroAdapter;
-import com.linkedin.data.avro.AvroAdapterFinder;
+import com.linkedin.avroutil1.compatibility.AvroCompatibilityHelper;
+import com.linkedin.avroutil1.compatibility.AvroVersion;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericDatumWriter;
@@ -27,37 +29,63 @@ import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.Decoder;
 import org.apache.avro.io.Encoder;
 
+
+/**
+ * @deprecated please use {@link com.linkedin.avroutil1.compatibility.AvroCodecUtil}
+ */
+@Deprecated
 public class AvroUtil
 {
   public static String jsonFromGenericRecord(GenericRecord record) throws IOException
   {
-    GenericDatumWriter<GenericRecord> writer = new GenericDatumWriter<GenericRecord>();
+    return jsonFromGenericRecord(record, true);
+  }
+
+  public static String jsonFromGenericRecord(GenericRecord record, boolean pretty) throws IOException
+  {
     ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-    AvroAdapter avroAdapter = AvroAdapterFinder.getAvroAdapter();
-    Encoder jsonEncoder = avroAdapter.createJsonEncoder(record.getSchema(), outputStream);
+    return jsonFromGenericRecord(record,
+        outputStream,
+        AvroCompatibilityHelper.newJsonEncoder(record.getSchema(), outputStream, pretty));
+
+  }
+
+  public static String jsonFromGenericRecord(GenericRecord record, boolean pretty, AvroVersion version) throws IOException
+  {
+    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+    return jsonFromGenericRecord(record,
+        outputStream,
+        AvroCompatibilityHelper.newJsonEncoder(record.getSchema(), outputStream, pretty, version));
+  }
+
+  private static String jsonFromGenericRecord(
+      GenericRecord record,
+      ByteArrayOutputStream outputStream,
+      Encoder jsonEncoder) throws IOException
+  {
+    GenericDatumWriter<GenericRecord> writer = new GenericDatumWriter<>();
     writer.setSchema(record.getSchema());
     writer.write(record, jsonEncoder);
     jsonEncoder.flush();
-    return outputStream.toString();
+    return outputStream.toString(StandardCharsets.UTF_8.name());
   }
 
   public static byte[] bytesFromGenericRecord(GenericRecord record) throws IOException
   {
-    GenericDatumWriter<GenericRecord> writer = new GenericDatumWriter<GenericRecord>();
-    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-    AvroAdapter avroAdapter = AvroAdapterFinder.getAvroAdapter();
-    Encoder binaryEncoder = avroAdapter.createBinaryEncoder(outputStream);
+    GenericDatumWriter<GenericRecord> writer = new GenericDatumWriter<>();
+    ByteArrayOutputStream byteOutputStream = new ByteArrayOutputStream();
+    Encoder binaryEncoder = AvroCompatibilityHelper.newBinaryEncoder(byteOutputStream, false, null);
     writer.setSchema(record.getSchema());
     writer.write(record, binaryEncoder);
     binaryEncoder.flush();
-    return outputStream.toByteArray();
+    return byteOutputStream.toByteArray();
   }
 
   public static GenericRecord genericRecordFromBytes(byte[] bytes, Schema schema) throws IOException
   {
-    GenericDatumReader<GenericRecord> reader = new GenericDatumReader<GenericRecord>();
-    AvroAdapter avroAdapter = AvroAdapterFinder.getAvroAdapter();
-    Decoder binaryDecoder = avroAdapter.createBinaryDecoder(bytes);
+    GenericDatumReader<GenericRecord> reader = new GenericDatumReader<>();
+    Decoder binaryDecoder = AvroCompatibilityHelper.newBinaryDecoder(
+        new ByteArrayInputStream(bytes), false, null);
     reader.setSchema(schema);
     GenericRecord record = reader.read(null, binaryDecoder);
     return record;
@@ -65,10 +93,8 @@ public class AvroUtil
 
   public static GenericRecord genericRecordFromJson(String json, Schema schema) throws IOException
   {
-    GenericDatumReader<GenericRecord> reader = new GenericDatumReader<GenericRecord>();
-    AvroAdapter avroAdapter = AvroAdapterFinder.getAvroAdapter();
-    Decoder jsonDecoder = avroAdapter.createJsonDecoder(schema, json);
-    reader.setSchema(schema);
+    GenericDatumReader<GenericRecord> reader = new GenericDatumReader<>(schema, schema);
+    Decoder jsonDecoder = AvroCompatibilityHelper.newCompatibleJsonDecoder(schema, json);
     GenericRecord record = reader.read(null, jsonDecoder);
     return record;
   }

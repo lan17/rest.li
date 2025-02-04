@@ -14,24 +14,28 @@
    limitations under the License.
 */
 
-/**
- * $Id: $
- */
-
 package com.linkedin.restli.internal.server;
 
 
+import com.linkedin.data.ByteString;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.template.StringArray;
 import com.linkedin.data.transform.filter.request.MaskTree;
 import com.linkedin.jersey.api.uri.UriComponent;
+import com.linkedin.r2.message.Request;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestRequestBuilder;
+import com.linkedin.r2.message.stream.StreamRequest;
+import com.linkedin.entitystream.EntityStream;
+import com.linkedin.r2.message.timing.FrameworkTimingKeys;
+import com.linkedin.r2.message.timing.TimingContextUtil;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.common.ProtocolVersion;
+import com.linkedin.restli.common.ResourceMethod;
 import com.linkedin.restli.common.RestConstants;
+import com.linkedin.restli.common.attachments.RestLiAttachmentReader;
 import com.linkedin.restli.internal.common.AllProtocolVersions;
 import com.linkedin.restli.internal.common.CookieUtil;
 import com.linkedin.restli.internal.common.PathSegment.PathSegmentSyntaxException;
@@ -39,54 +43,79 @@ import com.linkedin.restli.internal.common.ProtocolVersionUtil;
 import com.linkedin.restli.internal.common.QueryParamsDataMap;
 import com.linkedin.restli.internal.common.URIParamUtils;
 import com.linkedin.restli.internal.server.util.ArgumentUtils;
+import com.linkedin.restli.internal.server.util.MIMEParse;
 import com.linkedin.restli.internal.server.util.RestLiSyntaxException;
+import com.linkedin.restli.server.LocalRequestProjectionMask;
 import com.linkedin.restli.server.ProjectionMode;
+import com.linkedin.restli.server.RestLiResponseAttachments;
 import com.linkedin.restli.server.RestLiServiceException;
-
 import com.linkedin.restli.server.RoutingException;
+
 import java.net.HttpCookie;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
-import java.util.ArrayList;
 
 
 /**
  * @author Josh Walker
  * @version $Revision: $
  */
-
 public class ResourceContextImpl implements ServerResourceContext
 {
+  // Capacity based on guessumption that custom data count in most cases is either zero or one
+  private static final int INITIAL_CUSTOM_REQUEST_CONTEXT_CAPACITY = 1;
+
   private final MutablePathKeys                     _pathKeys;
-  private final RestRequest                         _request;
+  private final Request                             _request;
   private final DataMap                             _parameters;
-  private final Map<String, String>                 _requestHeaders;
-  private final Map<String, String>                 _responseHeaders;
+  private final TreeMap<String, String>             _requestHeaders;
+  private final TreeMap<String, String>             _responseHeaders;
   private final List<HttpCookie>                    _requestCookies;
   private final List<HttpCookie>                    _responseCookies;
   private final Map<Object, RestLiServiceException> _batchKeyErrors;
   private final RequestContext                      _requestContext;
   private final ProtocolVersion                     _protocolVersion;
-  private String                                    _mimeType;
+  private String                                    _requestMimeType;
+  private String                                    _responseMimeType;
 
   //For root object entities
   private ProjectionMode                            _projectionMode;
-  private final MaskTree                            _projectionMask;
+  private MaskTree                                  _projectionMask;
 
   //For the metadata inside of a CollectionResult
   private ProjectionMode                            _metadataProjectionMode;
-  private final MaskTree                            _metadataProjectionMask;
+  private MaskTree                                  _metadataProjectionMask;
 
   //For paging. Note that there is no projection mode for paging (CollectionMetadata) because its fully automatic.
   //Client resource methods have the option of setting the total if they so desire, but restli will always
   //project CollectionMetadata if the client asks for it.
   //The paging projection mask is still available to both parties (the resource method and restli).
-  private final MaskTree                            _pagingProjectionMask;
+  private MaskTree                                  _pagingProjectionMask;
+  // Fields to always include during projection
+  private Set<String> _alwaysProjectedFields;
 
+  //For streaming attachments
+  private RestLiAttachmentReader                    _requestAttachmentReader;
+  private final boolean                             _responseAttachmentsAllowed;
+  private RestLiResponseAttachments                 _responseStreamingAttachments;
+
+  //Data map to store custom request context data
+  private Map<String, Object>                       _customRequestContext;
+
+  // Response entity stream
+  private EntityStream<ByteString> _responseEntityStream;
+  // Request entity stream
+  private EntityStream<ByteString> _requestEntityStream;
+
+  // Fill in default values
+  private boolean _fillInDefaultValues;
 
   /**
    * Default constructor.
@@ -111,32 +140,57 @@ public class ResourceContextImpl implements ServerResourceContext
    * @throws RestLiSyntaxException if the syntax of query parameters in the request is
    *           incorrect
    */
+  @SuppressWarnings("unchecked")
   public ResourceContextImpl(final MutablePathKeys pathKeys,
-                             final RestRequest request,
+                             final Request request,
                              final RequestContext requestContext) throws RestLiSyntaxException
   {
     _pathKeys = pathKeys;
     _request = request;
-    _requestHeaders = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+    _requestHeaders = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     _requestHeaders.putAll(request.getHeaders());
-    _responseHeaders = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
-    _requestCookies = new ArrayList<HttpCookie>(CookieUtil.decodeCookies(_request.getCookies()));
-    _responseCookies = new ArrayList<HttpCookie>();
+    _responseHeaders = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+
+    List<HttpCookie> contextRequestCookies = (List<HttpCookie>) requestContext.getLocalAttr(CONTEXT_COOKIES_KEY);
+    if (contextRequestCookies != null)
+    {
+      _requestCookies = contextRequestCookies;
+    }
+    else
+    {
+      _requestCookies = CookieUtil.decodeCookies(_request.getCookies());
+    }
+
+    _responseCookies = new ArrayList<>();
     _requestContext = requestContext;
+    _responseAttachmentsAllowed = isResponseAttachmentsAllowed(request);
 
     _protocolVersion = ProtocolVersionUtil.extractProtocolVersion(request.getHeaders());
 
     try
     {
-      if (_protocolVersion.compareTo(AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion()) >= 0)
+      DataMap contextQueryParams = (DataMap) requestContext.getLocalAttr(CONTEXT_QUERY_PARAMS_KEY);
+      if (contextQueryParams != null)
       {
+        _parameters = contextQueryParams;
+      }
+      else if (_protocolVersion.compareTo(AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion()) >= 0)
+      {
+        TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_RESTLI_URI_PARSE_2.key());
+
         Map<String, List<String>> queryParameters = UriComponent.decodeQuery(_request.getURI(), false);
         _parameters = URIParamUtils.parseUriParams(queryParameters);
+
+        TimingContextUtil.endTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_RESTLI_URI_PARSE_2.key());
       }
       else
       {
+        TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_RESTLI_URI_PARSE_1.key());
+
         Map<String, List<String>> queryParameters = ArgumentUtils.getQueryParameters(_request.getURI());
         _parameters = QueryParamsDataMap.parseDataMapKeys(queryParameters);
+
+        TimingContextUtil.endTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_RESTLI_URI_PARSE_1.key());
       }
     }
     catch (PathSegmentSyntaxException e)
@@ -145,41 +199,64 @@ public class ResourceContextImpl implements ServerResourceContext
           + _request.getURI().toString(), e);
     }
 
-    if (_parameters.containsKey(RestConstants.FIELDS_PARAM))
+    TimingContextUtil.beginTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_RESTLI_PROJECTION_DECODE.key());
+
+    LocalRequestProjectionMask localRequestProjectionMask =
+        (LocalRequestProjectionMask) requestContext.getLocalAttr(CONTEXT_PROJECTION_MASKS_KEY);
+    if (localRequestProjectionMask != null)
     {
-      _projectionMask =
-          ArgumentUtils.parseProjectionParameter(ArgumentUtils.argumentAsString(getParameter(RestConstants.FIELDS_PARAM),
-                                                                                RestConstants.FIELDS_PARAM));
+      _projectionMask = localRequestProjectionMask.getProjectionMask();
+      _metadataProjectionMask = localRequestProjectionMask.getMetadataProjectionMask();
+      _pagingProjectionMask = localRequestProjectionMask.getPagingProjectionMask();
     }
     else
     {
-      _projectionMask = null;
+      if (_parameters.containsKey(RestConstants.FIELDS_PARAM))
+      {
+        _projectionMask = ArgumentUtils.parseProjectionParameter(getParameter(RestConstants.FIELDS_PARAM));
+      }
+      else
+      {
+        _projectionMask = null;
+      }
+
+      if (_parameters.containsKey(RestConstants.METADATA_FIELDS_PARAM))
+      {
+        _metadataProjectionMask = ArgumentUtils.parseProjectionParameter(getParameter(RestConstants.METADATA_FIELDS_PARAM));
+      }
+      else
+      {
+        _metadataProjectionMask = null;
+      }
+
+      if (_parameters.containsKey(RestConstants.PAGING_FIELDS_PARAM))
+      {
+        _pagingProjectionMask = ArgumentUtils.parseProjectionParameter(getParameter(RestConstants.PAGING_FIELDS_PARAM));
+      }
+      else
+      {
+        _pagingProjectionMask = null;
+      }
     }
 
-    if (_parameters.containsKey(RestConstants.METADATA_FIELDS_PARAM))
-    {
-      _metadataProjectionMask = ArgumentUtils.parseProjectionParameter(ArgumentUtils
-          .argumentAsString(getParameter(RestConstants.METADATA_FIELDS_PARAM), RestConstants.METADATA_FIELDS_PARAM));
-    }
-    else
-    {
-      _metadataProjectionMask = null;
-    }
+    TimingContextUtil.endTiming(requestContext, FrameworkTimingKeys.SERVER_REQUEST_RESTLI_PROJECTION_DECODE.key());
 
-    if (_parameters.containsKey(RestConstants.PAGING_FIELDS_PARAM))
-    {
-      _pagingProjectionMask = ArgumentUtils.parseProjectionParameter(ArgumentUtils
-          .argumentAsString(getParameter(RestConstants.PAGING_FIELDS_PARAM), RestConstants.PAGING_FIELDS_PARAM));
-    }
-    else
-    {
-      _pagingProjectionMask = null;
-    }
-
-    _batchKeyErrors = new HashMap<Object, RestLiServiceException>();
+    _batchKeyErrors = new HashMap<>();
 
     _projectionMode = ProjectionMode.getDefault();
     _metadataProjectionMode = ProjectionMode.getDefault();
+    _fillInDefaultValues = getParameter(RestConstants.FILL_IN_DEFAULTS_PARAM) != null;
+  }
+
+  private static boolean isResponseAttachmentsAllowed(Request request)
+  {
+    final String acceptTypeHeader = request.getHeader(RestConstants.HEADER_ACCEPT);
+    if (acceptTypeHeader != null)
+    {
+      return MIMEParse.parseAcceptTypeStream(acceptTypeHeader)
+          .anyMatch(acceptType -> acceptType.equalsIgnoreCase(RestConstants.HEADER_VALUE_MULTIPART_RELATED));
+    }
+    return false;
   }
 
   @Override
@@ -197,15 +274,54 @@ public class ResourceContextImpl implements ServerResourceContext
   @Override
   public String getRequestActionName()
   {
-    return ArgumentUtils.argumentAsString(getParameter(RestConstants.ACTION_PARAM),
-                                          RestConstants.ACTION_PARAM);
+    return getParameter(RestConstants.ACTION_PARAM);
   }
 
   @Override
   public String getRequestFinderName()
   {
-    return ArgumentUtils.argumentAsString(getParameter(RestConstants.QUERY_TYPE_PARAM),
-                                          RestConstants.QUERY_TYPE_PARAM);
+    return getParameter(RestConstants.QUERY_TYPE_PARAM);
+  }
+
+  @Override
+  public String getRequestBatchFinderName()
+  {
+    return getParameter(RestConstants.BATCH_FINDER_QUERY_TYPE_PARAM);
+  }
+
+  @Override
+  public String getMethodName()
+  {
+    String methodName = getRequestActionName();
+    if (methodName == null)
+    {
+      methodName = getRequestFinderName();
+    }
+    if (methodName == null)
+    {
+      methodName = getRequestBatchFinderName();
+    }
+
+    return methodName;
+  }
+
+  @Override
+  public String getMethodName(ResourceMethod type)
+  {
+    if (type.equals(ResourceMethod.ACTION))
+    {
+      return getRequestActionName();
+    }
+    else if (type.equals(ResourceMethod.FINDER))
+    {
+      return getRequestFinderName();
+    }
+    else if (type.equals(ResourceMethod.BATCH_FINDER))
+    {
+      return getRequestBatchFinderName();
+    }
+
+    return null;
   }
 
   @Override
@@ -221,9 +337,18 @@ public class ResourceContextImpl implements ServerResourceContext
   }
 
   @Override
+  @Deprecated
   public RestRequest getRawRequest()
   {
-    return _request;
+    if (_request instanceof RestRequest)
+    {
+      return (RestRequest) _request;
+    }
+
+    // The content of the entity stream is not copied to the RestRequest. Reading the content is challenging because the entity
+    // stream can only be read once. However, this is acceptable in this deprecated method because no application
+    // depends on the entity content.
+    return new RestRequestBuilder((StreamRequest) _request).build();
   }
 
   @Override
@@ -233,13 +358,31 @@ public class ResourceContextImpl implements ServerResourceContext
   }
 
   @Override
+  public void setProjectionMask(MaskTree projectionMask)
+  {
+    _projectionMask = projectionMask;
+  }
+
+  @Override
   public MaskTree getMetadataProjectionMask() {
     return _metadataProjectionMask;
   }
 
   @Override
+  public void setMetadataProjectionMask(MaskTree metadataProjectionMask)
+  {
+    _metadataProjectionMask = metadataProjectionMask;
+  }
+
+  @Override
   public MaskTree getPagingProjectionMask() {
     return _pagingProjectionMask;
+  }
+
+  @Override
+  public void setPagingProjectionMask(MaskTree pagingProjectionMask)
+  {
+    _pagingProjectionMask = pagingProjectionMask;
   }
 
   @Override
@@ -358,7 +501,7 @@ public class ResourceContextImpl implements ServerResourceContext
   @Override
   public Map<String, String> getResponseHeaders()
   {
-    return Collections.unmodifiableMap(_responseHeaders);
+    return Collections.unmodifiableSortedMap(_responseHeaders);
   }
 
   @Override
@@ -411,14 +554,165 @@ public class ResourceContextImpl implements ServerResourceContext
   }
 
   @Override
+  public void setRequestMimeType(String type)
+  {
+    _requestMimeType = type;
+  }
+
+  @Override
+  public String getRequestMimeType()
+  {
+    return _requestMimeType;
+  }
+
+  @Override
   public void setResponseMimeType(String type)
   {
-    _mimeType = type;
+    _responseMimeType = type;
   }
 
   @Override
   public String getResponseMimeType()
   {
-    return _mimeType;
+    return _responseMimeType;
+  }
+
+  @Override
+  public boolean responseAttachmentsSupported()
+  {
+    return _responseAttachmentsAllowed;
+  }
+
+  @Override
+  public void setRequestAttachmentReader(RestLiAttachmentReader requestAttachmentReader)
+  {
+    _requestAttachmentReader = requestAttachmentReader;
+  }
+
+  @Override
+  public RestLiAttachmentReader getRequestAttachmentReader()
+  {
+    return _requestAttachmentReader;
+  }
+
+  @Override
+  public void setResponseEntityStream(EntityStream<ByteString> entityStream)
+  {
+    _responseEntityStream = entityStream;
+  }
+
+  @Override
+  public EntityStream<ByteString> getResponseEntityStream()
+  {
+    return _responseEntityStream;
+  }
+
+  @Override
+  public void setRequestEntityStream(EntityStream<ByteString> entityStream) {
+    _requestEntityStream = entityStream;
+  }
+
+  @Override
+  public EntityStream<ByteString> getRequestEntityStream() {
+    return _requestEntityStream;
+  }
+
+  @Override
+  public void setResponseAttachments(final RestLiResponseAttachments responseAttachments) throws IllegalStateException
+  {
+    if (!_responseAttachmentsAllowed)
+    {
+      throw new IllegalStateException("Response attachments can only be set if the client request indicates permissibility");
+    }
+    _responseStreamingAttachments = responseAttachments;
+  }
+
+  @Override
+  public RestLiResponseAttachments getResponseAttachments()
+  {
+    return _responseStreamingAttachments;
+  }
+
+  /**
+   * @deprecated Use {@link #isReturnEntityRequested()} instead.
+   */
+  @Deprecated
+  @Override
+  public boolean shouldReturnEntity()
+  {
+    return isReturnEntityRequested();
+  }
+
+  @Override
+  public boolean isReturnEntityRequested()
+  {
+    String returnEntityValue = getParameter(RestConstants.RETURN_ENTITY_PARAM);
+    if (returnEntityValue == null)
+    {
+      // Default to true for backward compatibility so that existing clients can receive entity without using parameter
+      return true;
+    }
+    return ArgumentUtils.parseReturnEntityParameter(returnEntityValue);
+  }
+
+  @Override
+  public boolean isFillInDefaultsRequested()
+  {
+    return _fillInDefaultValues;
+  }
+
+  /**
+   * if a server has a configuration to set the flag to true, it will be set
+   * through this method, and if the request itself already has the flag set to true
+   * we will keep the flag remain true even the server config is not set.
+   * That is => either server config or client request param will be able to
+   * request fill in default values
+   * @param fillInDefaultValues boolean to set the flag for filling default values
+   */
+  @Override
+  public void setFillInDefaultValues(boolean fillInDefaultValues)
+  {
+    _fillInDefaultValues = fillInDefaultValues || _fillInDefaultValues;
+  }
+
+  @Override
+  public Optional<Object> getCustomContextData(String key)
+  {
+    if (_customRequestContext != null && key != null && !key.isEmpty() && _customRequestContext.containsKey(key))
+    {
+      return Optional.of(_customRequestContext.get(key));
+    }
+    return Optional.empty();
+  }
+
+  @Override
+  public void putCustomContextData(String key, Object data)
+  {
+    if (key != null && !key.isEmpty() && data != null)
+    {
+      if (_customRequestContext == null)
+      {
+        _customRequestContext = new HashMap<>(INITIAL_CUSTOM_REQUEST_CONTEXT_CAPACITY);
+      }
+      _customRequestContext.put(key, data);
+    }
+  }
+
+  @Override
+  public Optional<Object> removeCustomContextData(String key)
+  {
+    return getCustomContextData(key).isPresent() ? Optional.of(_customRequestContext.remove(key)) : Optional.empty();
+  }
+
+  @Override
+  public void setAlwaysProjectedFields(Set<String> alwaysProjectedFields)
+  {
+    this._alwaysProjectedFields = alwaysProjectedFields;
+  }
+
+  @Override
+  public Set<String> getAlwaysProjectedFields()
+  {
+    return _alwaysProjectedFields;
   }
 }

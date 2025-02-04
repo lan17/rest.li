@@ -20,17 +20,23 @@
 
 package com.linkedin.d2.discovery.stores.toggling;
 
-import com.linkedin.d2.discovery.event.PropertyEventBus;
-import com.linkedin.d2.discovery.event.PropertyEventPublisher;
-import com.linkedin.d2.discovery.event.PropertyEventThread;
-import com.linkedin.d2.discovery.stores.PropertyStore;
-import com.linkedin.d2.discovery.stores.util.NullEventBus;
-import com.linkedin.d2.discovery.stores.util.StoreEventPublisher;
 import com.linkedin.common.callback.Callback;
 import com.linkedin.common.callback.Callbacks;
 import com.linkedin.common.util.None;
-
+import com.linkedin.d2.discovery.event.PropertyEventBus;
+import com.linkedin.d2.discovery.event.PropertyEventPublisher;
+import com.linkedin.d2.discovery.stores.PropertyStore;
+import com.linkedin.d2.discovery.stores.file.FileStore;
+import com.linkedin.d2.discovery.stores.util.NullEventBus;
+import com.linkedin.d2.discovery.stores.util.StoreEventPublisher;
+import com.linkedin.d2.discovery.stores.zk.ZooKeeperConnectionAwareStore;
+import com.linkedin.d2.discovery.stores.zk.ZooKeeperStore;
+import com.linkedin.d2.xds.XdsToClusterPropertiesPublisher;
+import com.linkedin.d2.xds.XdsToServicePropertiesPublisher;
+import com.linkedin.d2.xds.XdsToUriPropertiesPublisher;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * @author Steven Ihde
@@ -39,17 +45,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class TogglingPublisher<T>
 {
+  private static final Logger LOG = LoggerFactory.getLogger(TogglingPublisher.class);
   private final PublisherWithStatus<T> _primary;
   private final PublisherWithStatus<T> _backup;
   private final PropertyEventBus<T>       _eventBus;
-  private final PropertyEventBus<T>       _nullBus = new NullEventBus<T>();
+  private final PropertyEventBus<T>       _nullBus = new NullEventBus<>();
 
   public TogglingPublisher(PropertyEventPublisher<T> primary,
                            PropertyStore<T> backup,
                            PropertyEventBus<T> eventBus)
   {
-    _primary = new PublisherWithStatus<T>(primary);
-    _backup = new PublisherWithStatus<T>(new StoreEventPublisher<T>(backup));
+    _primary = new PublisherWithStatus<>(primary);
+    _backup = new PublisherWithStatus<>(new StoreEventPublisher<>(backup));
     _eventBus = eventBus;
   }
 
@@ -82,6 +89,12 @@ public class TogglingPublisher<T>
         pubActivate.setBus(_eventBus);
         _eventBus.setPublisher(pubActivate);
 
+        if (deactivate != null && activate != null)
+        {
+          LOG.info("TogglingPublisher: activating publisher {}, deactivating publisher {}",
+              getPublisherName(activate.getPublisher()), getPublisherName(deactivate.getPublisher()));
+        }
+
         if (deactivate.started())
         {
           PropertyEventPublisher<T> pubDeactivate = deactivate.getPublisher();
@@ -98,6 +111,27 @@ public class TogglingPublisher<T>
     });
   }
 
+  private static String getPublisherName(PropertyEventPublisher<?> p)
+  {
+    if (p instanceof ZooKeeperConnectionAwareStore || p instanceof ZooKeeperStore)
+    {
+      return "Zookeeper store";
+    }
+    else if (p instanceof XdsToClusterPropertiesPublisher || p instanceof XdsToServicePropertiesPublisher
+        || p instanceof XdsToUriPropertiesPublisher)
+    {
+      return "INDIS store";
+    }
+    else if (p instanceof FileStore)
+    {
+      return "FS store";
+    }
+    else
+    {
+      return "Unknown store";
+    }
+  }
+
   public void shutdown(final Callback<None> callback)
   {
     boolean primary = _primary.started();
@@ -106,23 +140,13 @@ public class TogglingPublisher<T>
     int count = (primary ? 1 : 0) + (backup ? 1 : 0);
     final Callback<None> multiCallback = Callbacks.countDown(callback, count);
 
-    PropertyEventThread.PropertyEventShutdownCallback pcallback =
-            new PropertyEventThread.PropertyEventShutdownCallback()
-    {
-      @Override
-      public void done()
-      {
-        multiCallback.onSuccess(None.none());
-      }
-    };
-
     if (primary)
     {
-      _primary.getPublisher().shutdown(pcallback);
+      _primary.getPublisher().shutdown(multiCallback);
     }
     if (backup)
     {
-      _backup.getPublisher().shutdown(pcallback);
+      _backup.getPublisher().shutdown(multiCallback);
     }
   }
 

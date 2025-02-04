@@ -17,6 +17,7 @@
 package com.linkedin.pegasus.generator;
 
 
+import java.nio.file.Paths;
 import javax.annotation.Generated;
 import java.io.File;
 import java.net.MalformedURLException;
@@ -24,7 +25,6 @@ import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.StringTokenizer;
@@ -61,17 +61,36 @@ public class JavaCodeUtil
    */
   public static void annotate(JDefinedClass cls, String classType, String location)
   {
+    annotate(cls, classType, location, null);
+  }
+
+  /**
+   * Create Java {@link Generated} annotation for a class.
+   *
+   * @param cls CodeModel class to annotate
+   * @param classType type of the specified class
+   * @param location location of where the specified class is generated from
+   * @param rootPath root path to relativize the location
+   */
+  public static void annotate(JDefinedClass cls, String classType, String location, String rootPath)
+  {
     final JAnnotationUse generatedAnnotation = cls.annotate(Generated.class);
     generatedAnnotation.param("value", JavaCodeUtil.class.getName());
     String comments = "Rest.li " + classType;
 
     if (location != null)
     {
-      comments += ". Generated from " + location + '.';
+      if (rootPath == null)
+      {
+        comments += ". Generated from " + location + '.';
+      }
+      else
+      {
+        comments += ". Generated from " + Paths.get(rootPath).relativize(Paths.get(location)) + '.';
+      }
     }
 
     generatedAnnotation.param("comments", comments);
-    generatedAnnotation.param("date", new Date().toString());
   }
 
   /**
@@ -99,7 +118,22 @@ public class JavaCodeUtil
    */
   public static List<File> targetFiles(File targetDirectory, JCodeModel codeModel, ClassLoader classLoader, PersistentClassChecker checker)
   {
-    final List<File> generatedFiles = new ArrayList<File>();
+    return targetFiles(targetDirectory, codeModel, classLoader, checker, true);
+  }
+
+  /**
+   * Build the list of files need to be written from CodeModel, with the targetDirectory as base directory.
+   *
+   * @param targetDirectory directory for the target files
+   * @param codeModel {@link JCodeModel} instance
+   * @param classLoader Java {@link ClassLoader} to check if a class for the potential target file already exist
+   * @param checker custom closure to check if a class should be persistent
+   * @param generateLowercasePath true, files are generated with a lower case path; false, files are generated as spec specifies.
+   * @return target files to be written
+   */
+  public static List<File> targetFiles(File targetDirectory, JCodeModel codeModel, ClassLoader classLoader, PersistentClassChecker checker, boolean generateLowercasePath)
+  {
+    final List<File> generatedFiles = new ArrayList<>();
 
     for (Iterator<JPackage> packageIterator = codeModel.packages(); packageIterator.hasNext(); )
     {
@@ -127,7 +161,20 @@ public class JavaCodeUtil
         }
         else if (definedClass.outer() == null)
         {
-          final File file = new File(targetDirectory, definedClass.fullName().replace('.', File.separatorChar) + ".java");
+          String path;
+          if (generateLowercasePath)
+          {
+            // Create path this way since fullName() has a recursive call.
+            String fullName = definedClass.fullName();
+            String name = definedClass.name();
+            String packageName = fullName.substring(0, fullName.length() - name.length());
+            path = packageName.toLowerCase() + name;
+          }
+          else
+          {
+            path = definedClass.fullName();
+          }
+          final File file = new File(targetDirectory, path.replace('.', File.separatorChar) + ".java");
           generatedFiles.add(file);
         }
       }
@@ -145,7 +192,7 @@ public class JavaCodeUtil
     }
     else
     {
-      final List<URL> list = new ArrayList<URL>();
+      final List<URL> list = new ArrayList<>();
       final StringTokenizer tokenizer = new StringTokenizer(resolverPath, File.pathSeparator);
       while (tokenizer.hasMoreTokens())
       {

@@ -97,6 +97,22 @@ public class DegraderPropertiesConverter
     {
       map.put(PropertyKeys.DEGRADER_LATENCY_TO_USE, config.getLatencyToUse().name());
     }
+    if (config.hasInitialDropRate())
+    {
+      map.put(PropertyKeys.DEGRADER_INITIAL_DROP_RATE, config.getInitialDropRate().toString());
+    }
+    if (config.hasSlowStartThreshold())
+    {
+      map.put(PropertyKeys.DEGRADER_SLOW_START_THRESHOLD, config.getSlowStartThreshold().toString());
+    }
+    if (config.hasLogThreshold())
+    {
+      map.put(PropertyKeys.DEGRADER_LOG_THRESHOLD, config.getLogThreshold().toString());
+    }
+    if (config.hasPreemptiveRequestTimeoutRate())
+    {
+      map.put(PropertyKeys.DEGRADER_PREEMPTIVE_REQUEST_TIMEOUT_RATE, config.getPreemptiveRequestTimeoutRate().toString());
+    }
     return map;
   }
 
@@ -160,6 +176,22 @@ public class DegraderPropertiesConverter
     if (properties.containsKey(PropertyKeys.DEGRADER_LATENCY_TO_USE))
     {
       config.setLatencyToUse(latencyType.valueOf(properties.get(PropertyKeys.DEGRADER_LATENCY_TO_USE)));
+    }
+    if (properties.containsKey(PropertyKeys.DEGRADER_INITIAL_DROP_RATE))
+    {
+      config.setInitialDropRate(coerce(properties.get(PropertyKeys.DEGRADER_INITIAL_DROP_RATE), Double.class));
+    }
+    if (properties.containsKey(PropertyKeys.DEGRADER_SLOW_START_THRESHOLD))
+    {
+      config.setSlowStartThreshold(coerce(properties.get(PropertyKeys.DEGRADER_SLOW_START_THRESHOLD), Double.class));
+    }
+    if (properties.containsKey(PropertyKeys.DEGRADER_LOG_THRESHOLD))
+    {
+      config.setLogThreshold(coerce(properties.get(PropertyKeys.DEGRADER_LOG_THRESHOLD), Double.class));
+    }
+    if (properties.containsKey(PropertyKeys.DEGRADER_PREEMPTIVE_REQUEST_TIMEOUT_RATE))
+    {
+      config.setPreemptiveRequestTimeoutRate(coerce(properties.get(PropertyKeys.DEGRADER_PREEMPTIVE_REQUEST_TIMEOUT_RATE), Double.class));
     }
     return config;
   }

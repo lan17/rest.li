@@ -76,7 +76,7 @@ public interface KeyMapper
    * @param <K> The key type
    * @return @link MapKeyResult contains mapped keys and also unmapped keys
    */
-  public <K> MapKeyResult<URI, K> mapKeysV2(URI serviceUri, Iterable<K> keys)
+  <K> MapKeyResult<URI, K> mapKeysV2(URI serviceUri, Iterable<K> keys)
       throws ServiceUnavailableException;
 
   /**
@@ -101,14 +101,14 @@ public interface KeyMapper
    * @return {@link HostToKeyMapper}
    * @throws ServiceUnavailableException
    */
-  public <K> HostToKeyMapper<K> mapKeysV3(URI serviceUri, Collection<K> keys, int limitNumHostsPerPartition)
+  <K> HostToKeyMapper<K> mapKeysV3(URI serviceUri, Collection<K> keys, int limitNumHostsPerPartition)
       throws ServiceUnavailableException;
 
   /**
    * Similar to the other mapKeysV3 method but accepting a sticky key to determine the order of hosts.
    * That means if the same sticky key is used in two different calls, the order of hosts in each partition will also be the same.
    */
-  public <K, S> HostToKeyMapper<K> mapKeysV3(URI serviceUri,
+  <K, S> HostToKeyMapper<K> mapKeysV3(URI serviceUri,
                                              Collection<K> keys,
                                              int limitNumHostsPerPartition,
                                              S stickyKey)
@@ -123,21 +123,22 @@ public interface KeyMapper
    * @param numHostPerPartition the number of hosts that we should return for each partition. Must be larger than 0.
    * @return {@link com.linkedin.d2.balancer.util.HostSet}
    */
-  public HostSet getAllPartitionsMultipleHosts(URI serviceUri, int numHostPerPartition)
+  HostSet getAllPartitionsMultipleHosts(URI serviceUri, int numHostPerPartition)
       throws ServiceUnavailableException;
 
   /**
    * Similar to the other getAllPartitionsMultipleHosts method but accepting a sticky key to determine the order of hosts.
    * That means if the same sticky key is used in two different calls, the order of hosts in each partition will also be the same.
    */
-  public <S> HostSet getAllPartitionsMultipleHosts(URI serviceUri,
+  <S> HostSet getAllPartitionsMultipleHosts(URI serviceUri,
                                                                                     int limitHostPerPartition,
                                                                                     final S stickyKey)
       throws ServiceUnavailableException;
 
-  public static class TargetHostHints
+  class TargetHostHints
   {
     private static final String TARGET_HOST_KEY_NAME = "D2-KeyMapper-TargetHost";
+    private static final String OTHER_HOST_ACCEPTABLE = "Other-Host-Acceptable";
 
     /**
      * Inserts a hint in RequestContext instructing D2 to bypass normal hashing behavior
@@ -160,6 +161,40 @@ public interface KeyMapper
     public static URI getRequestContextTargetHost(RequestContext context)
     {
       return (URI)context.getLocalAttr(TARGET_HOST_KEY_NAME);
+    }
+
+    /**
+     * Looks for a target host hint in the RequestContext, returning and removing it if found, or null if no
+     * hint is present.
+     * @param context RequestContext for the request
+     * @return URI for target host hint, or null if no hint is present in the RequestContext
+     */
+    public static URI removeRequestContextTargetHost(RequestContext context)
+    {
+      return (URI)context.removeLocalAttr(TARGET_HOST_KEY_NAME);
+    }
+
+    /**
+     * Used together with hint, this method inserts a boolean in RequestContext to indicate that
+     * the hint is a preference instead of a requirement, such that optimization can be made by
+     * features such as {@link com.linkedin.d2.balancer.clients.RetryClient} or
+     * {@link com.linkedin.d2.balancer.clients.BackupRequestsClient}
+     * @param context RequestContext
+     * @param acceptable if other hosts are acceptable.
+     */
+    public static void setRequestContextOtherHostAcceptable(RequestContext context, boolean acceptable)
+    {
+      context.putLocalAttr(OTHER_HOST_ACCEPTABLE, acceptable);
+    }
+
+    /**
+     * Retrieve the boolean that indicates if other hosts are acceptable, or null if not found.
+     * @param context RequestContext
+     * @return boolean indicating if other hosts are acceptable.
+     */
+    public static Boolean getRequestContextOtherHostAcceptable(RequestContext context)
+    {
+      return (Boolean) context.getLocalAttr(OTHER_HOST_ACCEPTABLE);
     }
   }
 }

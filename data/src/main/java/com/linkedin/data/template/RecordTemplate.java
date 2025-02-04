@@ -18,6 +18,8 @@ package com.linkedin.data.template;
 
 
 import com.linkedin.data.DataMap;
+import com.linkedin.data.collections.CheckedMap;
+import com.linkedin.data.collections.CheckedUtil;
 import com.linkedin.data.schema.RecordDataSchema;
 
 
@@ -44,10 +46,18 @@ import com.linkedin.data.schema.RecordDataSchema;
  */
 public abstract class RecordTemplate implements DataTemplate<DataMap>
 {
+  private static final int UNKNOWN_INITIAL_CACHE_CAPACITY = -1;
+
   protected RecordTemplate(DataMap map, RecordDataSchema schema)
+  {
+    this(map, schema, UNKNOWN_INITIAL_CACHE_CAPACITY);
+  }
+
+  protected RecordTemplate(DataMap map, RecordDataSchema schema, int initialCacheCapacity)
   {
     _map = map;
     _schema = schema;
+    _initialCacheCapacity = initialCacheCapacity;
   }
 
   @Override
@@ -67,7 +77,8 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
   {
     RecordTemplate clone = (RecordTemplate) super.clone();
     clone._map = clone._map.clone();
-    clone._cache = clone._cache.clone();
+    clone._cache = clone._cache != null ? clone._cache.clone() : null;
+    clone._initialCacheCapacity = _initialCacheCapacity;
     return clone;
   }
 
@@ -89,7 +100,7 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
   {
     RecordTemplate copy = (RecordTemplate) super.clone();
     copy._map = _map.copy();
-    copy._cache = new DataObjectToObjectCache<Object>();
+    copy._cache = null;
     return copy;
   }
 
@@ -170,6 +181,34 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
   }
 
   /**
+   * Set the value of field in an unsafe way without checking.
+   *
+   * This is direct method. The value is not a {@link DataTemplate}.
+   *
+   * @see SetMode
+   *
+   * @param field provides the field to set.
+   * @param valueClass provides the expected class of the input value.
+   * @param dataClass provides the class stored in the underlying {@link DataMap}.
+   * @param object provides the value to set.
+   * @param mode determines how should happen if the value provided is null.
+   * @param <T> is the type of the object.
+   * @throws ClassCastException if provided object is not the same as the expected class or
+   *                            it cannot be coerced to the expected class.
+   * @throws NullPointerException if null is not allowed, see {@link SetMode#DISALLOW_NULL}.
+   * @throws IllegalArgumentException if attempting to remove a mandatory field by setting it to null,
+   *                                  see {@link SetMode#REMOVE_OPTIONAL_IF_NULL}.
+   */
+  protected <T> void unsafePutDirect(RecordDataSchema.Field field, Class<T> valueClass, Class<?> dataClass, T object, SetMode mode)
+      throws ClassCastException
+  {
+    if (checkPutNullValue(field, object, mode))
+    {
+      CheckedUtil.putWithoutChecking(_map, field.getName(), DataTemplateUtil.coerceInput(object, valueClass, dataClass));
+    }
+  }
+
+  /**
    * Set the value of field whose type has needs to be coerced by {@link DirectCoercer}.
    *
    * @see SetMode
@@ -193,7 +232,7 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
     {
       final Object coerced = DataTemplateUtil.coerceInput(object, valueClass, dataClass);
       _map.put(field.getName(), coerced);
-      _cache.put(coerced, object);
+      getCache().put(coerced, object);
     }
   }
 
@@ -269,7 +308,41 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
       if (object.getClass() == valueClass)
       {
         _map.put(field.getName(), object.data());
-        _cache.put(object.data(), object);
+        getCache().put(object.data(), object);
+      }
+      else
+      {
+        throw new ClassCastException("Input " + object + " should be a " + valueClass.getName());
+      }
+    }
+  }
+
+  /**
+   * Set the value of field in an unsafe way without checking.
+   *
+   * This is wrapping method. The value is a {@link DataTemplate}.
+   *
+   * @see SetMode
+   *
+   * @param field provides the field to set.
+   * @param valueClass provides the expected class of the input value.
+   * @param object provides the value to set.
+   * @param mode determines how should happen if the value provided is null.
+   * @param <T> is the type of the input object.
+   * @throws ClassCastException if class of the provided value is not the same as the expected class.
+   * @throws NullPointerException if null is not allowed, see {@link SetMode#DISALLOW_NULL}.
+   * @throws IllegalArgumentException if attempting to remove a mandatory field by setting it to null,
+   *                                  see {@link SetMode#REMOVE_OPTIONAL_IF_NULL}.
+   */
+  protected <T extends DataTemplate<?>> void unsafePutWrapped(RecordDataSchema.Field field, Class<T> valueClass, T object, SetMode mode)
+      throws ClassCastException
+  {
+    if (checkPutNullValue(field, object, mode))
+    {
+      if (object.getClass() == valueClass)
+      {
+        CheckedUtil.putWithoutCheckingOrChangeNotification(_map, field.getName(), object.data());
+        getCache().put(object.data(), object);
       }
       else
       {
@@ -347,14 +420,14 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
       return null;
     }
     // the underlying data type of the custom typed field should be immutable, thus checking class equality suffices
-    else if ((customTypeValue = _cache.get(found)) != null && customTypeValue.getClass() == valueClass)
+    else if ((customTypeValue = getCache().get(found)) != null && customTypeValue.getClass() == valueClass)
     {
       coerced = valueClass.cast(customTypeValue);
     }
     else
     {
       coerced = DataTemplateUtil.coerceOutput(found, valueClass);
-      _cache.put(found, coerced);
+      getCache().put(found, coerced);
     }
     return coerced;
   }
@@ -382,16 +455,31 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
     {
       wrapped = null;
     }
-    else if ((template = (DataTemplate<?>) _cache.get(found)) != null && template.data() == found)
+    else if ((template = (DataTemplate<?>) getCache().get(found)) != null && template.data() == found)
     {
       wrapped = valueClass.cast(template);
     }
     else
     {
       wrapped = DataTemplateUtil.wrap(found, field.getType(), valueClass);
-      _cache.put(found, wrapped);
+      getCache().put(found, wrapped);
     }
     return wrapped;
+  }
+
+  /**
+   * Register a change listener to get notified when the underlying map changes.
+   */
+  protected void addChangeListener(CheckedMap.ChangeListener<String, Object> listener)
+  {
+    //
+    // This UGLY hack is needed because IdResponse breaks the implicit RecordTemplate contract and passes in
+    // a null datamap. We even have a test for this obnoxious behavior.
+    //
+    if (_map != null)
+    {
+      _map.addChangeListener(listener);
+    }
   }
 
   /**
@@ -413,17 +501,12 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
   private Object obtainValueOrDefault(RecordDataSchema.Field field, GetMode mode)
       throws RequiredFieldNotPresentException
   {
-    Object defaultValue = field.getDefault();
     String fieldName = field.getName();
-    Object found = _map.get(field.getName());
+    Object found = _map.get(fieldName);
     if (found == null && mode != GetMode.NULL)
     {
-      if (defaultValue != null)
-      {
-        // return default value, which is usually read-only
-        found = defaultValue;
-      }
-      else if (field.getOptional() == false && mode == GetMode.STRICT)
+      found = field.getDefault();
+      if (found == null && field.getOptional() == false && mode == GetMode.STRICT)
       {
         throw new RequiredFieldNotPresentException(fieldName);
       }
@@ -480,7 +563,23 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
     return doPut;
   }
 
-  private DataMap _map;
+  /**
+   * Get _cache. If this is the first time to use _cache, initialize it to a new {@link DataObjectToObjectCache}.
+   *
+   * @return a non-null _cache of {@link DataObjectToObjectCache} type.
+   */
+  private DataObjectToObjectCache<Object> getCache()
+  {
+    if (_cache == null)
+    {
+      _cache = _initialCacheCapacity == UNKNOWN_INITIAL_CACHE_CAPACITY ? new DataObjectToObjectCache<>() :
+          new DataObjectToObjectCache<>(_initialCacheCapacity);
+    }
+    return _cache;
+  }
+
+  protected DataMap _map;
   private final RecordDataSchema _schema;
-  private DataObjectToObjectCache<Object> _cache = new DataObjectToObjectCache<Object>();
+  private int _initialCacheCapacity;
+  private DataObjectToObjectCache<Object> _cache;
 }

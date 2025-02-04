@@ -25,27 +25,30 @@ import com.linkedin.restli.common.ComplexResourceKey;
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.EmptyRecord;
 import com.linkedin.restli.common.test.MyComplexKey;
+import com.linkedin.restli.internal.server.MutablePathKeys;
 import com.linkedin.restli.internal.server.RoutingResult;
+import com.linkedin.restli.internal.server.ServerResourceContext;
 import com.linkedin.restli.internal.server.model.AnnotationSet;
 import com.linkedin.restli.internal.server.model.Parameter;
 import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
 import com.linkedin.restli.internal.server.model.ResourceModel;
 import com.linkedin.restli.server.Key;
-import com.linkedin.restli.server.PathKeys;
-import com.linkedin.restli.server.ResourceContext;
 import com.linkedin.restli.server.RestLiRequestData;
 import com.linkedin.restli.server.RoutingException;
 import com.linkedin.restli.server.annotations.HeaderParam;
-import org.easymock.EasyMock;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
 
+import java.io.IOException;
 import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.testng.annotations.DataProvider;
+import org.testng.annotations.Test;
+
+import org.easymock.EasyMock;
 
 import static org.easymock.EasyMock.createMock;
 import static org.easymock.EasyMock.expect;
@@ -62,7 +65,7 @@ public class TestGetArgumentBuilder
 {
   private Parameter<?> getIntegerParam()
   {
-    return new Parameter<Integer>("myComplexKeyCollectionId",
+    return new Parameter<>("myComplexKeyCollectionId",
         Integer.class,
         new IntegerDataSchema(),
         false,
@@ -76,7 +79,7 @@ public class TestGetArgumentBuilder
   private Object[][] keyArgumentData()
   {
     @SuppressWarnings("rawtypes")
-    Parameter<ComplexResourceKey> complexResourceKeyParam = new Parameter<ComplexResourceKey>(
+    Parameter<ComplexResourceKey> complexResourceKeyParam = new Parameter<>(
       "complexKeyTestId",
       ComplexResourceKey.class,
       null,
@@ -91,7 +94,7 @@ public class TestGetArgumentBuilder
             {
                 getIntegerParam(),
                 "myComplexKeyCollectionId",
-                new Integer(123),
+                Integer.valueOf(123),
                 new IntegerDataSchema()
             },
             {
@@ -101,7 +104,7 @@ public class TestGetArgumentBuilder
                 null
             },
             {
-                new Parameter<CompoundKey>("myComplexKeyAssociationId",
+                new Parameter<>("myComplexKeyAssociationId",
                     CompoundKey.class,
                     null,
                     false,
@@ -116,7 +119,7 @@ public class TestGetArgumentBuilder
             {
                 complexResourceKeyParam,
                 "complexKeyTestId",
-                new ComplexResourceKey<MyComplexKey, EmptyRecord>(
+                new ComplexResourceKey<>(
                     new MyComplexKey().setA("keyString").setB(1234L), new EmptyRecord()),
                 null
             }
@@ -125,6 +128,7 @@ public class TestGetArgumentBuilder
 
   @Test(dataProvider = "keyArgumentData")
   public void testKeyArguments(Parameter<?> param, String keyName, Object keyValue, final DataSchema keySchema)
+      throws IOException
   {
     ResourceModel model;
     if (keyName != null)
@@ -139,7 +143,7 @@ public class TestGetArgumentBuilder
     ResourceMethodDescriptor descriptor;
     if (param != null)
     {
-      List<Parameter<?>> paramList = new ArrayList<Parameter<?>>();
+      List<Parameter<?>> paramList = new ArrayList<>();
       paramList.add(param);
       descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(model, 2, paramList);
     }
@@ -147,7 +151,7 @@ public class TestGetArgumentBuilder
     {
       descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(model, null);
     }
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(keyName, keyValue, null);
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(keyName, keyValue, null, true);
     RoutingResult routingResult;
     if (param != null)
     {
@@ -157,10 +161,10 @@ public class TestGetArgumentBuilder
     {
       routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 2, context, 1);
     }
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new GetArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
     Object[] expectedArgs;
     if (keyValue == null)
@@ -179,10 +183,10 @@ public class TestGetArgumentBuilder
   @DataProvider(name = "asyncArgumentData")
   private Object[][] asyncArgumentData()
   {
-    List<Parameter<?>> callbackParams = new ArrayList<Parameter<?>>();
+    List<Parameter<?>> callbackParams = new ArrayList<>();
     callbackParams.add(getIntegerParam());
     @SuppressWarnings("rawtypes")
-    Parameter<Callback> cParam = new Parameter<Callback>(
+    Parameter<Callback> cParam = new Parameter<>(
         "",
         Callback.class,
         null,
@@ -193,9 +197,9 @@ public class TestGetArgumentBuilder
         new AnnotationSet(new Annotation[]{}));
     callbackParams.add(cParam);
 
-    List<Parameter<?>> parSeqContextParams = new ArrayList<Parameter<?>>();
+    List<Parameter<?>> parSeqContextParams = new ArrayList<>();
     parSeqContextParams.add(getIntegerParam());
-    parSeqContextParams.add(new Parameter<Context>(
+    parSeqContextParams.add(new Parameter<>(
         "",
         Context.class,
         null,
@@ -205,10 +209,10 @@ public class TestGetArgumentBuilder
         false,
         new AnnotationSet(new Annotation[]{})));
 
-    List<Parameter<?>> deprecatedParSeqContextParams = new ArrayList<Parameter<?>>();
+    List<Parameter<?>> deprecatedParSeqContextParams = new ArrayList<>();
     deprecatedParSeqContextParams.add(getIntegerParam());
     @SuppressWarnings("deprecation")
-    Parameter<Context> contextParam = new Parameter<Context>(
+    Parameter<Context> contextParam = new Parameter<>(
         "",
         Context.class,
         null,
@@ -236,20 +240,21 @@ public class TestGetArgumentBuilder
 
   @Test(dataProvider = "asyncArgumentData")
   public void testAsyncArguments(List<Parameter<?>> paramList)
+      throws IOException
   {
     String keyName = "myComplexKeyCollectionId";
-    Object keyValue = new Integer(123);
+    Object keyValue = Integer.valueOf(123);
     DataSchema keySchema = new IntegerDataSchema();
     Key key = new Key(keyName, keyValue.getClass(), keySchema);
 
     ResourceModel model = RestLiArgumentBuilderTestHelper.getMockResourceModel(null, key, false);
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(model, 2, paramList);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(keyName, keyValue, null);
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(keyName, keyValue, null, true);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 3, context, 2);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new GetArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
     Object[] expectedArgs = new Object[]{keyValue, null};
     assertEquals(args, expectedArgs);
@@ -259,15 +264,16 @@ public class TestGetArgumentBuilder
 
   @Test
   public void testHeaderArgument()
+      throws IOException
   {
     String keyName = "myComplexKeyCollectionId";
-    Object keyValue = new Integer(123);
+    Object keyValue = Integer.valueOf(123);
     DataSchema keySchema = new IntegerDataSchema();
     Key key = new Key(keyName, keyValue.getClass(), keySchema);
-    Map<String, String> headers = new HashMap<String, String>();
+    Map<String, String> headers = new HashMap<>();
     String headerString = "An extra string.";
     headers.put("extra", headerString);
-    List<Parameter<?>> headerParams = new ArrayList<Parameter<?>>();
+    List<Parameter<?>> headerParams = new ArrayList<>();
     headerParams.add(getIntegerParam());
     HeaderParam annotation = createMock(HeaderParam.class);
     expect(annotation.value()).andReturn("extra");
@@ -275,7 +281,7 @@ public class TestGetArgumentBuilder
     expect(annotationSet.getAll()).andReturn(new Annotation[]{});
     expect(annotationSet.get(HeaderParam.class)).andReturn(annotation);
     replay(annotation, annotationSet);
-    Parameter<String> headerParam = new Parameter<String>(
+    Parameter<String> headerParam = new Parameter<>(
         "",
         String.class,
         null,
@@ -288,12 +294,14 @@ public class TestGetArgumentBuilder
 
     ResourceModel model = RestLiArgumentBuilderTestHelper.getMockResourceModel(null, key, false);
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(model, 2, headerParams);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(keyName, keyValue, null, headers);
+    ServerResourceContext
+        context = RestLiArgumentBuilderTestHelper.getMockResourceContext(keyName, keyValue, null, headers,
+                                                                                     true);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 3, context, 2);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new GetArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
     Object[] expectedArgs = new Object[]{keyValue, headerString};
     assertEquals(args, expectedArgs);
@@ -307,7 +315,7 @@ public class TestGetArgumentBuilder
     return new Object[][]
         {
             {
-                new Parameter<Integer>("myComplexKeyCollectionId",
+                new Parameter<>("myComplexKeyCollectionId",
                     Integer.class,
                     new IntegerDataSchema(),
                     false,
@@ -322,6 +330,7 @@ public class TestGetArgumentBuilder
 
   @Test(dataProvider = "failureData")
   public void testFailure(Parameter<?> param, String errorMessage)
+      throws IOException
   {
     String keyName = "myComplexKeyCollectionId";
     Key key = new Key(keyName,  Integer.class, new IntegerDataSchema());
@@ -329,17 +338,17 @@ public class TestGetArgumentBuilder
     List<Parameter<?>> paramList = Collections.<Parameter<?>>singletonList(param);
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(model, 2, paramList);
 
-    ResourceContext context = EasyMock.createMock(ResourceContext.class);
-    PathKeys mockPathKeys = EasyMock.createMock(PathKeys.class);
+    ServerResourceContext context = EasyMock.createMock(ServerResourceContext.class);
+    MutablePathKeys mockPathKeys = EasyMock.createMock(MutablePathKeys.class);
     EasyMock.expect(mockPathKeys.get(keyName)).andReturn(null).anyTimes();
     EasyMock.expect(context.getPathKeys()).andReturn(mockPathKeys).anyTimes();
     EasyMock.replay(context, mockPathKeys);
 
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 3, context, 2);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new GetArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     try
     {
       argumentBuilder.buildArguments(requestData, routingResult);

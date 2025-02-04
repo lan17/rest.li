@@ -28,6 +28,7 @@ import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.ProtocolVersion;
 import com.linkedin.restli.common.test.MyComplexKey;
 
+import java.net.URI;
 import org.testng.Assert;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
@@ -198,7 +199,7 @@ public class TestUriParamUtils
     myComplexKey2.setA("anotherStringVal");
     myComplexKey2.setB(4);
     ComplexResourceKey<MyComplexKey, MyComplexKey> complexKey =
-      new ComplexResourceKey<MyComplexKey, MyComplexKey>(myComplexKey1, myComplexKey2);
+        new ComplexResourceKey<>(myComplexKey1, myComplexKey2);
     String complexKeyString = URIParamUtils.keyToString(complexKey, NO_ESCAPING, null, true, version);
     Assert.assertEquals(complexKeyString, full);
 
@@ -291,7 +292,108 @@ public class TestUriParamUtils
     UriBuilder uriBuilder = new UriBuilder();
     URIParamUtils.addSortedParams(uriBuilder, queryParams);
     String query = uriBuilder.build().getQuery();
+
     Assert.assertEquals(query, "aParam=(empty:(),foo:bar,someField:someValue)&bParam=List(x,y,z)");
+  }
+
+  @Test
+  public void replaceQueryParam()
+  {
+    DataMap queryParams = new DataMap();
+    queryParams.put("bq", "batch_finder");
+    queryParams.put("page", "1");
+    queryParams.put("count", "10");
+
+
+
+    DataMap criteria1 = new DataMap();
+    criteria1.put("criteria1_fieldA", "valueA");
+    criteria1.put("criteria1_fieldB", "valueB");
+    criteria1.put("criteria1_fieldC", "valueC");
+    DataMap criteria2 = new DataMap();
+    criteria2.put("criteria2_fieldA", "valueA");
+    criteria2.put("criteria2_fieldB", "valueB");
+    criteria2.put("criteria2_fieldC", "valueC");
+
+    DataList paramList = new DataList();
+    paramList.add(criteria1);
+    paramList.add(criteria2);
+    queryParams.put("criteria", paramList);
+
+    UriBuilder uriBuilder = new UriBuilder();
+    URIParamUtils.addSortedParams(uriBuilder, queryParams);
+    URI uri = uriBuilder.build();
+
+
+    DataList newParamList = new DataList();
+    newParamList.add(criteria1);
+
+    URI replacedURIV1 = URIParamUtils.replaceQueryParam(uri,
+                                             "criteria",
+                                                        newParamList,
+                                                        queryParams,
+                                                        AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion());
+
+
+    URI replacedURIV2 = URIParamUtils.replaceQueryParam(uri,
+                                            "criteria",
+                                                        newParamList,
+                                                        queryParams,
+                                                        AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion());
+
+
+
+    String expectedURI = "bq=batch_finder&count=10&criteria=List((criteria1_fieldA:valueA,criteria1_fieldB:valueB,"
+        + "criteria1_fieldC:valueC),(criteria2_fieldA:valueA,criteria2_fieldB:valueB,criteria2_fieldC:valueC))&page=1";
+    String expectedNewURIV2 = "bq=batch_finder&count=10&criteria=List((criteria1_fieldA:valueA,criteria1_fieldB:valueB,"
+        + "criteria1_fieldC:valueC))&page=1";
+    String expectedNewURIV1 = "bq=batch_finder&count=10&criteria[0].criteria1_fieldA=valueA"
+        + "&criteria[0].criteria1_fieldB=valueB&criteria[0].criteria1_fieldC=valueC&page=1";
+
+
+    Assert.assertEquals(uri.getQuery(), expectedURI);
+    Assert.assertEquals(replacedURIV2.getQuery(), expectedNewURIV2);
+    Assert.assertEquals(replacedURIV1.getQuery(), expectedNewURIV1);
+  }
+
+
+  @Test
+  public void testProjectionMask()
+  {
+    DataMap queryParams = new DataMap();
+
+    DataMap fields = new DataMap();
+    fields.put("name", 1);
+
+    DataMap friends = new DataMap();
+    friends.put("$start", 1);
+    friends.put("$count", 2);
+    fields.put("friends", friends);
+
+    queryParams.put("fields", fields);
+
+    DataMap paramMap = new DataMap();
+    paramMap.put("foo", "bar");
+    paramMap.put("empty", new DataMap());
+
+    queryParams.put("aParam", paramMap);
+
+    DataList paramList = new DataList();
+    paramList.add("x");
+    paramList.add("y");
+    paramList.add("z");
+
+    queryParams.put("bParam", paramList);
+
+    UriBuilder uriBuilder = new UriBuilder();
+    URIParamUtils.addSortedParams(uriBuilder, queryParams);
+    URI uri = uriBuilder.build();
+
+    String query = uri.getQuery();
+    Assert.assertEquals(query, "aParam=(empty:(),foo:bar)&bParam=List(x,y,z)&fields=name,friends:($start:1,$count:2)");
+
+    String rawQuery = uri.getRawQuery();
+    Assert.assertEquals(rawQuery, "aParam=(empty:(),foo:bar)&bParam=List(x,y,z)&fields=name,friends:($start:1,$count:2)");
   }
 
   @Test
@@ -337,5 +439,39 @@ public class TestUriParamUtils
     final String[] components2 = URIParamUtils.extractPathComponentsFromUriTemplate("foo/");
     Assert.assertEquals(components2.length, 1);
     Assert.assertEquals(components2[0], "foo");
+  }
+
+  @DataProvider
+  public Object[][] unicode()
+  {
+    // create objects
+    // test unicode encoding
+    DataMap japaneseMap = new DataMap();
+    japaneseMap.put("konnichiwa","こんにちは"); // Japanese
+
+    DataMap emojiMap = new DataMap();
+    emojiMap.put("smiley","☺"); // Emoji
+
+    DataMap surrogatePairMap = new DataMap();
+    surrogatePairMap.put("stickoutTongue", "\uD83D\uDE1B"); // Emoji, but with surrogate pairs
+
+    return new Object[][] {
+        { japaneseMap, "(konnichiwa:こんにちは)", "(konnichiwa:%E3%81%93%E3%82%93%E3%81%AB%E3%81%A1%E3%81%AF)", "(konnichiwa:%E3%81%93%E3%82%93%E3%81%AB%E3%81%A1%E3%81%AF)" },
+        { emojiMap, "(smiley:☺)", "(smiley:%E2%98%BA)", "(smiley:%E2%98%BA)"},
+        { surrogatePairMap, "(stickoutTongue:\uD83D\uDE1B)", "(stickoutTongue:%F0%9F%98%9B)","(stickoutTongue:%F0%9F%98%9B)" }
+    };
+  }
+
+  @Test(dataProvider = "unicode")
+  public void testUnicode(Object obj, String expectedNoEsc, String expectedPathSegEsc, String expectedQueryParamEsc)
+  {
+    String actualNoEsc = URIParamUtils.encodeElement(obj, NO_ESCAPING, null);
+    Assert.assertEquals(actualNoEsc, expectedNoEsc);
+    String actualPathSegEsc = URIParamUtils.encodeElement(obj, URL_ESCAPING,
+        UriComponent.Type.PATH_SEGMENT);
+    Assert.assertEquals(actualPathSegEsc, expectedPathSegEsc);
+    String actualQueryParamEsc = URIParamUtils.encodeElement(obj, URL_ESCAPING,
+        UriComponent.Type.QUERY_PARAM);
+    Assert.assertEquals(actualQueryParamEsc, expectedQueryParamEsc);
   }
 }

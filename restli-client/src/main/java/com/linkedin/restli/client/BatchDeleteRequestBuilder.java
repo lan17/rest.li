@@ -33,7 +33,6 @@ import java.util.Map;
  * @author Josh Walker
  * @version $Revision: $
  */
-
 public class BatchDeleteRequestBuilder<K, V extends RecordTemplate> extends
     BatchKVRequestBuilder<K, V, BatchDeleteRequest<K, V>>
 {
@@ -118,13 +117,13 @@ public class BatchDeleteRequestBuilder<K, V extends RecordTemplate> extends
   {
     ensureBatchKeys();
 
-    return new BatchDeleteRequest<K, V>(buildReadOnlyHeaders(),
-                                        buildReadOnlyCookies(),
-                                        buildReadOnlyQueryParameters(),
-                                        getQueryParamClasses(),
-                                        _resourceSpec,
-                                        getBaseUriTemplate(),
-                                        buildReadOnlyPathKeys(),
-                                        getRequestOptions());
+    return new BatchDeleteRequest<>(buildReadOnlyHeaders(),
+        buildReadOnlyCookies(),
+        buildReadOnlyQueryParameters(),
+        getQueryParamClasses(),
+        _resourceSpec,
+        getBaseUriTemplate(),
+        buildReadOnlyPathKeys(),
+        getRequestOptions());
   }
 }

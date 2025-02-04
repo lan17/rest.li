@@ -16,8 +16,8 @@
 
 package com.linkedin.d2.balancer.clients;
 
-
 import com.linkedin.common.callback.Callback;
+import com.linkedin.common.callback.SuccessCallback;
 import com.linkedin.common.util.None;
 import com.linkedin.d2.balancer.D2Client;
 import com.linkedin.d2.balancer.Facilities;
@@ -25,22 +25,25 @@ import com.linkedin.d2.balancer.LoadBalancer;
 import com.linkedin.d2.balancer.ServiceUnavailableException;
 import com.linkedin.d2.balancer.properties.ServiceProperties;
 import com.linkedin.d2.balancer.util.LoadBalancerUtil;
-import com.linkedin.d2.discovery.event.PropertyEventThread.PropertyEventShutdownCallback;
 import com.linkedin.r2.filter.R2Constants;
 import com.linkedin.r2.message.Request;
 import com.linkedin.r2.message.RequestContext;
+import com.linkedin.r2.message.Response;
+import com.linkedin.r2.message.timing.TimingContextUtil;
+import com.linkedin.r2.message.timing.TimingKey;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.message.stream.StreamRequest;
 import com.linkedin.r2.message.stream.StreamResponse;
+import com.linkedin.r2.message.timing.TimingImportance;
+import com.linkedin.r2.message.timing.TimingNameConstants;
 import com.linkedin.r2.transport.common.AbstractClient;
+import com.linkedin.r2.transport.common.Client;
 import com.linkedin.r2.transport.common.bridge.client.TransportClient;
 import com.linkedin.r2.transport.common.bridge.client.TransportClientAdapter;
-
 import java.net.URI;
 import java.util.Collections;
 import java.util.Map;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,6 +57,8 @@ import static com.linkedin.d2.discovery.util.LogUtil.warn;
 public class DynamicClient extends AbstractClient implements D2Client
 {
   private static final Logger _log = LoggerFactory.getLogger(DynamicClient.class);
+
+  private static final TimingKey TIMING_KEY = TimingKey.registerNewKey(TimingNameConstants.D2_TOTAL, TimingImportance.MEDIUM);
 
   private final LoadBalancer  _balancer;
   private final Facilities    _facilities;
@@ -79,28 +84,11 @@ public class DynamicClient extends AbstractClient implements D2Client
   {
     if (!_restOverStream)
     {
-      Callback<RestResponse> transportCallback = decorateCallback(callback, request, "rest");
-
-      try
-      {
-        TransportClient client = _balancer.getClient(request, requestContext);
-
-        if (client != null)
-        {
-          new TransportClientAdapter(client, false).restRequest(request, requestContext, transportCallback);
-        }
-        else
-        {
-          throw new ServiceUnavailableException("unknown: " + request.getURI(),
-              "got null client from load balancer");
-        }
-      }
-      catch (ServiceUnavailableException e)
-      {
-        callback.onError(e);
-
-        warn(_log, "unable to find service for: ", extractLogInfo(request));
-      }
+      Callback<RestResponse> loggerCallback = decorateLoggingCallback(callback, request, "rest");
+      TimingContextUtil.markTiming(requestContext, TIMING_KEY);
+      _balancer.getClient(request, requestContext,
+        getClientCallback(request, requestContext, false, callback, client -> client.restRequest(request, requestContext, loggerCallback))
+      );
     }
     else
     {
@@ -114,28 +102,42 @@ public class DynamicClient extends AbstractClient implements D2Client
                           RequestContext requestContext,
                           final Callback<StreamResponse> callback)
   {
-    Callback<StreamResponse> transportCallback = decorateCallback(callback, request, "stream");
+    Callback<StreamResponse> loggerCallback = decorateLoggingCallback(callback, request, "stream");
 
-    try
+    _balancer.getClient(request, requestContext,
+      getClientCallback(request, requestContext, true, callback, client -> client.streamRequest(request, requestContext, loggerCallback))
+    );
+
+  }
+
+  private Callback<TransportClient> getClientCallback(Request request, RequestContext requestContext, final boolean restOverStream, Callback<? extends Response> callback, SuccessCallback<Client> clientSuccessCallback)
+  {
+    return new Callback<TransportClient>()
     {
-      TransportClient client = _balancer.getClient(request, requestContext);
-
-      if (client != null)
+      @Override
+      public void onError(Throwable e)
       {
-        new TransportClientAdapter(client, true).streamRequest(request, requestContext, transportCallback);
-      }
-      else
-      {
-        throw new ServiceUnavailableException("unknown: " + request.getURI(),
-                                              "got null client from load balancer");
-      }
-    }
-    catch (ServiceUnavailableException e)
-    {
-      callback.onError(e);
+        TimingContextUtil.markTiming(requestContext, TIMING_KEY);
+        callback.onError(e);
 
-      warn(_log, "unable to find service for: ", extractLogInfo(request));
-    }
+        warn(_log, "unable to find service for: ", extractLogInfo(request));
+      }
+
+      @Override
+      public void onSuccess(TransportClient client)
+      {
+        TimingContextUtil.markTiming(requestContext, TIMING_KEY);
+        if (client != null)
+        {
+          clientSuccessCallback.onSuccess(new TransportClientAdapter(client, restOverStream));
+        }
+        else
+        {
+          callback.onError(new ServiceUnavailableException("PEGA_1000. Unknown: " + request.getURI(),
+            "got null client from load balancer"));
+        }
+      }
+    };
   }
 
   @Override
@@ -150,16 +152,12 @@ public class DynamicClient extends AbstractClient implements D2Client
   {
     info(_log, "shutting down dynamic client");
 
-    _balancer.shutdown(new PropertyEventShutdownCallback()
-    {
-      @Override
-      public void done()
-      {
-        info(_log, "dynamic client shutdown complete");
+    _balancer.shutdown(() -> {
+      info(_log, "dynamic client shutdown complete");
 
-        callback.onSuccess(None.none());
-      }
+      callback.onSuccess(None.none());
     });
+    TimingKey.unregisterKey(TIMING_KEY);
   }
 
   @Override
@@ -169,28 +167,37 @@ public class DynamicClient extends AbstractClient implements D2Client
   }
 
   @Override
-  public Map<String, Object> getMetadata(URI uri)
+  public void getMetadata(URI uri, Callback<Map<String, Object>> callback)
   {
-    if (_balancer != null)
+    if (_balancer == null)
     {
-      try
-      {
-        String serviceName = LoadBalancerUtil.getServiceNameFromUri(uri);
-        ServiceProperties serviceProperties = _balancer.getLoadBalancedServiceProperties(serviceName);
-        if (serviceProperties != null)
-        {
-          return Collections.unmodifiableMap(serviceProperties.getServiceMetadataProperties());
-        }
-      }
-      catch (ServiceUnavailableException e)
+      callback.onSuccess(Collections.emptyMap());
+      return;
+    }
+    String serviceName = LoadBalancerUtil.getServiceNameFromUri(uri);
+    _balancer.getLoadBalancedServiceProperties(serviceName, new Callback<ServiceProperties>()
+    {
+      @Override
+      public void onError(Throwable e)
       {
         error(_log, e);
+        callback.onSuccess(Collections.emptyMap());
       }
-    }
-    return Collections.emptyMap();
+
+      @Override
+      public void onSuccess(ServiceProperties serviceProperties)
+      {
+        if (serviceProperties == null)
+        {
+          callback.onSuccess(Collections.emptyMap());
+          return;
+        }
+        callback.onSuccess(Collections.unmodifiableMap(serviceProperties.getServiceMetadataProperties()));
+      }
+    });
   }
 
-  private static <T> Callback<T> decorateCallback(final Callback<T> callback, Request request, final String type)
+  private static <T> Callback<T> decorateLoggingCallback(final Callback<T> callback, Request request, final String type)
   {
     if (_log.isTraceEnabled())
     {

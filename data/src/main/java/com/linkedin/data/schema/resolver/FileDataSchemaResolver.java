@@ -16,12 +16,11 @@
 
 package com.linkedin.data.schema.resolver;
 
-
 import com.linkedin.data.schema.DataSchemaLocation;
 import com.linkedin.data.schema.DataSchemaParserFactory;
 import com.linkedin.data.schema.DataSchemaResolver;
-import com.linkedin.data.schema.SchemaParser;
 import com.linkedin.data.schema.NamedDataSchema;
+import com.linkedin.data.schema.SchemaParser;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -65,7 +64,7 @@ public class FileDataSchemaResolver extends AbstractDataSchemaResolver
   /**
    * The default file name extension is ".pdsc".
    */
-  public static final String DEFAULT_EXTENSION = ".pdsc";
+  public static final String DEFAULT_EXTENSION = SchemaParser.FILE_EXTENSION;
 
   /**
    * Constructor.
@@ -81,11 +80,41 @@ public class FileDataSchemaResolver extends AbstractDataSchemaResolver
    * Constructor.
    *
    * @param parserFactory to be used to construct {@link SchemaParser}'s to parse located files.
+   * @param dependencyResolver provides the parser used to resolve dependencies.  Note that
+   *                     when multiple file formats (e.g. both .pdsc and .pdl) are in use,
+   *                     a resolver that supports multiple file formats such as
+   *                     {@link MultiFormatDataSchemaResolver} must be provided.
+   */
+  public FileDataSchemaResolver(DataSchemaParserFactory parserFactory, DataSchemaResolver dependencyResolver)
+  {
+    super(parserFactory, dependencyResolver);
+  }
+
+  /**
+   * Constructor.
+   *
+   * @param parserFactory to be used to construct {@link SchemaParser}'s to parse located files.
    * @param paths is the search paths delimited by the default path separator.
    */
   public FileDataSchemaResolver(DataSchemaParserFactory parserFactory, String paths)
   {
     this(parserFactory);
+    setPaths(paths);
+  }
+
+  /**
+   * Constructor.
+   *
+   * @param parserFactory to be used to construct {@link SchemaParser}'s to parse located files.
+   * @param paths is the search paths delimited by the default path separator.
+   * @param dependencyResolver provides the parser used to resolve dependencies.  Note that
+   *                     when multiple file formats (e.g. both .pdsc and .pdl) are in use,
+   *                     a resolver that supports multiple file formats such as
+   *                     {@link MultiFormatDataSchemaResolver} must be provided.
+   */
+  public FileDataSchemaResolver(DataSchemaParserFactory parserFactory, String paths, DataSchemaResolver dependencyResolver)
+  {
+    this(parserFactory, dependencyResolver);
     setPaths(paths);
   }
 
@@ -116,16 +145,19 @@ public class FileDataSchemaResolver extends AbstractDataSchemaResolver
    * Specify the search paths as a string, with each search paths separated by
    * the provided separator.
    *
-   * @param paths is the search paths separated by the provided separator.
+   * @param paths provides the search paths separated by the provided separator, or null for no search paths.
    * @param separator contain the characters that separate each search path.
    */
   public void setPaths(String paths, String separator)
   {
-    List<String> list = new ArrayList<String>();
-    StringTokenizer tokenizer = new StringTokenizer(paths, separator);
-    while (tokenizer.hasMoreTokens())
+    List<String> list = new ArrayList<>();
+    if (paths != null)
     {
-      list.add(tokenizer.nextToken());
+      StringTokenizer tokenizer = new StringTokenizer(paths, separator);
+      while (tokenizer.hasMoreTokens())
+      {
+        list.add(tokenizer.nextToken());
+      }
     }
     setPaths(list);
   }
@@ -148,6 +180,29 @@ public class FileDataSchemaResolver extends AbstractDataSchemaResolver
   public List<String> getPaths()
   {
     return _paths;
+  }
+
+  /**
+   * Return the current schema file directory name for schemas location
+   */
+  @SuppressWarnings("deprecation")
+  public SchemaDirectoryName getSchemasDirectoryName()
+  {
+    assert getSchemaDirectories().size() == 1;
+    return (SchemaDirectoryName) getSchemaDirectories().get(0);
+  }
+
+  /**
+   * Sets the file directory name for schemas location dir.
+   * If not set Defaults to {@link SchemaDirectoryName#PEGASUS}
+   *
+   * @param schemasDirectoryName schema directory name.
+   * @deprecated Use {@link #setSchemaDirectories(List)} instead.
+   */
+  @Deprecated
+  void setSchemasDirectoryName(SchemaDirectoryName schemasDirectoryName)
+  {
+    setSchemaDirectories(Collections.singletonList(schemasDirectoryName));
   }
 
   /**
@@ -183,10 +238,10 @@ public class FileDataSchemaResolver extends AbstractDataSchemaResolver
     }
     final String transformedName = name;
 
-    return new AbstractIterator(_paths)
+    return new AbstractPathAndSchemaDirectoryIterator(_paths, getSchemaDirectories())
     {
       @Override
-      protected DataSchemaLocation transform(String path)
+      protected DataSchemaLocation transform(String path, SchemaDirectory schemaDirectory)
       {
         boolean isJar = path.endsWith(JAR_EXTENSION);
         if (isJar)
@@ -207,7 +262,9 @@ public class FileDataSchemaResolver extends AbstractDataSchemaResolver
           StringBuilder builder = new StringBuilder();
           // within a JAR file, files are treated as resources. Thus, we should lookup using the resource separator
           // character, which is '/'
-          builder.append(DIR_IN_JAR).append('/').append(transformedName.replace(File.separatorChar, '/'));
+          builder.append(schemaDirectory.getName())
+              .append('/')
+              .append(transformedName.replace(File.separatorChar, '/'));
           return new InJarFileDataSchemaLocation(jarFile, builder.toString());
         }
         else
@@ -235,7 +292,7 @@ public class FileDataSchemaResolver extends AbstractDataSchemaResolver
 
   private List<String> _paths = _emptyPaths;
   private String _extension = DEFAULT_EXTENSION;
-  private final Map<String, JarFile> _pathToJarFile = new HashMap<String, JarFile>();
+  private final Map<String, JarFile> _pathToJarFile = new HashMap<>();
 
   private static final List<String> _emptyPaths = Collections.emptyList();
 
@@ -243,9 +300,4 @@ public class FileDataSchemaResolver extends AbstractDataSchemaResolver
    * The jar file extension is ".jar".
    */
   private static final String JAR_EXTENSION = ".jar";
-
-  /**
-   * The directory within the jar file that holds schema files.
-   */
-  private static final String DIR_IN_JAR = "pegasus";
 }

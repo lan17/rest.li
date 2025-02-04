@@ -1,5 +1,6 @@
 {
   "name" : "greeting",
+  "d2ServiceName": "greetingSimpleD2",
   "path" : "/greeting",
   "schema" : "com.linkedin.greetings.api.Greeting",
   "doc" : "A simple greeting resource",
@@ -45,6 +46,10 @@
     }, {
       "name" : "twoAction",
       "doc" : "an action to be deprecated"
+    }, {
+      "name" : "threeAction",
+      "doc" : "an action to be marked read-only",
+      "readOnly" : true
     } ],
     "entity" : {
       "path" : "/greetings/{id}"

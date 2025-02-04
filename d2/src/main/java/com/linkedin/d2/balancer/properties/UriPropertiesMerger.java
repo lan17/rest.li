@@ -23,19 +23,26 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 public class UriPropertiesMerger implements ZooKeeperPropertyMerger<UriProperties>
 {
-  @Override
-  public UriProperties merge(String listenTo, Collection<UriProperties> propertiesToMerge)
-  {
-    Map<URI, Map<Integer, PartitionData>> partitionData = new HashMap<URI, Map<Integer, PartitionData>>();
-    Map<URI, Map<String, Object>> uriSpecificProperties = new HashMap<URI, Map<String, Object>>();
+  private static final Logger LOG = LoggerFactory.getLogger(UriPropertiesMerger.class);
 
-    String clusterName = listenTo;
+  @Override
+  public UriProperties merge(String propertyName, Collection<UriProperties> propertiesToMerge)
+  {
+    Map<URI, Map<Integer, PartitionData>> partitionData = new HashMap<>();
+    Map<URI, Map<String, Object>> uriSpecificProperties = new HashMap<>();
+
+    String clusterName = propertyName;
+    long maxVersion = -1;
 
     for (UriProperties property : propertiesToMerge)
     {
+      maxVersion = Long.max(maxVersion, property.getVersion());
       for (Map.Entry<URI, Map<Integer, PartitionData>> entry : property.getPartitionDesc().entrySet())
       {
         partitionData.put(entry.getKey(), entry.getValue());
@@ -46,11 +53,11 @@ public class UriPropertiesMerger implements ZooKeeperPropertyMerger<UriPropertie
       }
     }
 
-    return new UriProperties(clusterName, partitionData, uriSpecificProperties);
+    return new UriProperties(clusterName, partitionData, uriSpecificProperties, maxVersion);
   }
 
   @Override
-  public String unmerge(String listenTo,
+  public String unmerge(String propertyName,
                         UriProperties toDelete,
                         Map<String, UriProperties> propertiesToMerge)
   {

@@ -22,7 +22,7 @@ project.sourceSets.all { SourceSet sourceSet ->
   final String inputDataSchemaParentDirPath = "src${File.separatorChar}${sourceSet.name}"
   final String pegasusDirName = 'pegasus'
   final String inputDataSchemaDirPath = "${inputDataSchemaParentDirPath}${File.separatorChar}${pegasusDirName}"
-  final FileTree inputDataSchemaFiles = project.fileTree(dir: inputDataSchemaDirPath, includes: ["**${File.separatorChar}*.pdsc"])
+  final FileTree inputDataSchemaFiles = project.fileTree(dir: inputDataSchemaDirPath, includes: ["**${File.separatorChar}*.pdsc", "**${File.separatorChar}*.pdl"])
   if (inputDataSchemaFiles.empty)
   {
     return;
@@ -36,7 +36,7 @@ project.sourceSets.all { SourceSet sourceSet ->
     classpath generatorConfig
     args outputDirPath
     args inputDataSchemaFiles
-    systemProperties(['generator.resolver.path': inputDataSchemaDirPath])
+    systemProperties(['generator.resolver.path': inputDataSchemaDirPath, 'root.path': project.rootDir])
     doFirst {
       project.mkdir(outputDirPath)
     }
@@ -45,6 +45,7 @@ project.sourceSets.all { SourceSet sourceSet ->
   final Task jarTask = project.tasks[sourceSet.getTaskName('', 'jar')]
   jarTask.from(inputDataSchemaParentDirPath) {
     include "${pegasusDirName}${File.separatorChar}**${File.separatorChar}*.pdsc"
+    include "${pegasusDirName}${File.separatorChar}**${File.separatorChar}*.pdl"
   }
 
   final Task dataTemplateCompileTask = project.task(sourceSet.name + 'CompileDataTemplate',
@@ -58,4 +59,9 @@ project.sourceSets.all { SourceSet sourceSet ->
   rootProject.ext.build.dataTemplateCompileTasks[sourceSet] = dataTemplateCompileTask;
 
   project.tasks[sourceSet.compileJavaTaskName].dependsOn(dataTemplateCompileTask)
+}
+
+
+dependencies {
+  compile externalDependency.jsr305
 }

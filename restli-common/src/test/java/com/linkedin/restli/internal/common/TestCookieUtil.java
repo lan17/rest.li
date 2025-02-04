@@ -40,12 +40,13 @@ public class TestCookieUtil
   @BeforeClass
   public void setUp() throws URISyntaxException
   {
-    cookieA=new HttpCookie("a", "android");
+    cookieA = new HttpCookie("a", "android");
     cookieA.setDomain(".android.com");
     cookieA.setPath("/source/");
     cookieA.setDiscard(false);
     cookieA.setMaxAge(125L);
     cookieA.setSecure(true);
+    cookieA.setHttpOnly(true);
 
     cookieB = new HttpCookie("b", "boss");
     cookieC = new HttpCookie("c", "ios");
@@ -67,8 +68,28 @@ public class TestCookieUtil
     List<String> encodeStrs = CookieUtil.encodeSetCookies(Collections.singletonList(cookieA));
     List<HttpCookie> cookieList = CookieUtil.decodeSetCookies(encodeStrs);
 
-    Assert.assertEquals(cookieA.getName(), cookieList.get(0).getName());
-    Assert.assertEquals(cookieA.getValue(), cookieList.get(0).getValue());
+    Assert.assertEquals(1, cookieList.size());
+
+    HttpCookie decodedCookie = cookieList.get(0);
+    Assert.assertEquals(decodedCookie.getName(), cookieA.getName());
+    Assert.assertEquals(decodedCookie.getValue(), cookieA.getValue());
+    Assert.assertEquals(decodedCookie.getDomain(), cookieA.getDomain());
+    Assert.assertEquals(decodedCookie.getPath(), cookieA.getPath());
+    Assert.assertEquals(decodedCookie.getDiscard(), cookieA.getDiscard());
+    Assert.assertEquals(decodedCookie.getMaxAge(), cookieA.getMaxAge());
+    Assert.assertEquals(decodedCookie.getSecure(), cookieA.getSecure());
+    Assert.assertEquals(decodedCookie.isHttpOnly(), cookieA.isHttpOnly());
+  }
+
+  @Test
+  public void testCookieAttributeEncoding()
+  {
+    String encodedCookie = CookieUtil.encodeSetCookie(cookieA);
+
+    Assert.assertTrue(encodedCookie.contains("Domain=.android.com"));
+    Assert.assertTrue(encodedCookie.contains("Path=/source/"));
+    Assert.assertTrue(encodedCookie.contains("Max-Age=125"));
+    Assert.assertTrue(encodedCookie.contains("HttpOnly"));
   }
 
   @Test

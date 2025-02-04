@@ -20,6 +20,9 @@
 
 package test.r2.transport.http.common;
 
+import com.linkedin.r2.RetriableRequestException;
+import io.netty.handler.codec.http2.Http2Error;
+import io.netty.handler.codec.http2.Http2Exception;
 import java.net.URI;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -36,13 +39,15 @@ import org.testng.Assert;
 import org.testng.annotations.Test;
 
 import com.linkedin.common.callback.FutureCallback;
-import com.linkedin.r2.message.rest.RestException;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestRequestBuilder;
 import com.linkedin.r2.transport.common.bridge.client.TransportCallbackAdapter;
 import com.linkedin.r2.transport.common.bridge.common.TransportCallback;
 import com.linkedin.r2.transport.common.bridge.common.TransportResponseImpl;
 import com.linkedin.r2.transport.http.common.HttpBridge;
+
+import static com.linkedin.r2.transport.http.common.HttpBridge.NETTY_MAX_ACTIVE_STREAM_ERROR_MESSAGE;
+
 
 /**
  * @author Steven Ihde
@@ -51,15 +56,17 @@ import com.linkedin.r2.transport.http.common.HttpBridge;
 
 public class TestHttpBridge
 {
+  private static final int REGULAR_STREAM_ID = 2; // Can not be 0 or 1 as they are reserved in Netty
+
   @Test
   public void testRestToHttpErrorMessage() throws TimeoutException, InterruptedException
   {
-    URI uri = URI.create("http://some.host/thisShouldAppearInTheErrorMessage");
+    URI uri = URI.create("http://some.host/thisShouldAppearInTheErrorMessage?this=shoudNotAppear");
 
     RestRequest r = new RestRequestBuilder(uri).build();
 
-    FutureCallback<RestResponse> futureCallback = new FutureCallback<RestResponse>();
-    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<RestResponse>(futureCallback);
+    FutureCallback<RestResponse> futureCallback = new FutureCallback<>();
+    TransportCallback<RestResponse> callback = new TransportCallbackAdapter<>(futureCallback);
     TransportCallback<RestResponse> bridgeCallback = HttpBridge.restToHttpCallback(callback, r);
 
     bridgeCallback.onResponse(TransportResponseImpl.<RestResponse>error(new Exception()));
@@ -71,7 +78,8 @@ public class TestHttpBridge
     }
     catch (ExecutionException e)
     {
-      Assert.assertTrue(e.getCause().getMessage().contains(uri.toString()));
+      Assert.assertFalse(e.getCause().getMessage().contains("http://some.host/thisShouldAppearInTheErrorMessage?this=shoudNotAppear"));
+      Assert.assertTrue(e.getCause().getMessage().contains("http://some.host/thisShouldAppearInTheErrorMessage"));
     }
 
   }
@@ -79,9 +87,9 @@ public class TestHttpBridge
   @Test
   public void testHttpToRestErrorMessage() throws TimeoutException, InterruptedException, ExecutionException
   {
-    FutureCallback<RestResponse> futureCallback = new FutureCallback<RestResponse>();
+    FutureCallback<RestResponse> futureCallback = new FutureCallback<>();
     TransportCallback<RestResponse> callback =
-        new TransportCallbackAdapter<RestResponse>(futureCallback);
+        new TransportCallbackAdapter<>(futureCallback);
     TransportCallback<RestResponse> bridgeCallback = HttpBridge.httpToRestCallback(callback);
 
     RestResponse restResponse = new RestResponseBuilder().build();
@@ -100,12 +108,12 @@ public class TestHttpBridge
   @Test
   public void testStreamToHttpErrorMessage() throws TimeoutException, InterruptedException
   {
-    URI uri = URI.create("http://some.host/thisShouldAppearInTheErrorMessage");
+    URI uri = URI.create("http://some.host/thisShouldAppearInTheErrorMessage?this=shoudNotAppear");
 
     RestRequest r = new RestRequestBuilder(uri).build();
 
-    FutureCallback<StreamResponse> futureCallback = new FutureCallback<StreamResponse>();
-    TransportCallback<StreamResponse> callback = new TransportCallbackAdapter<StreamResponse>(futureCallback);
+    FutureCallback<StreamResponse> futureCallback = new FutureCallback<>();
+    TransportCallback<StreamResponse> callback = new TransportCallbackAdapter<>(futureCallback);
     TransportCallback<StreamResponse> bridgeCallback = HttpBridge.streamToHttpCallback(callback,
         Messages.toStreamRequest(r));
 
@@ -118,7 +126,8 @@ public class TestHttpBridge
     }
     catch (ExecutionException e)
     {
-      Assert.assertTrue(e.getCause().getMessage().contains(uri.toString()));
+      Assert.assertFalse(e.getCause().getMessage().contains("http://some.host/thisShouldAppearInTheErrorMessage?this=shoudNotAppear"));
+      Assert.assertTrue(e.getCause().getMessage().contains("http://some.host/thisShouldAppearInTheErrorMessage"));
     }
 
   }
@@ -126,9 +135,9 @@ public class TestHttpBridge
   @Test
   public void testHttpToStreamErrorMessage() throws TimeoutException, InterruptedException, ExecutionException
   {
-    FutureCallback<StreamResponse> futureCallback = new FutureCallback<StreamResponse>();
+    FutureCallback<StreamResponse> futureCallback = new FutureCallback<>();
     TransportCallback<StreamResponse> callback =
-        new TransportCallbackAdapter<StreamResponse>(futureCallback);
+        new TransportCallbackAdapter<>(futureCallback);
     TransportCallback<StreamResponse> bridgeCallback = HttpBridge.httpToStreamCallback(callback);
 
     StreamResponse streamResponse = new StreamResponseBuilder().build(EntityStreams.emptyStream());
@@ -142,5 +151,32 @@ public class TestHttpBridge
     // should have unpacked restResponse from the RestException that we passed in without
     // propagating the actual exception
     Assert.assertSame(resp, streamResponse);
+  }
+
+  @Test
+  public void testStreamToHttpWithRetriableRequestException() throws TimeoutException, InterruptedException
+  {
+    URI uri = URI.create("http://some.host");
+
+    RestRequest r = new RestRequestBuilder(uri).build();
+
+    FutureCallback<StreamResponse> futureCallback = new FutureCallback<>();
+    TransportCallback<StreamResponse> callback = new TransportCallbackAdapter<>(futureCallback);
+    TransportCallback<StreamResponse> bridgeCallback = HttpBridge.streamToHttpCallback(callback,
+        Messages.toStreamRequest(r));
+
+    bridgeCallback.onResponse(TransportResponseImpl.<StreamResponse>error(
+        Http2Exception.streamError(REGULAR_STREAM_ID, Http2Error.REFUSED_STREAM,
+            NETTY_MAX_ACTIVE_STREAM_ERROR_MESSAGE + ": 200")));
+
+    try
+    {
+      futureCallback.get(30, TimeUnit.SECONDS);
+      Assert.fail("get should have thrown exception");
+    }
+    catch (ExecutionException e)
+    {
+      Assert.assertTrue(e.getCause() instanceof RetriableRequestException);
+    }
   }
 }

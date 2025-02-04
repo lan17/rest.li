@@ -22,8 +22,12 @@ import com.linkedin.common.util.None;
 import com.linkedin.d2.balancer.LoadBalancerState;
 import com.linkedin.d2.balancer.LoadBalancerState.LoadBalancerStateListenerCallback;
 import com.linkedin.d2.balancer.LoadBalancerState.NullStateListenerCallback;
+import com.linkedin.d2.balancer.LoadBalancerStateItem;
+import com.linkedin.d2.balancer.clients.DegraderTrackerClientImpl;
 import com.linkedin.d2.balancer.clients.TrackerClient;
+import com.linkedin.d2.balancer.event.NoopEventEmitter;
 import com.linkedin.d2.balancer.properties.ClusterProperties;
+import com.linkedin.d2.balancer.properties.NullPartitionProperties;
 import com.linkedin.d2.balancer.properties.PartitionData;
 import com.linkedin.d2.balancer.properties.PropertyKeys;
 import com.linkedin.d2.balancer.properties.RangeBasedPartitionProperties;
@@ -37,31 +41,31 @@ import com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategy
 import com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerTest;
 import com.linkedin.d2.balancer.strategies.random.RandomLoadBalancerStrategy;
 import com.linkedin.d2.balancer.strategies.random.RandomLoadBalancerStrategyFactory;
+import com.linkedin.d2.balancer.strategies.relative.RelativeLoadBalancerStrategy;
+import com.linkedin.d2.balancer.strategies.relative.RelativeLoadBalancerStrategyFactory;
 import com.linkedin.d2.balancer.util.partitions.DefaultPartitionAccessor;
+import com.linkedin.d2.balancer.util.partitions.PartitionAccessException;
+import com.linkedin.d2.balancer.util.partitions.PartitionAccessor;
+import com.linkedin.d2.discovery.event.PropertyEventBusImpl;
 import com.linkedin.d2.discovery.event.PropertyEventThread.PropertyEventShutdownCallback;
 import com.linkedin.d2.discovery.event.SynchronousExecutorService;
 import com.linkedin.d2.discovery.stores.mock.MockStore;
+import com.linkedin.r2.filter.R2Constants;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestRequestBuilder;
-import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.message.stream.StreamRequestBuilder;
-import com.linkedin.r2.message.stream.StreamResponse;
 import com.linkedin.r2.message.stream.entitystream.EntityStreams;
 import com.linkedin.r2.transport.common.TransportClientFactory;
 import com.linkedin.r2.transport.common.bridge.client.TransportCallbackAdapter;
 import com.linkedin.r2.transport.common.bridge.client.TransportClient;
 import com.linkedin.r2.transport.http.client.HttpClientFactory;
+import com.linkedin.r2.transport.http.client.common.ssl.SslSessionNotTrustedException;
+import com.linkedin.r2.transport.http.client.common.ssl.SslSessionValidator;
+import com.linkedin.test.util.ClockedExecutor;
 import com.linkedin.util.clock.SystemClock;
-
-import java.security.NoSuchAlgorithmException;
-import java.util.concurrent.ScheduledExecutorService;
-import org.testng.Assert;
-import org.testng.annotations.Test;
-
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLParameters;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -76,7 +80,14 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+
+import java.util.concurrent.TimeoutException;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import org.testng.Assert;
+import org.testng.annotations.Test;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
@@ -98,6 +109,15 @@ public class SimpleLoadBalancerStateTest
   private SSLContext                                                               _sslContext;
   private SSLParameters _sslParameters;
   private boolean                                                                  isSslEnabled;
+  private static final SslSessionValidatorFactory                                  SSL_SESSION_VALIDATOR_FACTORY =
+      validationStrings -> sslSession -> {
+        if (validationStrings == null || validationStrings.isEmpty())
+        {
+          throw new SslSessionNotTrustedException("no validation string");
+        }
+      };
+  private static final String CLUSTER1_CLUSTER_NAME = "cluster-1";
+  private static final String CLUSTER2_CLUSTER_NAME = "cluster-2";
 
   public static void main(String[] args) throws Exception
   {
@@ -116,20 +136,25 @@ public class SimpleLoadBalancerStateTest
 
   public void reset()
   {
-    reset(false);
+    reset(false, true);
   }
 
-  public void reset(boolean useSSL)
+  public void reset(boolean useSSL, boolean enableRelativeLoadBalancer)
   {
     _executorService = new SynchronousExecutorService();
-    _uriRegistry = new MockStore<UriProperties>();
-    _clusterRegistry = new MockStore<ClusterProperties>();
-    _serviceRegistry = new MockStore<ServiceProperties>();
-    _clientFactories = new HashMap<String, TransportClientFactory>();
-    _loadBalancerStrategyFactories =
-        new HashMap<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>>();
+    _uriRegistry = new MockStore<>();
+    _clusterRegistry = new MockStore<>();
+    _serviceRegistry = new MockStore<>();
+    _clientFactories = new HashMap<>();
+    _loadBalancerStrategyFactories = new HashMap<>();
+    if (enableRelativeLoadBalancer)
+    {
+      _loadBalancerStrategyFactories.put(RelativeLoadBalancerStrategy.RELATIVE_LOAD_BALANCER_STRATEGY_NAME,
+          new RelativeLoadBalancerStrategyFactory(new ClockedExecutor(), null, Collections.emptyList(), new NoopEventEmitter(), SystemClock.instance()));
+    }
     _loadBalancerStrategyFactories.put("random", new RandomLoadBalancerStrategyFactory());
     _loadBalancerStrategyFactories.put("degraderV3", new DegraderLoadBalancerStrategyFactoryV3());
+    _loadBalancerStrategyFactories.put(DegraderLoadBalancerStrategyV3.DEGRADER_STRATEGY_NAME, new DegraderLoadBalancerStrategyFactoryV3());
     try {
       _sslContext = SSLContext.getDefault();
     }
@@ -145,14 +170,15 @@ public class SimpleLoadBalancerStateTest
       _clientFactories.put("https", new SimpleLoadBalancerTest.DoNothingClientFactory());
       _state =
           new SimpleLoadBalancerState(_executorService,
-                                      _uriRegistry,
-                                      _clusterRegistry,
-                                      _serviceRegistry,
-                                      _clientFactories,
-                                      _loadBalancerStrategyFactories,
-                                      _sslContext,
-                                      _sslParameters,
-                                      true);
+              new PropertyEventBusImpl<>(_executorService, _uriRegistry),
+              new PropertyEventBusImpl<>(_executorService, _clusterRegistry),
+              new PropertyEventBusImpl<>(_executorService, _serviceRegistry),
+              _clientFactories,
+              _loadBalancerStrategyFactories,
+              _sslContext,
+              _sslParameters,
+            true, null,
+              SSL_SESSION_VALIDATOR_FACTORY);
     }
     else
     {
@@ -166,7 +192,7 @@ public class SimpleLoadBalancerStateTest
                                     _loadBalancerStrategyFactories);
     }
 
-    FutureCallback<None> callback = new FutureCallback<None>();
+    FutureCallback<None> callback = new FutureCallback<>();
     _state.start(callback);
     try
     {
@@ -184,7 +210,7 @@ public class SimpleLoadBalancerStateTest
     reset();
 
     TestListener listener = new TestListener();
-    List<String> schemes = new ArrayList<String>();
+    List<String> schemes = new ArrayList<>();
 
     schemes.add("http");
     _state.register(listener);
@@ -227,7 +253,7 @@ public class SimpleLoadBalancerStateTest
 
     _state.listenToCluster("partition-cluster-1", new NullStateListenerCallback());
     _clusterRegistry.put("partition-cluster-1", new ClusterProperties("partition-cluster-1", null,
-        new HashMap<String, String>(), new HashSet<URI>(), new RangeBasedPartitionProperties("id=(\\d+)", 0, 100, 2)));
+        new HashMap<>(), new HashSet<>(), new RangeBasedPartitionProperties("id=(\\d+)", 0, 100, 2)));
 
     _state.listenToService("partition-service-1", new NullStateListenerCallback());
     _serviceRegistry.put("partition-service-1",
@@ -250,7 +276,7 @@ public class SimpleLoadBalancerStateTest
     reset();
 
     TestListener listener = new TestListener();
-    List<String> schemes = new ArrayList<String>();
+    List<String> schemes = new ArrayList<>();
 
     schemes.add("http");
     _state.register(listener);
@@ -297,10 +323,10 @@ public class SimpleLoadBalancerStateTest
 
     URI uri = URI.create("http://cluster-1/test");
     TestListener listener = new TestListener();
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
     schemes.add("http");
     _state.register(listener);
@@ -310,14 +336,17 @@ public class SimpleLoadBalancerStateTest
     assertNull(listener.serviceName);
 
     // set up state
+    ClusterProperties clusterProperties = new ClusterProperties("cluster-1", schemes);
+    ServiceProperties serviceProperties = new ServiceProperties("service-1",
+        "cluster-1",
+        "/test",
+        Arrays.asList("random"));
+
     _state.listenToCluster("cluster-1", new NullStateListenerCallback());
     _state.listenToService("service-1", new NullStateListenerCallback());
-    _clusterRegistry.put("cluster-1", new ClusterProperties("cluster-1", schemes));
+    _clusterRegistry.put("cluster-1", clusterProperties);
     _uriRegistry.put("cluster-1", new UriProperties("cluster-1", uriData));
-    _serviceRegistry.put("service-1", new ServiceProperties("service-1",
-                                                            "cluster-1",
-                                                            "/test",
-                                                            Arrays.asList("random")));
+    _serviceRegistry.put("service-1", serviceProperties);
 
     TrackerClient client = _state.getClient("cluster-1", uri);
 
@@ -335,6 +364,12 @@ public class SimpleLoadBalancerStateTest
       SimpleLoadBalancerTest.DoNothingClientFactory f = (SimpleLoadBalancerTest.DoNothingClientFactory)factory;
       assertEquals(f.getRunningClientCount(), 0, "Not all clients were shut down");
     }
+
+    // Verify that registered listeners get all removal events for cluster properties and service properties.
+    Assert.assertEquals(listener.servicePropertiesRemoved.size(), 1);
+    Assert.assertEquals(listener.servicePropertiesRemoved.get(0).getProperty(), serviceProperties);
+    Assert.assertEquals(listener.clusterInfoRemoved.size(), 1);
+    Assert.assertEquals(listener.clusterInfoRemoved.get(0).getClusterPropertiesItem().getProperty(), clusterProperties);
   }
 
   @Test(groups = { "small", "back-end" })
@@ -345,10 +380,10 @@ public class SimpleLoadBalancerStateTest
 
     URI uri = URI.create("http://cluster-1/test");
     TestListener listener = new TestListener();
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
     schemes.add("http");
     _state.register(listener);
@@ -440,7 +475,7 @@ public class SimpleLoadBalancerStateTest
   {
     reset();
 
-    List<String> schemes = new ArrayList<String>();
+    List<String> schemes = new ArrayList<>();
 
     schemes.add("http");
 
@@ -478,15 +513,102 @@ public class SimpleLoadBalancerStateTest
   }
 
   @Test(groups = { "small", "back-end" })
+  public void testStopListenToCluster() throws InterruptedException, ExecutionException, TimeoutException {
+    reset();
+
+    List<String> schemes = new ArrayList<>();
+
+    schemes.add("http");
+
+    assertFalse(_state.isListeningToCluster("cluster-1"));
+    assertNull(_state.getClusterProperties("cluster-1"));
+
+    final CountDownLatch latch = new CountDownLatch(1);
+    LoadBalancerStateListenerCallback callback = new LoadBalancerStateListenerCallback()
+    {
+      @Override
+      public void done(int type, String name)
+      {
+        latch.countDown();
+      }
+    };
+
+    _state.listenToCluster("cluster-1", callback);
+
+    if (!latch.await(5, TimeUnit.SECONDS))
+    {
+      fail("didn't get callback when listenToCluster was called");
+    }
+
+    assertTrue(_state.isListeningToCluster("cluster-1"));
+    assertNotNull(_state.getClusterProperties("cluster-1"));
+    assertNull(_state.getClusterProperties("cluster-1").getProperty());
+
+    ClusterProperties firstProperty = new ClusterProperties("cluster-1", schemes);
+
+    _clusterRegistry.put("cluster-1", firstProperty);
+
+    assertTrue(_state.isListeningToCluster("cluster-1"));
+    assertNotNull(_state.getClusterProperties("cluster-1"));
+    assertEquals(_state.getClusterProperties("cluster-1").getProperty(), firstProperty);
+
+
+    // Start listening again, and we should be getting the new property this time
+    final CountDownLatch stopListenLatch = new CountDownLatch(1);
+    LoadBalancerStateListenerCallback stopListenCallback = new LoadBalancerStateListenerCallback()
+    {
+      @Override
+      public void done(int type, String name)
+      {
+        stopListenLatch.countDown();
+      }
+    };
+
+    _state.stopListenToCluster("cluster-1", stopListenCallback);
+
+    if (!stopListenLatch.await(5, TimeUnit.SECONDS))
+    {
+      fail("didn't get callback when stopListenLatch was called");
+    }
+
+    assertFalse(_state.isListeningToCluster("cluster-1"));
+
+    ClusterProperties newProperty = new ClusterProperties("cluster-1");
+    _clusterRegistry.put("cluster-1", newProperty);
+    // Property should not be updated since we have stopped listening
+    assertEquals(_state.getClusterProperties("cluster-1").getProperty(), firstProperty);
+
+    // Start listening again, and we should be getting the new property this time
+    final CountDownLatch newLatch = new CountDownLatch(1);
+    LoadBalancerStateListenerCallback newCallback = new LoadBalancerStateListenerCallback()
+    {
+      @Override
+      public void done(int type, String name)
+      {
+        newLatch.countDown();
+      }
+    };
+
+    _state.listenToCluster("cluster-1", newCallback);
+
+    if (!newLatch.await(5, TimeUnit.SECONDS))
+    {
+      fail("didn't get callback when listenToCluster was called");
+    }
+
+    assertEquals(_state.getClusterProperties("cluster-1").getProperty(), newProperty);
+  }
+
+  @Test(groups = { "small", "back-end" })
   public void testGetClient() throws URISyntaxException
   {
     reset();
 
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
 
     schemes.add("http");
@@ -518,13 +640,48 @@ public class SimpleLoadBalancerStateTest
   }
 
   @Test(groups = { "small", "back-end" })
+  public void testGetClientWithoutScheme() throws URISyntaxException
+  {
+    reset();
+
+    URI uri = URI.create("cluster-1/test");
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
+    partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
+    uriData.put(uri, partitionData);
+
+    schemes.add("http");
+    // set up state
+    _state.listenToCluster("cluster-1", new NullStateListenerCallback());
+    _state.listenToService("service-1", new NullStateListenerCallback());
+    _serviceRegistry.put("service-1", new ServiceProperties("service-1", "cluster-1",
+        "/test", Arrays.asList("random"), Collections.emptyMap(),
+        null, null, schemes, null));
+    assertNull(_state.getClient("service-1", uri));
+
+    // the URI without Scheme will get us nothing
+    _uriRegistry.put("cluster-1", new UriProperties("cluster-1", uriData));
+    assertNull(_state.getClient("service-1", uri));
+
+    // correct URI will return the right client
+    uri = URI.create("http://cluster-1/test1");
+    uriData.put(uri, partitionData);
+    _uriRegistry.put("cluster-1", new UriProperties("cluster-1", uriData));
+    TrackerClient client = _state.getClient("service-1", uri);
+
+    assertNotNull(client);
+    assertEquals(client.getUri(), uri);
+  }
+
+  @Test(groups = { "small", "back-end" })
   public void testGetStrategy() throws URISyntaxException
   {
     reset();
 
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<URI, Double> weights = new HashMap<URI, Double>();
+    List<String> schemes = new ArrayList<>();
+    Map<URI, Double> weights = new HashMap<>();
 
     weights.put(uri, 1d);
     schemes.add("http");
@@ -558,8 +715,8 @@ public class SimpleLoadBalancerStateTest
     reset();
 
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<URI, Double> weights = new HashMap<URI, Double>();
+    List<String> schemes = new ArrayList<>();
+    Map<URI, Double> weights = new HashMap<>();
 
     weights.put(uri, 1d);
     schemes.add("http");
@@ -630,10 +787,10 @@ public class SimpleLoadBalancerStateTest
   public void testServiceStrategyList() throws URISyntaxException, InterruptedException
   {
     reset();
-    LinkedList<String> strategyList = new LinkedList<String>();
+    LinkedList<String> strategyList = new LinkedList<>();
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<URI, Double> weights = new HashMap<URI, Double>();
+    List<String> schemes = new ArrayList<>();
+    Map<URI, Double> weights = new HashMap<>();
 
     weights.put(uri, 1d);
     schemes.add("http");
@@ -646,9 +803,9 @@ public class SimpleLoadBalancerStateTest
 
     assertNull(_state.getStrategy("service-1", "http"));
 
-    // Put degrader into the strategyList, it it not one of the supported strategies in
+    // Put degraderV2_1 into the strategyList, it it not one of the supported strategies in
     // this strategyFactory, so we should not get a strategy back for http.
-    strategyList.add("degrader");
+    strategyList.add("degraderV2_1");
     _serviceRegistry.put("service-1", new ServiceProperties("service-1",
                                                             "cluster-1",
                                                             "/test",
@@ -702,6 +859,75 @@ public class SimpleLoadBalancerStateTest
     assertTrue(strategy instanceof DegraderLoadBalancerStrategyV3);
   }
 
+  @Test
+  public void testServiceStrategyListWithRelativeStrategy()
+  {
+    reset();
+    LinkedList<String> strategyList = new LinkedList<>();
+    URI uri = URI.create("http://cluster-1/test");
+    List<String> schemes = new ArrayList<>();
+    Map<URI, Double> weights = new HashMap<>();
+
+    weights.put(uri, 1d);
+    schemes.add("http");
+
+    _state.listenToService("service-1", new NullStateListenerCallback());
+    _state.listenToCluster("cluster-1", new NullStateListenerCallback());
+
+    strategyList.add(RelativeLoadBalancerStrategy.RELATIVE_LOAD_BALANCER_STRATEGY_NAME);
+    strategyList.add(DegraderLoadBalancerStrategyV3.DEGRADER_STRATEGY_NAME);
+    _serviceRegistry.put("service-1", new ServiceProperties("service-1",
+        "cluster-1",
+        "/test",
+        strategyList,
+        Collections.<String, Object>emptyMap(),
+        null,
+        null,
+        schemes,
+        null));
+
+    _clusterRegistry.put("cluster-1", new ClusterProperties("cluster-1"));
+
+    LoadBalancerStrategy strategy = _state.getStrategy("service-1", "http");
+
+    assertNotNull(strategy);
+    assertTrue(strategy instanceof RelativeLoadBalancerStrategy);
+  }
+
+  @Test
+  public void testServiceStrategyListWithRelativeStrategyNotSupported()
+  {
+    reset(false, false);
+    LinkedList<String> strategyList = new LinkedList<>();
+    URI uri = URI.create("http://cluster-1/test");
+    List<String> schemes = new ArrayList<>();
+    Map<URI, Double> weights = new HashMap<>();
+
+    weights.put(uri, 1d);
+    schemes.add("http");
+
+    _state.listenToService("service-1", new NullStateListenerCallback());
+    _state.listenToCluster("cluster-1", new NullStateListenerCallback());
+
+    strategyList.add(RelativeLoadBalancerStrategy.RELATIVE_LOAD_BALANCER_STRATEGY_NAME);
+    _serviceRegistry.put("service-1", new ServiceProperties("service-1",
+        "cluster-1",
+        "/test",
+        strategyList,
+        Collections.<String, Object>emptyMap(),
+        null,
+        null,
+        schemes,
+        null));
+
+    _clusterRegistry.put("cluster-1", new ClusterProperties("cluster-1"));
+
+    LoadBalancerStrategy strategy = _state.getStrategy("service-1", "http");
+
+    assertNotNull(strategy);
+    assertTrue(strategy instanceof DegraderLoadBalancerStrategyV3, "Load balancer should fall back to degrader");
+  }
+
   // This test is to verify a fix for a specific bug, where the d2 client receives a zookeeper
   // update and concurrent getTrackerClient requests. In that case, all but the first concurrent
   // requests got a null tracker client because the degraderLoadBalancerState was not fully initialized
@@ -712,9 +938,9 @@ public class SimpleLoadBalancerStateTest
   public void testRefreshWithConcurrentGetTC() throws URISyntaxException, InterruptedException
   {
     reset();
-    LinkedList<String> strategyList = new LinkedList<String>();
+    LinkedList<String> strategyList = new LinkedList<>();
     URI uri = URI.create("http://cluster-1/test");
-    final List<String> schemes = new ArrayList<String>();
+    final List<String> schemes = new ArrayList<>();
 
     schemes.add("http");
     strategyList.add("degraderV3");
@@ -745,13 +971,13 @@ public class SimpleLoadBalancerStateTest
     assertNotNull(resultTC, "got null tracker client in non-concurrent env");
 
     ExecutorService myExecutor = Executors.newCachedThreadPool();
-    ArrayList<TcCallable> cArray = new ArrayList<TcCallable>();
+    ArrayList<TcCallable> cArray = new ArrayList<>();
 
-    List<TrackerClient> clients = new ArrayList<TrackerClient>();
-    Map<Integer, PartitionData> partitionDataMap = new HashMap<Integer, PartitionData>(2);
+    List<TrackerClient> clients = new ArrayList<>();
+    Map<Integer, PartitionData> partitionDataMap = new HashMap<>(2);
     partitionDataMap.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    clients.add(new TrackerClient(uri, partitionDataMap, new DegraderLoadBalancerTest.TestLoadBalancerClient(uri),
-                                  SystemClock.instance(), null));
+    clients.add(new DegraderTrackerClientImpl(uri, partitionDataMap, new DegraderLoadBalancerTest.TestLoadBalancerClient(uri),
+                                              SystemClock.instance(), null));
 
     for (int i = 0; i < 20; i++)
     {
@@ -765,7 +991,7 @@ public class SimpleLoadBalancerStateTest
       {
         while(true)
         {
-          List<String> myStrategyList = new LinkedList<String>();
+          List<String> myStrategyList = new LinkedList<>();
           myStrategyList.add("degraderV3");
           _state.refreshServiceStrategies(new ServiceProperties("service-1",
                                                                 "cluster-1",
@@ -787,7 +1013,7 @@ public class SimpleLoadBalancerStateTest
 
     myExecutor.execute(refreshTask);
     Integer badResults = 0;
-    ArrayList<Future<Integer>> myList = new ArrayList<Future<Integer>>();
+    ArrayList<Future<Integer>> myList = new ArrayList<>();
     for (int i=0; i<cArray.size(); i++)
     {
       @SuppressWarnings("unchecked")
@@ -845,13 +1071,25 @@ public class SimpleLoadBalancerStateTest
       for (int i = 0; i < 100; i++)
       {
         trackerClient = _myState.getStrategy("service-1", "http").
-                getTrackerClient(null, new RequestContext(), 0, DefaultPartitionAccessor.DEFAULT_PARTITION_ID, _tcList);
+                getTrackerClient(null, new RequestContext(), 0, DefaultPartitionAccessor.DEFAULT_PARTITION_ID, toMap(_tcList));
         if (trackerClient == null)
         {
           badCall++;
         }
       }
       return badCall;
+    }
+
+    private Map<URI, TrackerClient> toMap(List<TrackerClient> trackerClients)
+    {
+      Map<URI, TrackerClient> trackerClientMap = new HashMap<>();
+
+      for (TrackerClient trackerClient: trackerClients)
+      {
+        trackerClientMap.put(trackerClient.getUri(), trackerClient);
+      }
+
+      return trackerClientMap;
     }
   }
 
@@ -861,11 +1099,11 @@ public class SimpleLoadBalancerStateTest
     reset();
 
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
+    List<String> schemes = new ArrayList<>();
 
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
     schemes.add("http");
 
@@ -893,7 +1131,7 @@ public class SimpleLoadBalancerStateTest
 
     _state.listenToCluster("partition-cluster-1", new NullStateListenerCallback());
     _clusterRegistry.put("partition-cluster-1", new ClusterProperties("partition-cluster-1", null,
-        new HashMap<String, String>(), new HashSet<URI>(), new RangeBasedPartitionProperties("id=(\\d+)", 0, 100, 2)));
+        new HashMap<>(), new HashSet<>(), new RangeBasedPartitionProperties("id=(\\d+)", 0, 100, 2)));
 
     _state.listenToService("partition-service-1", new NullStateListenerCallback());
     _serviceRegistry.put("partition-service-1",
@@ -904,12 +1142,12 @@ public class SimpleLoadBalancerStateTest
             schemes,
             Collections.<URI>emptySet()));
 
-    Map<Integer, PartitionData> partitionWeight = new HashMap<Integer, PartitionData>();
+    Map<Integer, PartitionData> partitionWeight = new HashMap<>();
     partitionWeight.put(0, new PartitionData(1d));
     partitionWeight.put(1, new PartitionData(2d));
 
     Map<URI, Map<Integer, PartitionData>> partitionDesc =
-        new HashMap<URI, Map<Integer, PartitionData>>();
+        new HashMap<>();
     partitionDesc.put(uri1, partitionWeight);
 
     partitionWeight.remove(0);
@@ -929,8 +1167,8 @@ public class SimpleLoadBalancerStateTest
     TrackerClient client = _state.getClient("service-1", uri);
     client.restRequest(new RestRequestBuilder(URI.create("d2://service-1/foo")).build(),
         new RequestContext(),
-        Collections.<String, String>emptyMap(),
-        new TransportCallbackAdapter<RestResponse>(Callbacks.<RestResponse>empty()));
+        Collections.emptyMap(),
+        new TransportCallbackAdapter<>(Callbacks.empty()));
 
     // now force a refresh by adding cluster
     _clusterRegistry.put("cluster-1", new ClusterProperties("cluster-1"));
@@ -939,8 +1177,8 @@ public class SimpleLoadBalancerStateTest
     client = _state.getClient("service-1", uri);
     client.restRequest(new RestRequestBuilder(URI.create("d2://service-1/foo")).build(),
         new RequestContext(),
-        Collections.<String, String>emptyMap(),
-        new TransportCallbackAdapter<RestResponse>(Callbacks.<RestResponse>empty()));
+        Collections.emptyMap(),
+        new TransportCallbackAdapter<>(Callbacks.empty()));
 
     // refresh by adding service
     _serviceRegistry.put("service-1", new ServiceProperties("service-1",
@@ -957,8 +1195,8 @@ public class SimpleLoadBalancerStateTest
     client = _state.getClient("service-1", uri);
     client.restRequest(new RestRequestBuilder(URI.create("d2://service-1/foo")).build(),
         new RequestContext(),
-        Collections.<String, String>emptyMap(),
-        new TransportCallbackAdapter<RestResponse>(Callbacks.<RestResponse>empty()));
+        Collections.emptyMap(),
+        new TransportCallbackAdapter<>(Callbacks.empty()));
 
     _uriRegistry.put("cluster-1", new UriProperties("cluster-1", Collections.<URI, Map<Integer, PartitionData>>emptyMap()));
 
@@ -968,8 +1206,8 @@ public class SimpleLoadBalancerStateTest
     client = _state.getClient("service-1", uri);
     client.restRequest(new RestRequestBuilder(URI.create("d2://service-1/foo")).build(),
         new RequestContext(),
-        Collections.<String, String>emptyMap(),
-        new TransportCallbackAdapter<RestResponse>(Callbacks.<RestResponse>empty()));
+        Collections.emptyMap(),
+        new TransportCallbackAdapter<>(Callbacks.empty()));
 
 
 
@@ -990,11 +1228,11 @@ public class SimpleLoadBalancerStateTest
     reset();
 
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
+    List<String> schemes = new ArrayList<>();
 
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
     schemes.add("http");
 
@@ -1022,23 +1260,23 @@ public class SimpleLoadBalancerStateTest
 
     _state.listenToCluster("partition-cluster-1", new NullStateListenerCallback());
     _clusterRegistry.put("partition-cluster-1", new ClusterProperties("partition-cluster-1", null,
-        new HashMap<String, String>(), new HashSet<URI>(), new RangeBasedPartitionProperties("id=(\\d+)", 0, 100, 2)));
+        new HashMap<>(), new HashSet<>(), new RangeBasedPartitionProperties("id=(\\d+)", 0, 100, 2)));
 
     _state.listenToService("partition-service-1", new NullStateListenerCallback());
     _serviceRegistry.put("partition-service-1",
         new ServiceProperties("partition-service-1",
-            "partition-cluster-1", "/partition-test", Arrays.asList("degraderV3"), Collections.<String, Object>emptyMap(),
-                                                                        Collections.<String, Object>emptyMap(),
-                                                                        Collections.<String, String>emptyMap(),
+            "partition-cluster-1", "/partition-test", Arrays.asList("degraderV3"), Collections.emptyMap(),
+                                                                        Collections.emptyMap(),
+                                                                        Collections.emptyMap(),
                                                                         schemes,
-                                                                        Collections.<URI>emptySet()));
+                                                                        Collections.emptySet()));
 
-    Map<Integer, PartitionData> partitionWeight = new HashMap<Integer, PartitionData>();
+    Map<Integer, PartitionData> partitionWeight = new HashMap<>();
     partitionWeight.put(0, new PartitionData(1d));
     partitionWeight.put(1, new PartitionData(2d));
 
     Map<URI, Map<Integer, PartitionData>> partitionDesc =
-        new HashMap<URI, Map<Integer, PartitionData>>();
+        new HashMap<>();
     partitionDesc.put(uri1, partitionWeight);
 
     partitionWeight.remove(0);
@@ -1058,8 +1296,8 @@ public class SimpleLoadBalancerStateTest
     TrackerClient client = _state.getClient("service-1", uri);
     client.streamRequest(new StreamRequestBuilder(URI.create("d2://service-1/foo")).build(EntityStreams.emptyStream()),
         new RequestContext(),
-        Collections.<String, String>emptyMap(),
-        new TransportCallbackAdapter<StreamResponse>(Callbacks.<StreamResponse>empty()));
+        Collections.emptyMap(),
+        new TransportCallbackAdapter<>(Callbacks.empty()));
 
     // now force a refresh by adding cluster
     _clusterRegistry.put("cluster-1", new ClusterProperties("cluster-1"));
@@ -1068,8 +1306,8 @@ public class SimpleLoadBalancerStateTest
     client = _state.getClient("service-1", uri);
     client.streamRequest(new StreamRequestBuilder(URI.create("d2://service-1/foo")).build(EntityStreams.emptyStream()),
         new RequestContext(),
-        Collections.<String, String>emptyMap(),
-        new TransportCallbackAdapter<StreamResponse>(Callbacks.<StreamResponse>empty()));
+        Collections.emptyMap(),
+        new TransportCallbackAdapter<>(Callbacks.empty()));
 
     // refresh by adding service
     _serviceRegistry.put("service-1", new ServiceProperties("service-1",
@@ -1086,8 +1324,8 @@ public class SimpleLoadBalancerStateTest
     client = _state.getClient("service-1", uri);
     client.streamRequest(new StreamRequestBuilder(URI.create("d2://service-1/foo")).build(EntityStreams.emptyStream()),
         new RequestContext(),
-        Collections.<String, String>emptyMap(),
-        new TransportCallbackAdapter<StreamResponse>(Callbacks.<StreamResponse>empty()));
+        Collections.emptyMap(),
+        new TransportCallbackAdapter<>(Callbacks.empty()));
 
     _uriRegistry.put("cluster-1", new UriProperties("cluster-1", Collections.<URI, Map<Integer, PartitionData>>emptyMap()));
 
@@ -1097,8 +1335,8 @@ public class SimpleLoadBalancerStateTest
     client = _state.getClient("service-1", uri);
     client.streamRequest(new StreamRequestBuilder(URI.create("d2://service-1/foo")).build(EntityStreams.emptyStream()),
         new RequestContext(),
-        Collections.<String, String>emptyMap(),
-        new TransportCallbackAdapter<StreamResponse>(Callbacks.<StreamResponse>empty()));
+        Collections.emptyMap(),
+        new TransportCallbackAdapter<>(Callbacks.empty()));
 
 
 
@@ -1121,10 +1359,10 @@ public class SimpleLoadBalancerStateTest
     int expectedVersion = 0;
 
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
     schemes.add("http");
 
@@ -1179,15 +1417,60 @@ public class SimpleLoadBalancerStateTest
   }
 
   @Test(groups = { "small", "back-end" })
-  public void testGetSSLClient() throws URISyntaxException
+  public void testGetClientWithSSLValidation() throws URISyntaxException
   {
-    reset(true);
+    reset(true, true);
 
     URI uri = URI.create("https://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
+    uriData.put(uri, partitionData);
+
+    schemes.add("https");
+
+    // set up state
+    _state.listenToCluster("cluster-1", new NullStateListenerCallback());
+    _state.listenToService("service-1", new NullStateListenerCallback());
+
+    Map<String, Object> transportClientProperties = new HashMap<>();
+    transportClientProperties.put(HttpClientFactory.HTTP_SSL_CONTEXT, _sslContext);
+    transportClientProperties.put(HttpClientFactory.HTTP_SSL_PARAMS, _sslParameters);
+    transportClientProperties = Collections.unmodifiableMap(transportClientProperties);
+
+    final List<String> sslValidationList = Arrays.asList("validation1", "validation2");
+    _clusterRegistry.put("cluster-1", new ClusterProperties("cluster-1", Collections.emptyList(),
+        Collections.emptyMap(), Collections.emptySet(), NullPartitionProperties.getInstance(), sslValidationList,
+                                                            (Map<String, Object>)null, false));
+    _serviceRegistry.put("service-1", new ServiceProperties("service-1", "cluster-1",
+        "/test", Arrays.asList("random"), Collections.<String, Object>emptyMap(),
+        transportClientProperties, null, schemes, null));
+    _uriRegistry.put("cluster-1", new UriProperties("cluster-1", uriData));
+
+    TrackerClient client = _state.getClient("service-1", uri);
+    assertNotNull(client);
+    assertEquals(client.getUri(), uri);
+
+
+    RequestContext requestContext = new RequestContext();
+    client.restRequest(new RestRequestBuilder(URI.create("http://cluster-1/test")).build(), requestContext, new HashMap<>(),
+        response -> {});
+    @SuppressWarnings("unchecked")
+    final SslSessionValidator validator = (SslSessionValidator) requestContext.getLocalAttr(R2Constants.REQUESTED_SSL_SESSION_VALIDATOR);
+    assertNotNull(validator);
+  }
+
+  @Test(groups = { "small", "back-end" })
+  public void testGetSSLClient() throws URISyntaxException
+  {
+    reset(true, true);
+
+    URI uri = URI.create("https://cluster-1/test");
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
+    partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
 
     schemes.add("https");
@@ -1203,7 +1486,7 @@ public class SimpleLoadBalancerStateTest
 
     assertNull(_state.getClient("service-1", uri));
 
-    Map<String,Object> transportClientProperties = new HashMap<String,Object>();
+    Map<String, Object> transportClientProperties = new HashMap<>();
     transportClientProperties.put(HttpClientFactory.HTTP_SSL_CONTEXT, _sslContext);
     transportClientProperties.put(HttpClientFactory.HTTP_SSL_PARAMS, _sslParameters);
     transportClientProperties = Collections.unmodifiableMap(transportClientProperties);
@@ -1230,10 +1513,10 @@ public class SimpleLoadBalancerStateTest
 
     URI uri = URI.create("http://cluster-1/test");
     URI httpsUri = URI.create("https://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
     uriData.put(httpsUri, partitionData);
 
@@ -1252,14 +1535,14 @@ public class SimpleLoadBalancerStateTest
 
     assertNull(_state.getClient("service-1", uri));
 
-    Map<String,Object> transportClientProperties = new HashMap<String,Object>();
+    Map<String, Object> transportClientProperties = new HashMap<>();
     transportClientProperties.put(HttpClientFactory.HTTP_SSL_CONTEXT, _sslContext);
     transportClientProperties.put(HttpClientFactory.HTTP_SSL_PARAMS, _sslParameters);
     transportClientProperties = Collections.unmodifiableMap(transportClientProperties);
 
     ServiceProperties serviceProperties = new ServiceProperties("service-1", "cluster-1",
                                                                 "/test", Arrays.asList("random"),
-                                                                Collections.<String, Object>emptyMap(),
+                                                                Collections.emptyMap(),
                                                                 transportClientProperties, null, schemes, null);
     _serviceRegistry.put("service-1", serviceProperties);
 
@@ -1283,7 +1566,7 @@ public class SimpleLoadBalancerStateTest
     client = _state.getClient("service-1", httpsUri);
     assertNull(client, "shouldn't pick an https uri");
 
-    _state.refreshTransportClientsPerService(serviceProperties);
+    _state.refreshClients(serviceProperties);
 
   }
 
@@ -1293,10 +1576,10 @@ public class SimpleLoadBalancerStateTest
     reset();
 
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
 
     schemes.add("http");
@@ -1312,14 +1595,14 @@ public class SimpleLoadBalancerStateTest
 
     assertNull(_state.getClient("service-1", uri));
 
-    Map<String,Object> transportClientProperties = new HashMap<String,Object>();
+    Map<String, Object> transportClientProperties = new HashMap<>();
 
-    List<String> allowedClientOverrideKeys = new ArrayList<String>();
+    List<String> allowedClientOverrideKeys = new ArrayList<>();
     allowedClientOverrideKeys.add(PropertyKeys.HTTP_REQUEST_TIMEOUT);
     allowedClientOverrideKeys.add(PropertyKeys.HTTP_RESPONSE_COMPRESSION_OPERATIONS);
     transportClientProperties.put(PropertyKeys.ALLOWED_CLIENT_OVERRIDE_KEYS, allowedClientOverrideKeys);
 
-    List<String> compressionOperations = new ArrayList<String>();
+    List<String> compressionOperations = new ArrayList<>();
     compressionOperations.add("get");
     compressionOperations.add("batch_get");
     compressionOperations.add("get_all");
@@ -1347,10 +1630,10 @@ public class SimpleLoadBalancerStateTest
   {
     reset();
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
 
     schemes.add("http");
@@ -1397,9 +1680,9 @@ public class SimpleLoadBalancerStateTest
     _state.listenToCluster("cluster-2", new NullStateListenerCallback());
 
     URI uri2 = URI.create("http://cluster-2/test");
-    Map<Integer, PartitionData> partitionData2 = new HashMap<Integer, PartitionData>(1);
+    Map<Integer, PartitionData> partitionData2 = new HashMap<>(1);
     partitionData2.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData2 = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData2 = new HashMap<>();
     uriData2.put(uri2, partitionData2);
 
     //if we start publishing new event to cluster-2 then we should get trackerClient
@@ -1429,21 +1712,21 @@ public class SimpleLoadBalancerStateTest
     reset();
 
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionData = new HashMap<Integer, PartitionData>(1);
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
     partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionData);
 
     schemes.add("http");
 
     assertNull(_state.getClient("service-1", uri));
 
-    Map<String,Object> transportProperties = new HashMap<String,Object>();
+    Map<String, Object> transportProperties = new HashMap<>();
     transportProperties.put("foobar", "unsupportedValue");
     _serviceRegistry.put("service-1", new ServiceProperties("service-1", "cluster-1",
                                                             "/test", Arrays.asList("random"),
-                                                            Collections.<String, Object>emptyMap(),
+                                                            Collections.emptyMap(),
                                                             transportProperties, null, schemes, null));
 
     // we add the property first before listening to the service because the MockStore will
@@ -1481,9 +1764,9 @@ public class SimpleLoadBalancerStateTest
   {
     reset();
     URI uri = URI.create("http://cluster-1/test");
-    List<String> schemes = new ArrayList<String>();
-    Map<Integer, PartitionData> partitionDataMap = new HashMap<Integer, PartitionData>(1);
-    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<URI, Map<Integer, PartitionData>>();
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionDataMap = new HashMap<>(1);
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
     uriData.put(uri, partitionDataMap);
 
     schemes.add("http");
@@ -1502,7 +1785,7 @@ public class SimpleLoadBalancerStateTest
     assertNotNull(client);
     assertEquals(client.getUri(), uri);
     // tracker client should see empty partition data map
-    assertTrue(client.getParttitionDataMap().isEmpty());
+    assertTrue(client.getPartitionDataMap().isEmpty());
 
     // then we update this uri to have a non-empty partition data map
     partitionDataMap.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
@@ -1515,9 +1798,212 @@ public class SimpleLoadBalancerStateTest
     assertNotSame(client, updatedClient);
     assertEquals(updatedClient.getUri(), uri);
     // this updated client should have updated partition data map
-    assertFalse(updatedClient.getParttitionDataMap().isEmpty());
-    assertEquals(updatedClient.getParttitionDataMap(), partitionDataMap);
+    assertFalse(updatedClient.getPartitionDataMap().isEmpty());
+    assertEquals(updatedClient.getPartitionDataMap(), partitionDataMap);
 
+  }
+
+  @Test
+  public void testRegisterClusterListener()
+  {
+    reset();
+
+    MockClusterListener clusterListener = new MockClusterListener();
+    _state.registerClusterListener(clusterListener);
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 0, "expected zero count since no action has been triggered");
+
+    // first add a cluster
+    _state.listenToCluster(CLUSTER1_CLUSTER_NAME, new NullStateListenerCallback());
+    _clusterRegistry.put(CLUSTER1_CLUSTER_NAME, new ClusterProperties(CLUSTER1_CLUSTER_NAME));
+
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 1, "expected 1 call after clusterRegistry put");
+
+    // then update the cluster
+    _clusterRegistry.put(CLUSTER1_CLUSTER_NAME, new ClusterProperties(CLUSTER1_CLUSTER_NAME));
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 2, "expected 2 calls after additional clusterRegistry put");
+  }
+
+  @Test
+  public void testUnregisterClusterListener()
+  {
+    reset();
+
+    MockClusterListener clusterListener = new MockClusterListener();
+    _state.registerClusterListener(clusterListener);
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 0, "expected zero count");
+
+    // first add a cluster
+    _state.listenToCluster(CLUSTER1_CLUSTER_NAME, new NullStateListenerCallback());
+    _clusterRegistry.put(CLUSTER1_CLUSTER_NAME, new ClusterProperties(CLUSTER1_CLUSTER_NAME));
+
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 1, "expected 1 call after put");
+
+    _state.unregisterClusterListener(clusterListener);
+    _clusterRegistry.put(CLUSTER1_CLUSTER_NAME, new ClusterProperties(CLUSTER1_CLUSTER_NAME));
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 1, "expected 1 call, since we shouldn't have seen the latest put");
+  }
+
+  @Test
+  public void testOnRemoveCluster()
+  {
+    reset();
+
+    MockClusterListener clusterListener = new MockClusterListener();
+    _state.registerClusterListener(clusterListener);
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 0, "expected zero count");
+
+    // first add a cluster
+    _state.listenToCluster(CLUSTER1_CLUSTER_NAME, new NullStateListenerCallback());
+    _clusterRegistry.put(CLUSTER1_CLUSTER_NAME, new ClusterProperties(CLUSTER1_CLUSTER_NAME));
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 1, "expected 1 call after put");
+    assertEquals(clusterListener.getClusterRemovedCount(CLUSTER1_CLUSTER_NAME), 0, "expected nothing yet");
+
+    _clusterRegistry.remove(CLUSTER1_CLUSTER_NAME);
+    assertEquals(clusterListener.getClusterRemovedCount(CLUSTER1_CLUSTER_NAME), 1, "expected 1 after remove");
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 1, "Nothing more should have been added to the added count");
+  }
+
+  @Test
+  public void testRegisterClusterListenerDuplicates()
+  {
+    reset();
+
+    MockClusterListener clusterListener = new MockClusterListener();
+    _state.registerClusterListener(clusterListener);
+    _state.registerClusterListener(clusterListener);
+    _state.listenToCluster(CLUSTER1_CLUSTER_NAME, new NullStateListenerCallback());
+    _clusterRegistry.put(CLUSTER1_CLUSTER_NAME, new ClusterProperties(CLUSTER1_CLUSTER_NAME));
+    assertEquals(clusterListener.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 1, "expected 1 call since duplicates are not allowed");
+
+  }
+
+  @Test
+  public void testRegisterMultipleClusterListener()
+  {
+    reset();
+
+    MockClusterListener clusterListener1 = new MockClusterListener();
+    _state.registerClusterListener(clusterListener1);
+    MockClusterListener clusterListener2 = new MockClusterListener();
+    _state.registerClusterListener(clusterListener2);
+
+    _state.listenToCluster(CLUSTER1_CLUSTER_NAME, new NullStateListenerCallback());
+    _state.listenToCluster(CLUSTER2_CLUSTER_NAME, new NullStateListenerCallback());
+
+    _clusterRegistry.put(CLUSTER1_CLUSTER_NAME, new ClusterProperties(CLUSTER1_CLUSTER_NAME));
+    _clusterRegistry.put(CLUSTER2_CLUSTER_NAME, new ClusterProperties(CLUSTER2_CLUSTER_NAME));
+    _clusterRegistry.put(CLUSTER2_CLUSTER_NAME, new ClusterProperties(CLUSTER2_CLUSTER_NAME));
+
+    assertEquals(clusterListener1.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 1, "expected 1 call for cluster1");
+    assertEquals(clusterListener2.getClusterAddedCount(CLUSTER2_CLUSTER_NAME), 2, "expected 2 call for cluster2");
+    assertEquals(clusterListener1.getClusterAddedCount(CLUSTER2_CLUSTER_NAME), 2, "expected 1 call for cluster2");
+    assertEquals(clusterListener2.getClusterAddedCount(CLUSTER1_CLUSTER_NAME), 1, "expected 1 call for cluster1");
+  }
+
+  @Test
+  public void testShutdownWithClusterListener() throws URISyntaxException,
+                                                       InterruptedException
+  {
+    reset();
+    MockClusterListener clusterListener1 = new MockClusterListener();
+    _state.registerClusterListener(clusterListener1);
+    MockClusterListener clusterListener2 = new MockClusterListener();
+    _state.registerClusterListener(clusterListener2);
+
+    _state.listenToCluster(CLUSTER1_CLUSTER_NAME, new NullStateListenerCallback());
+    _state.listenToCluster(CLUSTER2_CLUSTER_NAME, new NullStateListenerCallback());
+
+    assertEquals(clusterListener1.getClusterRemovedCount(CLUSTER1_CLUSTER_NAME), 0, "expected 0 call");
+    assertEquals(clusterListener1.getClusterRemovedCount(CLUSTER2_CLUSTER_NAME), 0, "expected 0 call");
+    TestShutdownCallback callback = new TestShutdownCallback();
+
+    _state.shutdown(callback);
+
+    if (!callback.await(10, TimeUnit.SECONDS))
+    {
+      fail("unable to shut down state");
+    }
+
+    assertEquals(clusterListener1.getClusterRemovedCount(CLUSTER1_CLUSTER_NAME), 1, "expected 1 call indicating removal on shutdown");
+    assertEquals(clusterListener1.getClusterRemovedCount(CLUSTER2_CLUSTER_NAME), 1, "expected 1 call indicating removal on shutdown");
+  }
+
+  @Test
+  public void testSchemeNotSupported()
+  {
+    reset();
+
+    // Create https uri and scheme only supports http
+    URI uri = URI.create("https://cluster-1/test1");
+    List<String> schemes = new ArrayList<>();
+    Map<Integer, PartitionData> partitionData = new HashMap<>(1);
+    partitionData.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
+    Map<URI, Map<Integer, PartitionData>> uriData = new HashMap<>();
+    uriData.put(uri, partitionData);
+
+    schemes.add("http");
+    // set up state
+    _state.listenToCluster("cluster-1", new NullStateListenerCallback());
+    _state.listenToService("service-1", new NullStateListenerCallback());
+    _serviceRegistry.put("service-1", new ServiceProperties("service-1", "cluster-1",
+        "/test", Arrays.asList("random"), Collections.emptyMap(),
+        null, null, schemes, null));
+    assertNull(_state.getClient("service-1", uri));
+
+    _uriRegistry.put("cluster-1", new UriProperties("cluster-1", uriData));
+
+    TrackerClient client = _state.getClient("service-1", uri);
+    assertNull(client);
+  }
+
+  @Test
+  public void testNotifyListenersOnPropertiesChanges()
+  {
+    reset();
+
+    ClusterProperties clusterProperties = new ClusterProperties(
+        "cluster-1", Collections.singletonList("Random"));
+    ClusterInfoItem clusterInfoItem = new ClusterInfoItem(_state, clusterProperties, new PartitionAccessor() {
+      @Override
+      public int getMaxPartitionId() {
+        return 0;
+      }
+
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException {
+        return 0;
+      }
+    });
+    ServiceProperties serviceProperties = new ServiceProperties("service-1",
+        "cluster-1",
+        "/test",
+        Arrays.asList("random"));
+    LoadBalancerStateItem<ServiceProperties> servicePropertiesLBItem = new LoadBalancerStateItem<ServiceProperties>(
+        serviceProperties, 0, 0);
+
+
+    TestListener[] listeners = new TestListener[] {new TestListener(), new TestListener()};
+    Arrays.stream(listeners).forEach(listener -> _state.register(listener));
+
+    _state.notifyListenersOnServicePropertiesUpdates(servicePropertiesLBItem);
+    _state.notifyListenersOnClusterInfoUpdates(clusterInfoItem);
+    for (TestListener listener : listeners)
+    {
+      Assert.assertEquals(listener.clusterInfoUpdated.size(), 1);
+      Assert.assertEquals(listener.clusterInfoUpdated.get(0).getClusterPropertiesItem().getProperty(), clusterProperties);
+      Assert.assertEquals(listener.servicePropertiesUpdated.size(), 1);
+      Assert.assertEquals(listener.servicePropertiesUpdated.get(0).getProperty(), serviceProperties);
+    }
+
+    _state.notifyListenersOnServicePropertiesRemovals(servicePropertiesLBItem);
+    _state.notifyListenersOnClusterInfoRemovals(clusterInfoItem);
+    for (TestListener listener : listeners)
+    {
+      Assert.assertEquals(listener.clusterInfoRemoved.size(), 1);
+      Assert.assertEquals(listener.clusterInfoRemoved.get(0).getClusterPropertiesItem().getProperty(), clusterProperties);
+      Assert.assertEquals(listener.servicePropertiesRemoved.size(), 1);
+      Assert.assertEquals(listener.servicePropertiesRemoved.get(0).getProperty(), serviceProperties);
+    }
   }
 
   private static class TestShutdownCallback implements PropertyEventShutdownCallback
@@ -1540,6 +2026,19 @@ public class SimpleLoadBalancerStateTest
     public String               serviceName;
     public String               scheme;
     public LoadBalancerStrategy strategy;
+
+    public ArrayList<ClusterInfoItem> clusterInfoUpdated;
+    public ArrayList<LoadBalancerStateItem<ServiceProperties>> servicePropertiesUpdated;
+
+    public ArrayList<ClusterInfoItem> clusterInfoRemoved;
+    public ArrayList<LoadBalancerStateItem<ServiceProperties>> servicePropertiesRemoved;
+
+    public TestListener() {
+      clusterInfoRemoved = new ArrayList<>();
+      servicePropertiesRemoved = new ArrayList<>();
+      clusterInfoUpdated = new ArrayList<>();
+      servicePropertiesUpdated = new ArrayList<>();
+    }
 
     @Override
     public void onStrategyAdded(String serviceName,
@@ -1569,6 +2068,30 @@ public class SimpleLoadBalancerStateTest
     @Override
     public void onClientRemoved(String serviceName, TrackerClient client)
     {
+    }
+
+    @Override
+    public void onClusterInfoUpdate(ClusterInfoItem clusterInfoItem)
+    {
+      clusterInfoUpdated.add(clusterInfoItem);
+    }
+
+    @Override
+    public void onClusterInfoRemoval(ClusterInfoItem clusterInfoItem)
+    {
+      clusterInfoRemoved.add(clusterInfoItem);
+    }
+
+    @Override
+    public void onServicePropertiesUpdate(LoadBalancerStateItem<ServiceProperties> serviceProperties)
+    {
+      servicePropertiesUpdated.add(serviceProperties);
+    }
+
+    @Override
+    public void onServicePropertiesRemoval(LoadBalancerStateItem<ServiceProperties> serviceProperties)
+    {
+      servicePropertiesRemoved.add(serviceProperties);
     }
   }
 }

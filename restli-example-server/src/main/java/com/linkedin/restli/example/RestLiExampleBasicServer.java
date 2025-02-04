@@ -67,8 +67,7 @@ public class RestLiExampleBasicServer
     config.setDocumentationRequestHandler(new DefaultDocumentationRequestHandler());
     // Create an instance of the Example Filter and add it to the config.
     RestLiExampleFilter filter = new RestLiExampleFilter();
-    config.addRequestFilter(filter);
-    config.addResponseFilter(filter);
+    config.addFilter(filter);
 
     // demonstrate dynamic dependency injection
     final PhotoDatabase photoDb = new PhotoDatabaseImpl(10);
@@ -80,7 +79,8 @@ public class RestLiExampleBasicServer
     // using InjectMockResourceFactory to keep examples spring-free
     final ResourceFactory factory = new InjectMockResourceFactory(beanProvider);
 
-    final TransportDispatcher dispatcher = new DelegatingTransportDispatcher(new RestLiServer(config, factory));
+    final RestLiServer restliServer = new RestLiServer(config, factory);
+    final TransportDispatcher dispatcher = new DelegatingTransportDispatcher(restliServer, restliServer);
     return new HttpServerFactory(FilterChains.empty()).createServer(SERVER_PORT, dispatcher);
   }
 

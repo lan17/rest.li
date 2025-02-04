@@ -1,10 +1,5 @@
 {
   "models" : [ {
-    "type" : "enum",
-    "name" : "Tone",
-    "namespace" : "com.linkedin.restli.examples.greetings.api",
-    "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
-  }, {
     "type" : "record",
     "name" : "Greeting",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -17,16 +12,34 @@
       "type" : "string"
     }, {
       "name" : "tone",
-      "type" : "Tone",
+      "type" : {
+        "type" : "enum",
+        "name" : "Tone",
+        "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
+      },
       "doc" : "tone"
+    }, {
+      "name" : "senders",
+      "type" : {
+        "type" : "array",
+        "items" : "string"
+      },
+      "doc" : "Sender(s) of the message",
+      "optional" : true
     } ]
-  } ],
+  }, "com.linkedin.restli.examples.greetings.api.Tone" ],
   "schema" : {
+    "annotations" : {
+      "readOnly" : {
+        "value" : [ "id" ]
+      }
+    },
     "name" : "createGreeting",
     "namespace" : "com.linkedin.restli.examples.greetings.client",
     "path" : "/createGreeting",
     "schema" : "com.linkedin.restli.examples.greetings.api.Greeting",
     "doc" : "Class for testing the CREATE method that returns the entity.\n\ngenerated from: com.linkedin.restli.examples.greetings.server.CreateGreetingResource",
+    "resourceClass" : "com.linkedin.restli.examples.greetings.server.CreateGreetingResource",
     "collection" : {
       "identifier" : {
         "name" : "key",
@@ -37,12 +50,14 @@
         "annotations" : {
           "returnEntity" : { }
         },
-        "method" : "create"
+        "method" : "create",
+        "javaMethodName" : "create"
       }, {
         "annotations" : {
           "returnEntity" : { }
         },
-        "method" : "batch_create"
+        "method" : "batch_create",
+        "javaMethodName" : "batchCreate"
       } ],
       "entity" : {
         "path" : "/createGreeting/{key}"

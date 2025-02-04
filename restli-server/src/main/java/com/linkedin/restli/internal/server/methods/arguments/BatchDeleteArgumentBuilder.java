@@ -20,7 +20,7 @@
 
 package com.linkedin.restli.internal.server.methods.arguments;
 
-import com.linkedin.r2.message.rest.RestRequest;
+import com.linkedin.data.DataMap;
 import com.linkedin.restli.internal.server.RoutingResult;
 import com.linkedin.restli.server.BatchDeleteRequest;
 import com.linkedin.restli.server.RestLiRequestData;
@@ -45,11 +45,12 @@ public class BatchDeleteArgumentBuilder implements RestLiArgumentBuilder
     return ArgumentBuilder.buildArgs(positionalArgs,
                                      routingResult.getResourceMethod(),
                                      routingResult.getContext(),
-                                     null);
+                                     null,
+                                     routingResult.getResourceMethodConfig());
   }
 
   @Override
-  public RestLiRequestData extractRequestData(RoutingResult routingResult, RestRequest request)
+  public RestLiRequestData extractRequestData(RoutingResult routingResult, DataMap dataMap)
   {
     Set<?> ids = routingResult.getContext().getPathKeys().getBatchIds();
     final RestLiRequestDataImpl.Builder builder = new RestLiRequestDataImpl.Builder();

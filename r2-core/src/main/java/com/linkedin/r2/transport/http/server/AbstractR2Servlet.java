@@ -18,8 +18,21 @@
 package com.linkedin.r2.transport.http.server;
 
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.Enumeration;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import javax.servlet.ServletException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
 import com.linkedin.data.ByteString;
-import com.linkedin.r2.filter.R2Constants;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestException;
 import com.linkedin.r2.message.rest.RestRequest;
@@ -31,21 +44,9 @@ import com.linkedin.r2.transport.common.bridge.common.TransportCallback;
 import com.linkedin.r2.transport.common.bridge.common.TransportResponse;
 import com.linkedin.r2.transport.common.bridge.common.TransportResponseImpl;
 import com.linkedin.r2.transport.http.common.HttpConstants;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.Enumeration;
-import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 
 /**
@@ -73,7 +74,7 @@ public abstract class AbstractR2Servlet extends HttpServlet
   protected void service(final HttpServletRequest req, final HttpServletResponse resp)
           throws ServletException, IOException
   {
-    RequestContext requestContext = readRequestContext(req);
+    RequestContext requestContext = ServletHelper.readRequestContext(req);
 
     RestRequest restRequest;
 
@@ -88,7 +89,7 @@ public abstract class AbstractR2Servlet extends HttpServlet
     }
 
     final AtomicReference<TransportResponse<RestResponse>> result =
-        new AtomicReference<TransportResponse<RestResponse>>();
+        new AtomicReference<>();
     final CountDownLatch latch = new CountDownLatch(1);
 
     TransportCallback<RestResponse> callback = new TransportCallback<RestResponse>()
@@ -212,48 +213,20 @@ public abstract class AbstractR2Servlet extends HttpServlet
       }
     }
 
-
-    if (hasTransferEncoding(req))
+    int length = req.getContentLength();
+    if (length > 0)
     {
-      rb.setEntity(ByteString.read(req.getInputStream()));
+      rb.setEntity(ByteString.read(req.getInputStream(), length));
     }
     else
     {
-      int length = req.getContentLength();
-      if (length >= 0)
-      {
-        rb.setEntity(ByteString.read(req.getInputStream(), length));
-      }
+      // Known cases for not sending a content-length header in a request
+      // 1. Chunked transfer encoding
+      // 2. HTTP/2
+      rb.setEntity(ByteString.read(req.getInputStream()));
+
     }
     return rb.build();
-  }
-
-  /**
-   * Read HTTP-specific properties from the servlet request into the request context. We'll read
-   * properties that many clients might be interested in, such as the caller's IP address.
-   * @param req The HTTP servlet request
-   * @return The request context
-   */
-  protected RequestContext readRequestContext(HttpServletRequest req)
-  {
-    RequestContext context = new RequestContext();
-    context.putLocalAttr(R2Constants.REMOTE_ADDR, req.getRemoteAddr());
-    if (req.isSecure())
-    {
-      // attribute name documented in ServletRequest API:
-      // http://docs.oracle.com/javaee/6/api/javax/servlet/ServletRequest.html#getAttribute%28java.lang.String%29
-      Object[] certs = (Object[]) req.getAttribute("javax.servlet.request.X509Certificate");
-      if (certs != null && certs.length > 0)
-      {
-        context.putLocalAttr(R2Constants.CLIENT_CERT, certs[0]);
-      }
-      context.putLocalAttr(R2Constants.IS_SECURE, true);
-    }
-    else
-    {
-      context.putLocalAttr(R2Constants.IS_SECURE, false);
-    }
-    return context;
   }
 
   /**
@@ -313,10 +286,5 @@ public abstract class AbstractR2Servlet extends HttpServlet
     }
 
     return pathInfo;
-  }
-
-  private static boolean hasTransferEncoding(HttpServletRequest req)
-  {
-    return req.getHeaders(HttpConstants.TRANSFER_ENCODING).hasMoreElements();
   }
 }

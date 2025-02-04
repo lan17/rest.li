@@ -16,7 +16,6 @@
 
 package com.linkedin.restli.tools.compatibility;
 
-
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.message.Message;
@@ -44,35 +43,42 @@ import com.linkedin.restli.restspec.ActionsSetSchema;
 import com.linkedin.restli.restspec.AlternativeKeySchema;
 import com.linkedin.restli.restspec.AssocKeySchema;
 import com.linkedin.restli.restspec.AssociationSchema;
+import com.linkedin.restli.restspec.BatchFinderSchema;
 import com.linkedin.restli.restspec.CollectionSchema;
 import com.linkedin.restli.restspec.CustomAnnotationContentSchema;
 import com.linkedin.restli.restspec.CustomAnnotationContentSchemaMap;
 import com.linkedin.restli.restspec.EntitySchema;
 import com.linkedin.restli.restspec.FinderSchema;
 import com.linkedin.restli.restspec.IdentifierSchema;
+import com.linkedin.restli.restspec.MaxBatchSizeSchema;
 import com.linkedin.restli.restspec.MetadataSchema;
 import com.linkedin.restli.restspec.ParameterSchema;
 import com.linkedin.restli.restspec.ParameterSchemaArray;
+import com.linkedin.restli.restspec.ResourceEntityType;
 import com.linkedin.restli.restspec.ResourceSchema;
 import com.linkedin.restli.restspec.RestMethodSchema;
 import com.linkedin.restli.restspec.RestSpecAnnotation;
-import com.linkedin.restli.restspec.SimpleSchema;
 import com.linkedin.restli.restspec.RestSpecCodec;
+import com.linkedin.restli.restspec.ServiceErrorSchema;
+import com.linkedin.restli.restspec.ServiceErrorSchemaArray;
+import com.linkedin.restli.restspec.ServiceErrorsSchema;
+import com.linkedin.restli.restspec.SimpleSchema;
 import com.linkedin.restli.tools.idlcheck.CompatibilityInfo;
 import com.linkedin.restli.tools.idlcheck.CompatibilityLevel;
-
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.Stack;
+
 
 /**
  * @author Moira Tagle
  * @version $Revision: $
  */
-
 public class ResourceCompatibilityChecker
 {
   private final ResourceSchema _prevSchema;
@@ -83,9 +89,12 @@ public class ResourceCompatibilityChecker
 
   private boolean _checked;
   private CompatibilityInfoMap _infoMap = new CompatibilityInfoMap();
-  private Stack<Object> _infoPath = new Stack<Object>();
+  private Stack<Object> _infoPath = new Stack<>();
 
-  private Set<String> _namedSchemasChecked = new HashSet<String>();
+  // Keep track of resources in the IDL tree to provide resource context at any node
+  private Stack<TreeResourceContext> _resourceContexts = new Stack<>();
+
+  private Set<String> _namedSchemasChecked = new HashSet<>();
 
   private static final CompatibilityOptions defaultOptions =
     new CompatibilityOptions().setMode(CompatibilityOptions.Mode.SCHEMA).setAllowPromotions(false);
@@ -106,14 +115,20 @@ public class ResourceCompatibilityChecker
 
   public boolean check(CompatibilityLevel level)
   {
-    if (!_checked) runCheck();
+    if (!_checked)
+    {
+      runCheck();
+    }
     return _infoMap.isCompatible(level);
 
   }
 
   public void check()
   {
-    if (!_checked) runCheck();
+    if (!_checked)
+    {
+      runCheck();
+    }
   }
 
   public CompatibilityInfoMap getInfoMap()
@@ -210,6 +225,20 @@ public class ResourceCompatibilityChecker
     return true;
   }
 
+  private boolean checkD2ServiceName(String prevData, String currData) {
+    if (prevData == null && currData == null) {
+      return true;
+    }
+
+    if (prevData != null && prevData.equals(currData)) {
+      return true;
+    }
+
+    _infoMap.addRestSpecInfo("d2ServiceName", CompatibilityInfo.Type.VALUE_NOT_EQUAL, _infoPath,
+        prevData, currData);
+    return false;
+  }
+
   private boolean checkDoc(RecordDataSchema.Field field, Object prevData, Object currData)
   {
     assert (field != null);
@@ -223,6 +252,28 @@ public class ResourceCompatibilityChecker
     if (prevData != null && !prevData.equals(currData))
     {
       _infoMap.addRestSpecInfo(field.getName(), CompatibilityInfo.Type.DOC_NOT_EQUAL, _infoPath);
+      return false;
+    }
+
+    return true;
+  }
+
+  private boolean checkPagingSupport(Boolean prevPaging, Boolean currPaging)
+  {
+    if (prevPaging == currPaging)
+    {
+      return  true;
+    }
+
+    if ((prevPaging == null || !prevPaging) && (currPaging != null && currPaging))
+    {
+      _infoMap.addRestSpecInfo(CompatibilityInfo.Type.PAGING_ADDED, _infoPath);
+      return false;
+    }
+
+    if ((prevPaging != null && prevPaging) && (currPaging == null || !currPaging))
+    {
+      _infoMap.addRestSpecInfo(CompatibilityInfo.Type.PAGING_REMOVED, _infoPath);
       return false;
     }
 
@@ -255,7 +306,7 @@ public class ResourceCompatibilityChecker
     {
       if (container.size() > containee.size())
       {
-        final Set<Object> diff = new HashSet<Object>(container);
+        final Set<Object> diff = new HashSet<>(container);
         diff.removeAll(containee);
         _infoMap.addRestSpecInfo(field.getName(), CompatibilityInfo.Type.SUPERSET, _infoPath, diff);
       }
@@ -392,6 +443,10 @@ public class ResourceCompatibilityChecker
     else if (prevClass == FinderSchema.class)
     {
       checkFinderSchema((FinderSchema) prevRec, (FinderSchema) currRec);
+    }
+    else if (prevClass == BatchFinderSchema.class)
+    {
+      checkBatchFinderSchema((BatchFinderSchema) prevRec, (BatchFinderSchema) currRec);
     }
     else if (prevClass == ParameterSchema.class)
     {
@@ -534,7 +589,7 @@ public class ResourceCompatibilityChecker
   private <T extends WrappingArrayTemplate<? extends RecordTemplate>>
   boolean checkComplexArrayField(RecordDataSchema.Field field, String keyName, T prevArray, T currArray)
   {
-    return checkComplexArrayField(field, keyName, prevArray, currArray, new HashMap<String, Integer>(), true);
+    return checkComplexArrayField(field, keyName, prevArray, currArray, new HashMap<>(), true);
   }
 
   /**
@@ -543,7 +598,7 @@ public class ResourceCompatibilityChecker
   private <T extends WrappingArrayTemplate<? extends RecordTemplate>>
   boolean checkEqualComplexArrayField(RecordDataSchema.Field field, String keyName, T prevArray, T currArray)
   {
-    final HashMap<String, Integer> currRemainder = new HashMap<String, Integer>();
+    final HashMap<String, Integer> currRemainder = new HashMap<>();
 
     // if prev has more than curr, array missing element
     // this should catch it
@@ -568,7 +623,7 @@ public class ResourceCompatibilityChecker
    */
   private boolean checkParameterArrayField(RecordDataSchema.Field field, ParameterSchemaArray prevArray, ParameterSchemaArray currArray)
   {
-    final HashMap<String, Integer> currRemainder = new HashMap<String, Integer>();
+    final HashMap<String, Integer> currRemainder = new HashMap<>();
 
     if (!checkComplexArrayField(field, "name", prevArray, currArray, currRemainder, false))
     {
@@ -624,6 +679,8 @@ public class ResourceCompatibilityChecker
 
   private void checkResourceSchema(ResourceSchema prevRec, ResourceSchema currRec)
   {
+    _resourceContexts.push(new TreeResourceContext());
+
     checkEqualSingleValue(prevRec.schema().getField("name"),
                           prevRec.getName(GetMode.DEFAULT),
                           currRec.getName(GetMode.DEFAULT));
@@ -644,14 +701,21 @@ public class ResourceCompatibilityChecker
                           prevRec.getNamespace(GetMode.DEFAULT),
                           currRec.getNamespace(GetMode.DEFAULT));
 
+    checkD2ServiceName(prevRec.getD2ServiceName(GetMode.DEFAULT), currRec.getD2ServiceName(GetMode.DEFAULT));
+
     checkEqualSingleValue(prevRec.schema().getField("path"),
                           prevRec.getPath(GetMode.DEFAULT),
                           currRec.getPath(GetMode.DEFAULT));
 
+    checkEqualSingleValue(prevRec.schema().getField("entityType"),
+                          prevRec.getEntityType(GetMode.DEFAULT),
+                          currRec.getEntityType(GetMode.DEFAULT));
+
     checkType("schema",
               prevRec.getSchema(GetMode.DEFAULT),
               currRec.getSchema(GetMode.DEFAULT),
-              prevRec.hasActionsSet()); // action sets do not have schemas.
+              // action sets and unstructured data resource do not have schemas, skipping the check
+              prevRec.hasActionsSet() || ResourceEntityType.UNSTRUCTURED_DATA == prevRec.getEntityType());
 
     checkComplexField(prevRec.schema().getField("collection"), prevRec.getCollection(), currRec.getCollection());
 
@@ -660,10 +724,15 @@ public class ResourceCompatibilityChecker
     checkComplexField(prevRec.schema().getField("simple"), prevRec.getSimple(), currRec.getSimple());
 
     checkComplexField(prevRec.schema().getField("actionsSet"), prevRec.getActionsSet(), currRec.getActionsSet());
+
+    _resourceContexts.pop();
   }
 
   private void checkCollectionSchema(CollectionSchema prevRec, CollectionSchema currRec)
   {
+    // Load resource-level service errors into the current context
+    _resourceContexts.peek().loadResourceLevelServiceErrors(prevRec, currRec);
+
     checkComplexField(prevRec.schema().getField("identifier"),
                       prevRec.getIdentifier(GetMode.DEFAULT),
                       currRec.getIdentifier(GetMode.DEFAULT));
@@ -682,8 +751,13 @@ public class ResourceCompatibilityChecker
                            prevRec.getMethods(GetMode.DEFAULT),
                            currRec.getMethods(GetMode.DEFAULT));
 
-    checkComplexArrayField(prevRec.schema().getField("finders"),
+    checkComplexArrayField(prevRec.schema().getField("batchFinders"),
                            "name",
+                           prevRec.getBatchFinders(GetMode.DEFAULT),
+                           currRec.getBatchFinders(GetMode.DEFAULT));
+
+    checkComplexArrayField(prevRec.schema().getField("finders"),
+                          "name",
                            prevRec.getFinders(GetMode.DEFAULT),
                            currRec.getFinders(GetMode.DEFAULT));
 
@@ -715,6 +789,10 @@ public class ResourceCompatibilityChecker
                           prevRec.getName(GetMode.DEFAULT),
                           currRec.getName(GetMode.DEFAULT));
 
+    checkEqualSingleValue(prevRec.schema().getField("linkedBatchFinderName"),
+                          prevRec.getLinkedBatchFinderName(),
+                          currRec.getLinkedBatchFinderName());
+
     checkDoc(prevRec.schema().getField("doc"), prevRec.getDoc(GetMode.DEFAULT), currRec.getDoc(GetMode.DEFAULT));
 
     checkAnnotationsMap(prevRec.schema().getField("annotations"),
@@ -729,11 +807,70 @@ public class ResourceCompatibilityChecker
                       prevRec.getMetadata(GetMode.DEFAULT),
                       currRec.getMetadata(GetMode.DEFAULT));
 
-    final String prevAssocKey = prevRec.getAssocKey(GetMode.DEFAULT);
-    final String currAssocKey = currRec.getAssocKey(GetMode.DEFAULT);
-    final StringArray prevAssocKeys = prevRec.getAssocKeys(GetMode.DEFAULT);
-    final StringArray currAssocKeys = currRec.getAssocKeys(GetMode.DEFAULT);
+    checkPagingSupport(prevRec.isPagingSupported(GetMode.DEFAULT),
+        currRec.isPagingSupported(GetMode.DEFAULT));
 
+    checkFindersAssocKey(prevRec.getAssocKey(GetMode.DEFAULT),
+        currRec.getAssocKey(GetMode.DEFAULT),
+        prevRec.getAssocKeys(GetMode.DEFAULT),
+        currRec.getAssocKeys(GetMode.DEFAULT),
+        prevRec.schema().getField("assocKey"),
+        prevRec.schema().getField("assocKeys"));
+
+    checkMethodServiceErrors(prevRec.schema().getField("serviceErrors"),
+        prevRec.getServiceErrors(GetMode.DEFAULT),
+        currRec.getServiceErrors(GetMode.DEFAULT));
+  }
+
+  private void checkBatchFinderSchema(BatchFinderSchema prevRec, BatchFinderSchema currRec)
+  {
+    checkEqualSingleValue(prevRec.schema().getField("name"),
+        prevRec.getName(GetMode.DEFAULT),
+        currRec.getName(GetMode.DEFAULT));
+
+    checkDoc(prevRec.schema().getField("doc"), prevRec.getDoc(GetMode.DEFAULT), currRec.getDoc(GetMode.DEFAULT));
+
+    checkAnnotationsMap(prevRec.schema().getField("annotations"),
+        prevRec.getAnnotations(GetMode.DEFAULT),
+        currRec.getAnnotations(GetMode.DEFAULT));
+
+    checkParameterArrayField(prevRec.schema().getField("parameters"),
+        prevRec.getParameters(GetMode.DEFAULT),
+        currRec.getParameters(GetMode.DEFAULT));
+
+    checkComplexField(prevRec.schema().getField("metadata"),
+        prevRec.getMetadata(GetMode.DEFAULT),
+        currRec.getMetadata(GetMode.DEFAULT));
+
+    checkPagingSupport(prevRec.isPagingSupported(GetMode.DEFAULT),
+        currRec.isPagingSupported(GetMode.DEFAULT));
+
+    checkEqualSingleValue(prevRec.schema().getField("batchParam"),
+        prevRec.getBatchParam(GetMode.DEFAULT),
+        currRec.getBatchParam(GetMode.DEFAULT));
+
+    checkFindersAssocKey(prevRec.getAssocKey(GetMode.DEFAULT),
+        currRec.getAssocKey(GetMode.DEFAULT),
+        prevRec.getAssocKeys(GetMode.DEFAULT),
+        currRec.getAssocKeys(GetMode.DEFAULT),
+        prevRec.schema().getField("assocKey"),
+        prevRec.schema().getField("assocKeys"));
+
+    checkMethodServiceErrors(prevRec.schema().getField("serviceErrors"),
+        prevRec.getServiceErrors(GetMode.DEFAULT),
+        currRec.getServiceErrors(GetMode.DEFAULT));
+
+    checkMaxBatchSizeAnnotation(prevRec.getMaxBatchSize(GetMode.DEFAULT),
+        currRec.getMaxBatchSize(GetMode.DEFAULT));
+  }
+
+  private void checkFindersAssocKey(String prevAssocKey,
+                                    String currAssocKey,
+                                    StringArray prevAssocKeys,
+                                    StringArray currAssocKeys,
+                                    RecordDataSchema.Field assocKey,
+                                    RecordDataSchema.Field assocKeys)
+  {
     // assocKey and assocKeys are mutually exclusive
     assert((prevAssocKey == null || prevAssocKeys == null) && (currAssocKey == null || currAssocKeys == null));
 
@@ -743,24 +880,22 @@ public class ResourceCompatibilityChecker
 
     if (prevAssocKeys == null && currAssocKeys == null)
     {
-      checkEqualSingleValue(prevRec.schema().getField("assocKey"), prevAssocKey, currAssocKey);
+      checkEqualSingleValue(assocKey, prevAssocKey, currAssocKey);
     }
     else if (prevAssocKey == null && currAssocKey == null)
     {
-      checkEqualSingleValue(prevRec.schema().getField("assocKeys"), prevAssocKeys, currAssocKeys);
+      checkEqualSingleValue(assocKeys, prevAssocKeys, currAssocKeys);
     }
     else if (prevAssocKeys == null)
     {
       // upgrade case
 
-      final StringArray upgradedPrevAssocKeys = new StringArray();
-      upgradedPrevAssocKeys.add(prevAssocKey);
-      checkEqualSingleValue(prevRec.schema().getField("assocKey"), upgradedPrevAssocKeys, currAssocKeys);
+      final StringArray upgradedPrevAssocKeys = new StringArray(prevAssocKey);
+      checkEqualSingleValue(assocKey, upgradedPrevAssocKeys, currAssocKeys);
     }
     else
     {
       // downgrade case
-
       _infoMap.addRestSpecInfo("assocKeys", CompatibilityInfo.Type.FINDER_ASSOCKEYS_DOWNGRADE,
                                _infoPath);
     }
@@ -768,6 +903,9 @@ public class ResourceCompatibilityChecker
 
   private void checkSimpleSchema(SimpleSchema prevRec, SimpleSchema currRec)
   {
+    // Load resource-level service errors into the current context
+    _resourceContexts.peek().loadResourceLevelServiceErrors(prevRec, currRec);
+
     checkArrayContainment(prevRec.schema().getField("supports"),
                           currRec.getSupports(GetMode.DEFAULT),
                           prevRec.getSupports(GetMode.DEFAULT));
@@ -872,6 +1010,10 @@ public class ResourceCompatibilityChecker
                           prevRec.getName(GetMode.DEFAULT),
                           currRec.getName(GetMode.DEFAULT));
 
+    checkEqualSingleValue(prevRec.schema().getField("readOnly"),
+                          prevRec.isReadOnly(GetMode.DEFAULT),
+                          currRec.isReadOnly(GetMode.DEFAULT));
+
     checkDoc(prevRec.schema().getField("doc"), prevRec.getDoc(GetMode.DEFAULT), currRec.getDoc(GetMode.DEFAULT));
 
     checkAnnotationsMap(prevRec.schema().getField("annotations"),
@@ -887,6 +1029,10 @@ public class ResourceCompatibilityChecker
     checkArrayContainment(prevRec.schema().getField("throws"),
                           prevRec.getThrows(GetMode.DEFAULT),
                           currRec.getThrows(GetMode.DEFAULT));
+
+    checkMethodServiceErrors(prevRec.schema().getField("serviceErrors"),
+        prevRec.getServiceErrors(GetMode.DEFAULT),
+        currRec.getServiceErrors(GetMode.DEFAULT));
   }
 
   private void checkRestLiDataAnnotations(RecordDataSchema.Field field, CustomAnnotationContentSchemaMap prevMap, CustomAnnotationContentSchemaMap currMap,
@@ -904,12 +1050,12 @@ public class ResourceCompatibilityChecker
     for (Class<?> annotationClass : new Class<?>[]{ReadOnly.class, CreateOnly.class})
     {
       String annotationName = annotationClass.getAnnotation(RestSpecAnnotation.class).name();
-      Set<Object> prevPaths = new HashSet<Object>();
+      Set<Object> prevPaths = new HashSet<>();
       if (prevMap != null && prevMap.containsKey(annotationName)) prevPaths.addAll((DataList) prevMap.get(annotationName).data().get("value"));
-      Set<Object> currPaths = new HashSet<Object>();
+      Set<Object> currPaths = new HashSet<>();
       if (currMap != null && currMap.containsKey(annotationName)) currPaths.addAll((DataList) currMap.get(annotationName).data().get("value"));
       // Adding an annotation is only valid if the field was newly added to the schema.
-      Set<Object> addedPaths = new HashSet<Object>(currPaths);
+      Set<Object> addedPaths = new HashSet<>(currPaths);
       addedPaths.removeAll(prevPaths);
       for (Object path : addedPaths)
       {
@@ -921,7 +1067,11 @@ public class ResourceCompatibilityChecker
         }
       }
       // Removing an annotation is only valid if the field was removed from the schema.
-      Set<Object> removedPaths = new HashSet<Object>(prevPaths);
+      // Note that removal of any field of any type is backwards incompatible. However at this point, only rest spec (resource)
+      // level incompatibilities are checked. Hence the reason that restSpecInfo is populated. Therefore we will
+      // treat restSpec incompatibility in isolation from model incompatibility in order to provide fine grained
+      // compatibility results.
+      Set<Object> removedPaths = new HashSet<>(prevPaths);
       removedPaths.removeAll(currPaths);
       for (Object path : removedPaths)
       {
@@ -947,7 +1097,7 @@ public class ResourceCompatibilityChecker
 
   private void checkAnnotationsMap(RecordDataSchema.Field field, CustomAnnotationContentSchemaMap prevMap, CustomAnnotationContentSchemaMap currMap)
   {
-    Set<String> allKeys = new HashSet<String>();
+    Set<String> allKeys = new HashSet<>();
     if (prevMap != null) allKeys.addAll(prevMap.keySet());
     if (currMap != null) allKeys.addAll(currMap.keySet());
     for(String key : allKeys)
@@ -995,6 +1145,9 @@ public class ResourceCompatibilityChecker
 
   private void checkAssociationSchema(AssociationSchema prevRec, AssociationSchema currRec)
   {
+    // Load resource-level service errors into the current context
+    _resourceContexts.peek().loadResourceLevelServiceErrors(prevRec, currRec);
+
     checkEqualSingleValue(prevRec.schema().getField("identifier"),
                           prevRec.getIdentifier(GetMode.DEFAULT),
                           currRec.getIdentifier(GetMode.DEFAULT));
@@ -1023,6 +1176,11 @@ public class ResourceCompatibilityChecker
                            prevRec.getFinders(GetMode.DEFAULT),
                            currRec.getFinders(GetMode.DEFAULT));
 
+    checkComplexArrayField(prevRec.schema().getField("batchFinders"),
+                          "name",
+                          prevRec.getBatchFinders(GetMode.DEFAULT),
+                          currRec.getBatchFinders(GetMode.DEFAULT));
+
     checkComplexArrayField(prevRec.schema().getField("actions"),
                            "name",
                            prevRec.getActions(GetMode.DEFAULT),
@@ -1044,6 +1202,9 @@ public class ResourceCompatibilityChecker
 
   private void checkActionsSetSchema(ActionsSetSchema prevRec, ActionsSetSchema currRec)
   {
+    // Load resource-level service errors into the current context
+    _resourceContexts.peek().loadResourceLevelServiceErrors(prevRec, currRec);
+
     checkComplexArrayField(prevRec.schema().getField("actions"),
                            "name",
                            prevRec.getActions(GetMode.DEFAULT),
@@ -1065,6 +1226,164 @@ public class ResourceCompatibilityChecker
     checkParameterArrayField(prevRec.schema().getField("parameters"),
                              prevRec.getParameters(GetMode.DEFAULT),
                              currRec.getParameters(GetMode.DEFAULT));
+
+    checkComplexField(prevRec.schema().getField("metadata"),
+                      prevRec.getMetadata(GetMode.DEFAULT),
+                      currRec.getMetadata(GetMode.DEFAULT));
+
+    checkPagingSupport(prevRec.isPagingSupported(GetMode.DEFAULT),
+        currRec.isPagingSupported(GetMode.DEFAULT));
+
+    checkMethodServiceErrors(prevRec.schema().getField("serviceErrors"),
+        prevRec.getServiceErrors(GetMode.DEFAULT),
+        currRec.getServiceErrors(GetMode.DEFAULT));
+
+    checkMaxBatchSizeAnnotation(prevRec.getMaxBatchSize(GetMode.DEFAULT),
+        currRec.getMaxBatchSize(GetMode.DEFAULT));
+  }
+
+  /**
+   * Checks the compatibility of method-level service errors. All service error compatibility logic is checked
+   * semantically at the method level, so this method takes the union of the resource-level errors (from the context)
+   * and the method-level errors to compute the compatibility.
+   *
+   * @param prevMethodServiceErrors previous method-level service errors
+   * @param currMethodServiceErrors current method-level service errors
+   */
+  private void checkMethodServiceErrors(RecordDataSchema.Field field, ServiceErrorSchemaArray prevMethodServiceErrors,
+      ServiceErrorSchemaArray currMethodServiceErrors)
+  {
+    assert field != null;
+
+    _infoPath.push(field.getName());
+
+    // Compute the union of resource and method service errors separately for previous and current
+    TreeResourceContext state = _resourceContexts.peek();
+    Map<String, ServiceErrorSchema> prevServiceErrorUnion = getServiceErrorUnion(state._prevResourceLevelErrors, prevMethodServiceErrors);
+    Map<String, ServiceErrorSchema> currServiceErrorUnion = getServiceErrorUnion(state._currResourceLevelErrors, currMethodServiceErrors);
+
+    // Compute the union of resource and method service errors for both previous and current together
+    Set<String> serviceErrorCodeUnion = new HashSet<>();
+    serviceErrorCodeUnion.addAll(prevServiceErrorUnion.keySet());
+    serviceErrorCodeUnion.addAll(currServiceErrorUnion.keySet());
+
+    // Compute the intersection and both complementary subsets of previous and current service error codes
+    Set<String> serviceErrorCodeIntersection = new HashSet<>();
+    Set<String> removedServiceErrorCodes = new HashSet<>();
+    Set<String> newServiceErrorCodes = new HashSet<>();
+
+    for (String code : serviceErrorCodeUnion)
+    {
+      if (prevServiceErrorUnion.containsKey(code) && currServiceErrorUnion.containsKey(code))
+      {
+        serviceErrorCodeIntersection.add(code);
+      }
+      else if (prevServiceErrorUnion.containsKey(code))
+      {
+        removedServiceErrorCodes.add(code);
+      }
+      else
+      {
+        newServiceErrorCodes.add(code);
+      }
+    }
+
+    // Check to ensure that retained service errors are compatible
+    for (String code : serviceErrorCodeIntersection)
+    {
+      ServiceErrorSchema prevServiceErrorSchema = prevServiceErrorUnion.get(code);
+      ServiceErrorSchema currServiceErrorSchema = currServiceErrorUnion.get(code);
+
+      _infoPath.push(code);
+      checkServiceErrorSchema(prevServiceErrorSchema, currServiceErrorSchema);
+      _infoPath.pop();
+    }
+
+    // Add info about removed service errors
+    for (String code : removedServiceErrorCodes)
+    {
+      _infoMap.addRestSpecInfo(CompatibilityInfo.Type.SERVICE_ERROR_REMOVED, _infoPath, code);
+    }
+
+    // Add info about new service errors
+    for (String code : newServiceErrorCodes)
+    {
+      _infoMap.addRestSpecInfo(CompatibilityInfo.Type.SERVICE_ERROR_ADDED, _infoPath, code);
+    }
+
+    _infoPath.pop();
+  }
+
+  /**
+   * Checks the compatibility of one individual service error that exists in both the previous and the current IDL.
+   *
+   * @param prevRec previous record
+   * @param currRec current record
+   */
+  private void checkServiceErrorSchema(ServiceErrorSchema prevRec, ServiceErrorSchema currRec)
+  {
+    // Check the status field
+    checkEqualSingleValue(prevRec.schema().getField("status"),
+        prevRec.getStatus(GetMode.DEFAULT),
+        currRec.getStatus(GetMode.DEFAULT));
+
+    // Check the errorDetailType field
+    final boolean errorDetailTypeCompatible = checkEqualSingleValue(prevRec.schema().getField("errorDetailType"),
+        prevRec.getErrorDetailType(GetMode.DEFAULT),
+        currRec.getErrorDetailType(GetMode.DEFAULT));
+
+    // If the errorDetailType field is the same, verify that the model itself is compatible
+    if (errorDetailTypeCompatible)
+    {
+      checkType(prevRec.schema().getField("errorDetailType"),
+          prevRec.getErrorDetailType(GetMode.DEFAULT),
+          currRec.getErrorDetailType(GetMode.DEFAULT),
+          true);
+    }
+
+    // Check the message field
+    checkEqualSingleValue(prevRec.schema().getField("message"),
+        prevRec.getMessage(GetMode.DEFAULT),
+        currRec.getMessage(GetMode.DEFAULT));
+  }
+
+  /**
+   * Computes the union of multiple collections of service errors as a mapping from service error code to service error.
+   *
+   * @param serviceErrorSchemaCollections array of service error schema collections
+   * @return union of all service errors keyed by code
+   */
+  @SafeVarargs
+  private static Map<String, ServiceErrorSchema> getServiceErrorUnion(Collection<ServiceErrorSchema> ... serviceErrorSchemaCollections)
+  {
+    Map<String, ServiceErrorSchema> serviceErrorUnion = new HashMap<>();
+
+    if (serviceErrorSchemaCollections != null)
+    {
+      for (Collection<ServiceErrorSchema> serviceErrorSchemaCollection : serviceErrorSchemaCollections)
+      {
+        if (serviceErrorSchemaCollection == null)
+        {
+          continue;
+        }
+
+        for (ServiceErrorSchema serviceErrorSchema : serviceErrorSchemaCollection)
+        {
+          final String code = serviceErrorSchema.getCode();
+          if (serviceErrorUnion.containsKey(code))
+          {
+            // Service errors that overlap shouldn't be unequal
+            assert serviceErrorSchema.equals(serviceErrorUnion.get(code));
+          }
+          else
+            {
+            serviceErrorUnion.put(code, serviceErrorSchema);
+          }
+        }
+      }
+    }
+
+    return serviceErrorUnion;
   }
 
   /**
@@ -1075,4 +1394,90 @@ public class ResourceCompatibilityChecker
     return (isOptional == null ? defaultValue != null : isOptional);
   }
 
+  /**
+   * Class which provides context about the current resource in the compatibility checker tree.
+   */
+  private class TreeResourceContext
+  {
+    // Resource-level errors for this resource
+    private Collection<ServiceErrorSchema> _prevResourceLevelErrors, _currResourceLevelErrors;
+
+    /**
+     * Loads resource-level service errors into the current context.
+     *
+     * @param previousRecord previous record containing a "serviceErrors" field
+     * @param currentRecord current record containing a "serviceErrors" field
+     */
+    private void loadResourceLevelServiceErrors(RecordTemplate previousRecord, RecordTemplate currentRecord)
+    {
+      _prevResourceLevelErrors = new ServiceErrorsSchema(previousRecord.data()).getServiceErrors(GetMode.DEFAULT);
+      _currResourceLevelErrors = new ServiceErrorsSchema(currentRecord.data()).getServiceErrors(GetMode.DEFAULT);
+    }
+  }
+
+  /**
+   * Checks the compatibility of max batch size.
+   *
+   * @param prevMaxBatchSize previous max batch size
+   * @param currMaxBatchSize current max batch size
+   */
+  private void checkMaxBatchSizeAnnotation(MaxBatchSizeSchema prevMaxBatchSize, MaxBatchSizeSchema currMaxBatchSize)
+  {
+    if (prevMaxBatchSize == currMaxBatchSize)
+    {
+      return;
+    }
+
+    if (prevMaxBatchSize == null)
+    {
+      // Adding MaxBatchSize
+      if (currMaxBatchSize.isValidate())
+      {
+        // Adding MaxBatchSize with validation on
+        _infoMap.addRestSpecInfo(CompatibilityInfo.Type.MAX_BATCH_SIZE_ADDED_WITH_VALIDATION_ON, _infoPath);
+      }
+      else
+      {
+        // Adding MaxBatchSize with validation off
+        _infoMap.addRestSpecInfo(CompatibilityInfo.Type.MAX_BATCH_SIZE_ADDED_WITH_VALIDATION_OFF, _infoPath);
+      }
+    }
+    else if (currMaxBatchSize == null)
+    {
+      // Removing MaxBatchSize
+      _infoMap.addRestSpecInfo(CompatibilityInfo.Type.MAX_BATCH_SIZE_REMOVED, _infoPath);
+    }
+    else
+    {
+      int prevValue = prevMaxBatchSize.getValue();
+      int currValue = currMaxBatchSize.getValue();
+      boolean prevValidate = prevMaxBatchSize.isValidate();
+      boolean currValidate = currMaxBatchSize.isValidate();
+      if (prevValidate && !currValidate)
+      {
+        _infoMap.addRestSpecInfo(CompatibilityInfo.Type.MAX_BATCH_SIZE_TURN_OFF_VALIDATION, _infoPath);
+      }
+      else if (!prevValidate && currValidate)
+      {
+        _infoMap.addRestSpecInfo(CompatibilityInfo.Type.MAX_BATCH_SIZE_TURN_ON_VALIDATION, _infoPath);
+      }
+      else if(prevValue < currValue)
+      {
+        // Increasing max batch size value
+        _infoMap.addRestSpecInfo(CompatibilityInfo.Type.MAX_BATCH_SIZE_VALUE_INCREASED, _infoPath);
+      }
+      else if (prevValue > currValue)
+      {
+        // Decreasing max batch size value
+        if (currValidate)
+        {
+          _infoMap.addRestSpecInfo(CompatibilityInfo.Type.MAX_BATCH_SIZE_VALUE_DECREASED_WITH_VALIDATION_ON, _infoPath);
+        }
+        else
+        {
+          _infoMap.addRestSpecInfo(CompatibilityInfo.Type.MAX_BATCH_SIZE_VALUE_DECREASED_WITH_VALIDATION_OFF, _infoPath);
+        }
+      }
+    }
+  }
 }

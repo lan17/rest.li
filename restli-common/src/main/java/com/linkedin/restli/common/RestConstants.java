@@ -17,12 +17,12 @@
 
 package com.linkedin.restli.common;
 
+import com.linkedin.data.codec.ProtobufDataCodec;
 import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Set;
 
 
@@ -40,23 +40,55 @@ public interface RestConstants
   String HEADER_LOCATION = "Location";
   String HEADER_ACCEPT = "Accept";
   String HEADER_CONTENT_TYPE = "Content-Type";
+  String HEADER_CONTENT_DISPOSITION = "Content-Disposition";
   String HEADER_VALUE_APPLICATION_JSON = "application/json";
+  String HEADER_VALUE_APPLICATION_LICOR_TEXT = "application/licor";
+  String HEADER_VALUE_APPLICATION_LICOR_BINARY = "application/x-licor";
   String HEADER_VALUE_APPLICATION_PSON = "application/x-pson";
+
+  /**
+   * @deprecated Use {@link #HEADER_VALUE_APPLICATION_PROTOBUF2} instead.
+   */
+  @Deprecated
+  String HEADER_VALUE_APPLICATION_PROTOBUF = "application/x-protobuf";
+  String HEADER_VALUE_APPLICATION_PROTOBUF2 = ProtobufDataCodec.DEFAULT_HEADER;
+  String HEADER_VALUE_APPLICATION_SMILE = "application/x-smile";
+  String HEADER_VALUE_MULTIPART_RELATED = "multipart/related";
   String HEADER_VALUE_ACCEPT_ANY = "*/*";
   String HEADER_RESTLI_PROTOCOL_VERSION = "X-RestLi-Protocol-Version";
+  String CONTENT_TYPE_PARAM_SYMBOL_TABLE = "symbol-table";
+  String HEADER_CONTENT_ID = "Content-ID";
+  String HEADER_SERVICE_SCOPED_PATH = "x-restli-service-scoped-path";
+  String HEADER_FETCH_SYMBOL_TABLE = "x-restli-symbol-table-request";
 
-  List<String> SUPPORTED_MIME_TYPES = Arrays.asList(HEADER_VALUE_APPLICATION_PSON, HEADER_VALUE_APPLICATION_JSON);
+  /**
+   * This header if set to true will cause the validation filter to skip response validation.
+   */
+  String HEADER_SKIP_RESPONSE_VALIDATION = "x-restli-skip-response-validation";
+
+  // Default supported mime types.
+  Set<String> SUPPORTED_MIME_TYPES = new LinkedHashSet<>(
+      Arrays.asList(HEADER_VALUE_APPLICATION_LICOR_TEXT,
+          HEADER_VALUE_APPLICATION_LICOR_BINARY,
+          HEADER_VALUE_APPLICATION_SMILE,
+          HEADER_VALUE_APPLICATION_PROTOBUF,
+          HEADER_VALUE_APPLICATION_PROTOBUF2,
+          HEADER_VALUE_APPLICATION_PSON,
+          HEADER_VALUE_APPLICATION_JSON));
 
   String START_PARAM = "start";
   String COUNT_PARAM = "count";
   String ACTION_PARAM = "action";
   String QUERY_TYPE_PARAM = "q";
+  String BATCH_FINDER_QUERY_TYPE_PARAM = "bq";
   String QUERY_BATCH_IDS_PARAM = "ids";
   String FIELDS_PARAM = "fields";
   String ALT_KEY_PARAM = "altkey";
+  String FILL_IN_DEFAULTS_PARAM = "$fillInDefaults";
   String METADATA_FIELDS_PARAM = "metadataFields";
   String PAGING_FIELDS_PARAM = "pagingFields";
-  Set<String> PROJECTION_PARAMETERS = Collections.unmodifiableSet(new LinkedHashSet<String>(
+  String RETURN_ENTITY_PARAM = "$returnEntity";
+  Set<String> PROJECTION_PARAMETERS = Collections.unmodifiableSet(new LinkedHashSet<>(
       Arrays.asList(FIELDS_PARAM, METADATA_FIELDS_PARAM, PAGING_FIELDS_PARAM)));
 
   /** delimiter used for separating (name=value) parts of compound key */
@@ -66,18 +98,21 @@ public interface RestConstants
   String DEFAULT_CHARSET_NAME = "UTF-8";
   Charset DEFAULT_CHARSET = Charset.forName(DEFAULT_CHARSET_NAME);
 
+  String METADATA_RESERVED_FIELD = "$metadata";
+
   String RESOURCE_MODEL_FILENAME_EXTENSION = ".restspec.json";
   String SNAPSHOT_FILENAME_EXTENTION = ".snapshot.json";
   Set<ResourceMethod> SIMPLE_RESOURCE_METHODS = Collections.unmodifiableSet(
-      new HashSet<ResourceMethod>(
-        Arrays.asList(
-            ResourceMethod.ACTION,
-            ResourceMethod.DELETE,
-            ResourceMethod.GET,
-            ResourceMethod.PARTIAL_UPDATE,
-            ResourceMethod.UPDATE)));
+      new HashSet<>(
+          Arrays.asList(
+              ResourceMethod.ACTION,
+              ResourceMethod.DELETE,
+              ResourceMethod.GET,
+              ResourceMethod.PARTIAL_UPDATE,
+              ResourceMethod.UPDATE)));
 
   String RESTLI_PROTOCOL_VERSION_PROPERTY = "restli.protocol";
   String RESTLI_PROTOCOL_VERSION_PERCENTAGE_PROPERTY = "restli.protocol.percentage";
   String RESTLI_FORCE_USE_NEXT_VERSION_OVERRIDE = "restli.forceUseNextVersionOverride";
+  String D2_URI_PREFIX = "d2://";
 }

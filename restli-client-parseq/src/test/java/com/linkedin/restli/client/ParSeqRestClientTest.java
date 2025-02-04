@@ -90,10 +90,11 @@ public class ParSeqRestClientTest
     final ParSeqRestClient client = mockClient(id, httpCode, protocolVersion);
     final Request<TestRecord> req = mockRequest(TestRecord.class, versionOption);
 
-    final Promise<Response<TestRecord>> promise = client.sendRequest(req);
-    promise.await();
-    Assert.assertFalse(promise.isFailed());
-    final Response<TestRecord> record = promise.get();
+    final Task<Response<TestRecord>> task = client.createTask(req);
+    _engine.run(task);
+    task.await();
+    Assert.assertFalse(task.isFailed());
+    final Response<TestRecord> record = task.get();
     Assert.assertEquals(id, record.getEntity().getId().longValue());
   }
 
@@ -124,6 +125,7 @@ public class ParSeqRestClientTest
   /**
    * Request that should fail, using promise
    */
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "protocolVersions")
   public void testRestLiResponseExceptionPromise(ProtocolVersionOption versionOption,
                                                  ProtocolVersion protocolVersion,
@@ -134,25 +136,37 @@ public class ParSeqRestClientTest
     final String ERR_MSG = "whoops2";
     final int HTTP_CODE = 400;
     final int APP_CODE = 666;
+    final String CODE = "INVALID_INPUT";
+    final String DOC_URL = "https://example.com/errors/invalid-input";
+    final String REQUEST_ID = "abc123";
 
-    final ParSeqRestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, protocolVersion, errorResponseHeaderName);
+    final ParSeqRestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, CODE, DOC_URL,
+        REQUEST_ID, protocolVersion, errorResponseHeaderName);
     final Request<EmptyRecord> req = mockRequest(EmptyRecord.class, versionOption);
 
-    final Promise<Response<EmptyRecord>> promise = client.sendRequest(req);
-    promise.await();
-    Assert.assertTrue(promise.isFailed());
-    final Throwable t = promise.getError();
+    final Task<Response<EmptyRecord>> task = client.createTask(req);
+    _engine.run(task);
+    task.await();
+    Assert.assertTrue(task.isFailed());
+    final Throwable t = task.getError();
     Assert.assertTrue(t instanceof RestLiResponseException);
     final RestLiResponseException e = (RestLiResponseException) t;
     Assert.assertEquals(HTTP_CODE, e.getStatus());
     Assert.assertEquals(ERR_VALUE, e.getErrorDetails().get(ERR_KEY));
     Assert.assertEquals(APP_CODE, e.getServiceErrorCode());
     Assert.assertEquals(ERR_MSG, e.getServiceErrorMessage());
+    Assert.assertEquals(CODE, e.getCode());
+    Assert.assertEquals(DOC_URL, e.getDocUrl());
+    Assert.assertEquals(REQUEST_ID, e.getRequestId());
+    Assert.assertEquals(EmptyRecord.class.getCanonicalName(), e.getErrorDetailType());
+    Assert.assertNotNull(e.getErrorDetailsRecord());
+    Assert.assertTrue(e.getErrorDetailsRecord() instanceof EmptyRecord);
   }
 
   /**
    * Request that should fail, using task
    */
+  @SuppressWarnings("deprecation")
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "protocolVersions")
   public void testRestLiResponseExceptionTask(ProtocolVersionOption versionOption,
                                               ProtocolVersion protocolVersion,
@@ -163,8 +177,12 @@ public class ParSeqRestClientTest
     final String ERR_MSG = "whoops2";
     final int HTTP_CODE = 400;
     final int APP_CODE = 666;
+    final String CODE = "INVALID_INPUT";
+    final String DOC_URL = "https://example.com/errors/invalid-input";
+    final String REQUEST_ID = "abc123";
 
-    final ParSeqRestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, protocolVersion, errorResponseHeaderName);
+    final ParSeqRestClient client = mockClient(ERR_KEY, ERR_VALUE, ERR_MSG, HTTP_CODE, APP_CODE, CODE, DOC_URL,
+        REQUEST_ID, protocolVersion, errorResponseHeaderName);
     final Request<EmptyRecord> req = mockRequest(EmptyRecord.class, versionOption);
 
     final Task<Response<EmptyRecord>> task = client.createTask(req);
@@ -181,6 +199,12 @@ public class ParSeqRestClientTest
     Assert.assertEquals(ERR_VALUE, e.getErrorDetails().get(ERR_KEY));
     Assert.assertEquals(APP_CODE, e.getServiceErrorCode());
     Assert.assertEquals(ERR_MSG, e.getServiceErrorMessage());
+    Assert.assertEquals(CODE, e.getCode());
+    Assert.assertEquals(DOC_URL, e.getDocUrl());
+    Assert.assertEquals(REQUEST_ID, e.getRequestId());
+    Assert.assertEquals(EmptyRecord.class.getCanonicalName(), e.getErrorDetailType());
+    Assert.assertNotNull(e.getErrorDetailsRecord());
+    Assert.assertTrue(e.getErrorDetailsRecord() instanceof EmptyRecord);
   }
 
   /**
@@ -188,7 +212,7 @@ public class ParSeqRestClientTest
    */
   private <T extends RecordTemplate> Request<T> mockRequest(final Class<T> clazz, ProtocolVersionOption versionOption)
   {
-    return new GetRequest<T>(Collections.<String, String> emptyMap(),
+    return new GetRequest<>(Collections.<String, String> emptyMap(),
                              Collections.<HttpCookie>emptyList(),
                              clazz,
                              null,
@@ -203,11 +227,15 @@ public class ParSeqRestClientTest
   /**
    * @return a mock ParSeqRestClient that gives an error
    */
+  @SuppressWarnings("deprecation")
   private ParSeqRestClient mockClient(final String errKey,
                                       final String errValue,
                                       final String errMsg,
                                       final int httpCode,
                                       final int appCode,
+                                      String code,
+                                      String docUrl,
+                                      String requestId,
                                       final ProtocolVersion protocolVersion,
                                       final String errorResponseHeaderName)
   {
@@ -216,9 +244,13 @@ public class ParSeqRestClientTest
     final DataMap errMap = new DataMap();
     errMap.put(errKey, errValue);
     er.setErrorDetails(new ErrorDetails(errMap));
+    er.setErrorDetailType(EmptyRecord.class.getCanonicalName());
     er.setStatus(httpCode);
     er.setMessage(errMsg);
     er.setServiceErrorCode(appCode);
+    er.setCode(code);
+    er.setDocUrl(docUrl);
+    er.setRequestId(requestId);
 
     final byte[] mapBytes;
     try
@@ -230,12 +262,16 @@ public class ParSeqRestClientTest
       throw new RuntimeException(e);
     }
 
-    final Map<String, String> headers = new HashMap<String, String>();
+    final Map<String, String> headers = new HashMap<>();
     headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString());
     headers.put(errorResponseHeaderName, RestConstants.HEADER_VALUE_ERROR);
 
-    return new ParSeqRestClient(new RestClient(new MockClient(httpCode, headers, mapBytes),
-                                               "http://localhost"));
+    RestClient restClient = new RestClient(new MockClient(httpCode, headers, mapBytes),
+        "http://localhost");
+    return new ParSeqRestliClientBuilder()
+        .setClient(restClient)
+        .setConfig(new ParSeqRestliClientConfigBuilder().build())
+        .build();
   }
 
   /**
@@ -257,11 +293,15 @@ public class ParSeqRestClientTest
       throw new RuntimeException(e);
     }
 
-    final Map<String, String> headers = new HashMap<String, String>();
+    final Map<String, String> headers = new HashMap<>();
     headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString());
 
-    return new ParSeqRestClient(new RestClient(new MockClient(httpCode, headers, mapBytes),
-                                               "http://localhost"));
+    RestClient restClient = new RestClient(new MockClient(httpCode, headers, mapBytes),
+        "http://localhost");
+    return new ParSeqRestliClientBuilder()
+        .setClient(restClient)
+        .setConfig(new ParSeqRestliClientConfigBuilder().build())
+        .build();
   }
 
   @DataProvider(name = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "protocolVersions")

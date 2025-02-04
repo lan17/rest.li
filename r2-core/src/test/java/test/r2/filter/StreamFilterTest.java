@@ -18,7 +18,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * @auther Zhenkai Zhu
+ * @author Zhenkai Zhu
  */
 
 public class StreamFilterTest
@@ -84,7 +84,7 @@ public class StreamFilterTest
 
   private Map<String, String> createWireAttributes()
   {
-    return new HashMap<String, String>();
+    return new HashMap<>();
   }
 
   private RequestContext createRequestContext()

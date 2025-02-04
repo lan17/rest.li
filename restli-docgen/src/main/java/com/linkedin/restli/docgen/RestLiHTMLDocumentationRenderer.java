@@ -20,9 +20,12 @@ package com.linkedin.restli.docgen;
 import com.fasterxml.jackson.core.util.DefaultPrettyPrinter;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.codec.JacksonDataCodec;
+import com.linkedin.data.schema.ArrayDataSchema;
+import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.DataSchemaResolver;
 import com.linkedin.data.schema.NamedDataSchema;
 import com.linkedin.data.schema.generator.SchemaSampleDataGenerator;
+import com.linkedin.data.template.GetMode;
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.jersey.api.uri.UriBuilder;
 import com.linkedin.restli.common.HttpStatus;
@@ -32,12 +35,19 @@ import com.linkedin.restli.docgen.examplegen.ExampleRequestResponseGenerator;
 import com.linkedin.restli.internal.server.RestLiInternalException;
 import com.linkedin.restli.internal.server.util.DataMapUtils;
 import com.linkedin.restli.restspec.ActionSchema;
+import com.linkedin.restli.restspec.BatchFinderSchema;
 import com.linkedin.restli.restspec.FinderSchema;
+import com.linkedin.restli.restspec.ParameterSchema;
 import com.linkedin.restli.restspec.ResourceSchema;
 import com.linkedin.restli.restspec.RestMethodSchema;
+import com.linkedin.restli.restspec.RestSpecCodec;
 import com.linkedin.restli.server.ResourceLevel;
 import com.linkedin.restli.server.RestLiServer;
 import com.linkedin.restli.server.RoutingException;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.apache.commons.lang.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -115,9 +125,10 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
     pageModel.put("resourceType", getResourceType(resourceSchema));
     pageModel.put("subResources", _resourceSchemas.getSubResources(resourceSchema));
 
-    final List<ResourceMethodDocView> restMethods = new ArrayList<ResourceMethodDocView>();
-    final List<ResourceMethodDocView> finders = new ArrayList<ResourceMethodDocView>();
-    final List<ResourceMethodDocView> actions = new ArrayList<ResourceMethodDocView>();
+    final List<ResourceMethodDocView> restMethods = new ArrayList<>();
+    final List<ResourceMethodDocView> finders = new ArrayList<>();
+    final List<ResourceMethodDocView> batchFinders = new ArrayList<>();
+    final List<ResourceMethodDocView> actions = new ArrayList<>();
 
     final MethodGatheringResourceSchemaVisitor visitor = new MethodGatheringResourceSchemaVisitor(resourceName);
     ResourceSchemaCollection.visitResources(_resourceSchemas.getResources().values(), visitor);
@@ -134,6 +145,11 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
       {
         FinderSchema finderMethodSchema = (FinderSchema)methodSchema;
         capture = generator.finder(finderMethodSchema.getName());
+      }
+      else if (methodSchema instanceof BatchFinderSchema)
+      {
+        BatchFinderSchema batchFinderSchema = (BatchFinderSchema)methodSchema;
+        capture = generator.batchFinder(batchFinderSchema.getName());
       }
       else if (methodSchema instanceof ActionSchema)
       {
@@ -189,17 +205,34 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
       {
         finders.add(docView);
       }
+      else if (methodSchema instanceof BatchFinderSchema)
+      {
+        batchFinders.add(docView);
+      }
       else if (methodSchema instanceof ActionSchema)
       {
         actions.add(docView);
       }
     }
+
     pageModel.put("restMethods", restMethods);
     pageModel.put("finders", finders);
+    pageModel.put("batchFinders", batchFinders);
     pageModel.put("actions", actions);
     addRelated(resourceSchema, pageModel);
 
-    _templatingEngine.render("resource.vm", pageModel, out);
+    final ServiceErrorGatheringVisitor serviceErrorGatheringVisitor = new ServiceErrorGatheringVisitor();
+    ResourceSchemaCollection.visitResources(Collections.singletonList(resourceSchema), serviceErrorGatheringVisitor);
+
+    pageModel.put("serviceErrors", serviceErrorGatheringVisitor.getServiceErrors());
+    pageModel.put("resourceLevelServiceErrors", serviceErrorGatheringVisitor.getResourceLevelServiceErrors());
+    // The following two flags are necessary for conditionally displaying the columns of the REST methods table
+    pageModel.put("restMethodsHaveSuccessStatuses", serviceErrorGatheringVisitor.doRestMethodsHaveSuccessStatuses());
+    pageModel.put("restMethodsHaveServiceErrors", serviceErrorGatheringVisitor.doRestMethodsHaveServiceErrors());
+
+    pageModel.put("util", new DocumentationTemplateUtil());
+
+    _templatingEngine.render("resource/index.vm", pageModel, out);
   }
 
   @Override
@@ -253,9 +286,19 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
     return "text/html";
   }
 
+  /**
+   * Deprecated since 29.19.10. Use {@link #setFormatUriProvider(Function)} instead.
+   */
+  @Deprecated
   public void setJsonFormatUri(URI jsonFormatUri)
   {
-    _jsonFormatUri = URI.create(_serverNodeUri.toString() + jsonFormatUri.toString());
+    setFormatUriProvider(docFormat -> docFormat == DocumentationFormat.JSON ? jsonFormatUri : null);
+  }
+
+  @Override
+  public void setFormatUriProvider(Function<DocumentationFormat, URI> uriProvider)
+  {
+    _documentationFormatUriProvider = uriProvider;
   }
 
   private static String getResourceType(ResourceSchema resourceSchema)
@@ -281,10 +324,10 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
 
   private Map<String, Object> createPageModel()
   {
-    final Map<String, Object> pageModel = new HashMap<String, Object>();
+    final Map<String, Object> pageModel = new HashMap<>();
     pageModel.put("serverNodeUri", _serverNodeUri);
     pageModel.put("docBaseUri", _docBaseUri);
-    pageModel.put("jsonFormatUri", _jsonFormatUri);
+    pageModel.put("jsonFormatUri", _documentationFormatUriProvider.apply(DocumentationFormat.JSON));
     return pageModel;
   }
 
@@ -327,7 +370,7 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
       relatedResources = _relatedResourceCache.get(parent);
       if (relatedResources == null)
       {
-        relatedResources = new HashMap<String, ResourceSchema>();
+        relatedResources = new HashMap<>();
         final Iterator<Node<ResourceSchema>> resourcesItr = node.getAdjacency(ResourceSchema.class).iterator();
         while (resourcesItr.hasNext())
         {
@@ -340,7 +383,7 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
       relatedSchemas = _relatedSchemaCache.get(parent);
       if (relatedSchemas == null)
       {
-        relatedSchemas = new HashMap<String, NamedDataSchema>();
+        relatedSchemas = new HashMap<>();
         final Iterator<Node<NamedDataSchema>> schemaItr = node.getAdjacency(NamedDataSchema.class).iterator();
         while (schemaItr.hasNext())
         {
@@ -356,8 +399,8 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
   }
 
   private static final Logger log = LoggerFactory.getLogger(RestLiServer.class);
-  private static final Map<String, String> _restMethodDocsMapForCollection = new HashMap<String, String>();
-  private static final Map<String, String> _restMethodDocsMapForSimpleResource = new HashMap<String, String>();
+  private static final Map<String, String> _restMethodDocsMapForCollection = new HashMap<>();
+  private static final Map<String, String> _restMethodDocsMapForSimpleResource = new HashMap<>();
   private static final JacksonDataCodec _codec = new JacksonDataCodec();
 
   private final URI _serverNodeUri;
@@ -367,12 +410,10 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
   private final TemplatingEngine _templatingEngine;
   private final DataSchemaResolver _schemaResolver;
 
-  private final Map<Object, Map<String, ResourceSchema>> _relatedResourceCache =
-      new HashMap<Object, Map<String, ResourceSchema>>();
-  private final Map<Object, Map<String, NamedDataSchema>> _relatedSchemaCache =
-      new HashMap<Object, Map<String, NamedDataSchema>>();
+  private final Map<Object, Map<String, ResourceSchema>> _relatedResourceCache = new HashMap<>();
+  private final Map<Object, Map<String, NamedDataSchema>> _relatedSchemaCache = new HashMap<>();
 
-  private URI _jsonFormatUri;
+  private Function<DocumentationFormat, URI> _documentationFormatUriProvider;
 
   static
   {
@@ -394,5 +435,56 @@ public class RestLiHTMLDocumentationRenderer implements RestLiDocumentationRende
     _restMethodDocsMapForSimpleResource.put(ResourceMethod.UPDATE.toString(), "Replaces the entity");
 
     _codec.setPrettyPrinter(new DefaultPrettyPrinter());
+  }
+
+  /**
+   * Utility class providing helper methods for logic that cannot be performed inside HTML templates. This is needed
+   * due to the limitations of template rendering engines such as Velocity. Also useful for methods that use data not
+   * accessible from within the template (e.g. schema resolvers).
+   */
+  public class DocumentationTemplateUtil
+  {
+    /**
+     * Joins a collection of objects using the given delimiter.
+     *
+     * @param delimiter string to go between each object
+     * @param objects collection of objects to join
+     * @return string representing the joined objects
+     */
+    public String join(String delimiter, Collection<Object> objects)
+    {
+      return objects.stream()
+          .map(Object::toString)
+          .collect(Collectors.joining(delimiter));
+    }
+
+    /**
+     * Parses the array type parameter in a resource method and gets each item in the array. This is needed because the
+     * current {@link ParameterSchema} doesn't have a separate 'items' field anymore and thus cannot get the items type
+     * directly by calling the 'getItems' method. Pass this parser into a template to parse the parameter data schema
+     * and get the type name of a parameter array.
+     *
+     * @param param the data schema of each resource method parameter
+     * @return the parameter name of each array item
+     */
+    public String getParameterItems(ParameterSchema param)
+    {
+      // for legacy schema which has an 'items' field
+      if (param.hasItems())
+      {
+        return param.getItems(GetMode.DEFAULT);
+      }
+
+      // to parse the current data schema
+      final DataSchema paramDataSchema = RestSpecCodec.textToSchema(param.getType(GetMode.DEFAULT), _schemaResolver);
+      if (paramDataSchema instanceof ArrayDataSchema)
+      {
+        return ((ArrayDataSchema) paramDataSchema).getItems().getUnionMemberKey();
+      }
+      else
+      {
+        return null;
+      }
+    }
   }
 }

@@ -136,20 +136,22 @@ public class LoadBalancerEchoClient
     ZKConnection zkClient = new ZKConnection(hostPort, 10000);
 
     zkClusterRegistry =
-        new ZooKeeperPermanentStore<ClusterProperties>(zkClient,
-                                                       new ClusterPropertiesJsonSerializer(),
-                                                       _basePath+"/clusters");
+        new ZooKeeperPermanentStore<>(zkClient,
+                                      new ClusterPropertiesJsonSerializer(),
+                                      _basePath + "/clusters");
 
     zkServiceRegistry =
-        new ZooKeeperPermanentStore<ServiceProperties>(zkClient,
-                                                       new ServicePropertiesJsonSerializer(),
-                                                       _basePath+"/services");
+        new ZooKeeperPermanentStore<>(zkClient,
+                                      new ServicePropertiesJsonSerializer(),
+                                      _basePath + "/services");
 
     zkUriRegistry =
-        new ZooKeeperEphemeralStore<UriProperties>(zkClient,
-                                                   new UriPropertiesJsonSerializer(),
-                                                   new UriPropertiesMerger(),
-                                                   _basePath+"/uris");
+        new ZooKeeperEphemeralStore<>(zkClient,
+                                      new UriPropertiesJsonSerializer(),
+                                      new UriPropertiesMerger(),
+                                      _basePath + "/uris",
+                                      false,
+                                      true);
 
     // fs stores
     File testDirectory =
@@ -162,18 +164,18 @@ public class LoadBalancerEchoClient
     new File(testDirectory + File.separator + "uri").mkdir();
 
     FileStore<ClusterProperties> fsClusterStore =
-        new FileStore<ClusterProperties>(testDirectory + File.separator + "cluster",
-                                         ".ini",
+        new FileStore<>(testDirectory + File.separator + "cluster",
+            FileSystemDirectory.FILE_STORE_EXTENSION,
                                          new ClusterPropertiesJsonSerializer());
 
     FileStore<ServiceProperties> fsServiceStore =
-        new FileStore<ServiceProperties>(testDirectory + File.separator + "service",
-                                         ".ini",
+        new FileStore<>(testDirectory + File.separator + "service",
+            FileSystemDirectory.FILE_STORE_EXTENSION,
                                          new ServicePropertiesJsonSerializer());
 
     FileStore<UriProperties> fsUriStore =
-        new FileStore<UriProperties>(testDirectory + File.separator + "uri",
-                                     ".ini",
+        new FileStore<>(testDirectory + File.separator + "uri",
+            FileSystemDirectory.FILE_STORE_EXTENSION,
                                      new UriPropertiesJsonSerializer());
 
     // chains
@@ -185,37 +187,36 @@ public class LoadBalancerEchoClient
     thread.start();
 
     PropertyEventBus<ServiceProperties> serviceBus =
-        new PropertyEventBusImpl<ServiceProperties>(executorService, zkServiceRegistry);
+        new PropertyEventBusImpl<>(executorService, zkServiceRegistry);
     serviceBus.register(fsServiceStore);
-    new ZooKeeperTogglingStore<ServiceProperties>(zkServiceRegistry,
-                                                  fsServiceStore,
-                                                  serviceBus,
-                                                  true);
+    new ZooKeeperTogglingStore<>(zkServiceRegistry,
+                                 fsServiceStore,
+                                 serviceBus,
+                                 true);
 
     PropertyEventBus<UriProperties> uriBus =
-        new PropertyEventBusImpl<UriProperties>(executorService, zkUriRegistry);
+        new PropertyEventBusImpl<>(executorService, zkUriRegistry);
     uriBus.register(fsUriStore);
-    new ZooKeeperTogglingStore<UriProperties>(zkUriRegistry, fsUriStore, uriBus, true);
+    new ZooKeeperTogglingStore<>(zkUriRegistry, fsUriStore, uriBus, true);
 
     PropertyEventBus<ClusterProperties> clusterBus =
-        new PropertyEventBusImpl<ClusterProperties>(executorService, zkClusterRegistry);
+        new PropertyEventBusImpl<>(executorService, zkClusterRegistry);
     clusterBus.register(fsClusterStore);
-    new ZooKeeperTogglingStore<ClusterProperties>(zkClusterRegistry,
-                                                  fsClusterStore,
-                                                  clusterBus,
-                                                  true);
+    new ZooKeeperTogglingStore<>(zkClusterRegistry,
+                                 fsClusterStore,
+                                 clusterBus,
+                                 true);
 
     Map<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>> loadBalancerStrategyFactories =
-        new HashMap<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>>();
+        new HashMap<>();
 
     // strategy and scheme factories
     loadBalancerStrategyFactories.put("degrader",
                                       new DegraderLoadBalancerStrategyFactoryV3());
 
-    Map<String, TransportClientFactory> clientFactories =
-        new HashMap<String, TransportClientFactory>();
+    Map<String, TransportClientFactory> clientFactories = new HashMap<>();
 
-    clientFactories.put("http", new HttpClientFactory());
+    clientFactories.put("http", new HttpClientFactory.Builder().build());
 
     // create the state
     SimpleLoadBalancerState state =
@@ -227,7 +228,7 @@ public class LoadBalancerEchoClient
                                     loadBalancerStrategyFactories,
                                     null, null, false);
 
-    SimpleLoadBalancer balancer = new SimpleLoadBalancer(state, 5, TimeUnit.SECONDS);
+    SimpleLoadBalancer balancer = new SimpleLoadBalancer(state, 5, TimeUnit.SECONDS, executorService);
 
     new JmxManager().registerLoadBalancer("balancer", balancer)
                     .registerLoadBalancerState("state", state);

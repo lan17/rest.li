@@ -1,10 +1,5 @@
 {
   "models" : [ {
-    "type" : "enum",
-    "name" : "Tone",
-    "namespace" : "com.linkedin.restli.examples.greetings.api",
-    "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
-  }, {
     "type" : "record",
     "name" : "Greeting",
     "namespace" : "com.linkedin.restli.examples.greetings.api",
@@ -17,16 +12,29 @@
       "type" : "string"
     }, {
       "name" : "tone",
-      "type" : "Tone",
+      "type" : {
+        "type" : "enum",
+        "name" : "Tone",
+        "symbols" : [ "FRIENDLY", "SINCERE", "INSULTING" ]
+      },
       "doc" : "tone"
+    }, {
+      "name" : "senders",
+      "type" : {
+        "type" : "array",
+        "items" : "string"
+      },
+      "doc" : "Sender(s) of the message",
+      "optional" : true
     } ]
-  } ],
+  }, "com.linkedin.restli.examples.greetings.api.Tone" ],
   "schema" : {
     "name" : "exceptions3",
     "namespace" : "com.linkedin.restli.examples.greetings.client",
     "path" : "/exceptions3",
     "schema" : "com.linkedin.restli.examples.greetings.api.Greeting",
     "doc" : "generated from: com.linkedin.restli.examples.greetings.server.ExceptionsResource3",
+    "resourceClass" : "com.linkedin.restli.examples.greetings.server.ExceptionsResource3",
     "collection" : {
       "identifier" : {
         "name" : "exceptions3Id",
@@ -34,11 +42,14 @@
       },
       "supports" : [ "create", "get", "update" ],
       "methods" : [ {
-        "method" : "create"
+        "method" : "create",
+        "javaMethodName" : "create"
       }, {
-        "method" : "get"
+        "method" : "get",
+        "javaMethodName" : "get"
       }, {
-        "method" : "update"
+        "method" : "update",
+        "javaMethodName" : "update"
       } ],
       "entity" : {
         "path" : "/exceptions3/{exceptions3Id}"

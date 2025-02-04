@@ -14,21 +14,20 @@
    limitations under the License.
 */
 
-/**
- * $Id: $
- */
-
 package com.linkedin.restli.examples.greetings.server;
 
 
 import com.linkedin.data.DataMap;
+import com.linkedin.restli.common.EmptyRecord;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.examples.greetings.api.Greeting;
 import com.linkedin.restli.examples.greetings.api.Tone;
 import com.linkedin.restli.server.BatchCreateRequest;
 import com.linkedin.restli.server.BatchCreateResult;
 import com.linkedin.restli.server.CreateResponse;
+import com.linkedin.restli.server.ErrorResponseFormat;
 import com.linkedin.restli.server.RestLiServiceException;
+import com.linkedin.restli.server.annotations.Action;
 import com.linkedin.restli.server.annotations.RestLiCollection;
 import com.linkedin.restli.server.annotations.RestMethod;
 import com.linkedin.restli.server.resources.CollectionResourceTemplate;
@@ -43,6 +42,7 @@ import java.util.List;
 
 @RestLiCollection(name = "exceptions",
                   namespace = "com.linkedin.restli.examples.greetings.client")
+@SuppressWarnings("deprecation")
 public class ExceptionsResource extends CollectionResourceTemplate<Long, Greeting>
 {
   @Override
@@ -57,7 +57,11 @@ public class ExceptionsResource extends CollectionResourceTemplate<Long, Greetin
       Greeting details = new Greeting().setMessage("Hello, Sorry for the mess");
 
       throw new RestLiServiceException(HttpStatus.S_500_INTERNAL_SERVER_ERROR, "error processing request", e)
-              .setServiceErrorCode(42).setErrorDetails(details.data());
+          .setServiceErrorCode(42)
+          .setCode("PROCESSING_ERROR")
+          .setDocUrl("https://example.com/errors/processing-error")
+          .setRequestId("xyz123")
+          .setErrorDetails(details);
     }
     return null;
   }
@@ -75,7 +79,7 @@ public class ExceptionsResource extends CollectionResourceTemplate<Long, Greetin
                                                                           "I will not tolerate your insolence!");
       DataMap details = new DataMap();
       details.put("reason", "insultingGreeting");
-      notAcceptableException.setErrorDetails(details);
+      notAcceptableException.setErrorDetails(new EmptyRecord(details));
       notAcceptableException.setServiceErrorCode(999);
       throw notAcceptableException;
     }
@@ -92,7 +96,7 @@ public class ExceptionsResource extends CollectionResourceTemplate<Long, Greetin
   @Override
   public BatchCreateResult<Long, Greeting> batchCreate(BatchCreateRequest<Long, Greeting> entities)
   {
-    List<CreateResponse> responses = new ArrayList<CreateResponse>(entities.getInput().size());
+    List<CreateResponse> responses = new ArrayList<>(entities.getInput().size());
 
     for (Greeting g : entities.getInput())
     {
@@ -105,6 +109,58 @@ public class ExceptionsResource extends CollectionResourceTemplate<Long, Greetin
         responses.add(new CreateResponse(restliException));
       }
     }
-    return new BatchCreateResult<Long, Greeting>(responses);
+    return new BatchCreateResult<>(responses);
+  }
+
+  @Action(name = "errorResponseFormatMinimal")
+  public Void errorResponseFormatMinimal()
+  {
+    throw makeNewDummyException(ErrorResponseFormat.MINIMAL);
+  }
+
+  @Action(name = "errorResponseFormatMessageOnly")
+  public Void errorResponseFormatMessageOnly()
+  {
+    throw makeNewDummyException(ErrorResponseFormat.MESSAGE_ONLY);
+  }
+
+  @Action(name = "errorResponseFormatMessageAndServiceCode")
+  public Void errorResponseFormatMessageAndServiceCode()
+  {
+    throw makeNewDummyException(ErrorResponseFormat.MESSAGE_AND_SERVICECODE);
+  }
+
+  @Action(name = "errorResponseFormatMessageAndServiceCodeAndExceptionClass")
+  public Void errorResponseFormatMessageAndServiceCodeAndExceptionClass()
+  {
+    throw makeNewDummyException(ErrorResponseFormat.MESSAGE_AND_SERVICECODE_AND_EXCEPTIONCLASS);
+  }
+
+  @Action(name = "errorResponseFormatMessageAndDetails")
+  public Void errorResponseFormatMessageAndDetails()
+  {
+    throw makeNewDummyException(ErrorResponseFormat.MESSAGE_AND_DETAILS);
+  }
+
+  @Action(name = "errorWithEmptyStatus")
+  public Void errorWithEmptyStatus()
+  {
+    throw new RestLiServiceException((HttpStatus) null, "This is an exception with no status!");
+  }
+
+  private static RestLiServiceException makeNewDummyException(ErrorResponseFormat errorResponseFormat)
+  {
+    Greeting details = new Greeting().setMessage("Apologies for the mean words");
+    RestLiServiceException restLiServiceException = new RestLiServiceException(HttpStatus.S_500_INTERNAL_SERVER_ERROR,
+        "This is an exception, you dummy!",
+        new IllegalArgumentException("Hello, my name is Cause Exception"))
+        .setServiceErrorCode(2147)
+        .setCode("DUMMY_EXCEPTION")
+        .setDocUrl("https://example.com/errors/dummy-exception")
+        .setRequestId("dum616")
+        .setErrorDetails(details);
+    restLiServiceException.setOverridingFormat(errorResponseFormat);
+
+    return restLiServiceException;
   }
 }

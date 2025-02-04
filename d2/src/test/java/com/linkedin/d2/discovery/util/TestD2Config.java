@@ -18,6 +18,7 @@ package com.linkedin.d2.discovery.util;
 
 import com.linkedin.d2.balancer.properties.ClusterProperties;
 import com.linkedin.d2.balancer.properties.ClusterPropertiesJsonSerializer;
+import com.linkedin.d2.balancer.properties.CustomizedPartitionProperties;
 import com.linkedin.d2.balancer.properties.HashBasedPartitionProperties;
 import com.linkedin.d2.balancer.properties.PartitionProperties;
 import com.linkedin.d2.balancer.properties.PropertyKeys;
@@ -29,10 +30,12 @@ import com.linkedin.d2.balancer.properties.UriPropertiesJsonSerializer;
 import com.linkedin.d2.balancer.properties.UriPropertiesMerger;
 import com.linkedin.d2.balancer.util.LoadBalancerClientCli;
 import com.linkedin.d2.balancer.util.LoadBalancerEchoServer;
+import com.linkedin.d2.balancer.util.partitions.BasePartitionAccessor;
 import com.linkedin.d2.balancer.util.partitions.DefaultPartitionAccessor;
 import com.linkedin.d2.balancer.util.partitions.PartitionAccessException;
 import com.linkedin.d2.balancer.util.partitions.PartitionAccessor;
 import com.linkedin.d2.balancer.util.partitions.PartitionAccessorFactory;
+import com.linkedin.d2.balancer.util.partitions.PartitionAccessorRegistry;
 import com.linkedin.d2.balancer.zkfs.ZKFSUtil;
 import com.linkedin.d2.discovery.stores.PropertyStoreException;
 import com.linkedin.d2.discovery.stores.zk.ZKConnection;
@@ -41,17 +44,8 @@ import com.linkedin.d2.discovery.stores.zk.ZKTestUtil;
 import com.linkedin.d2.discovery.stores.zk.ZooKeeper;
 import com.linkedin.d2.discovery.stores.zk.ZooKeeperEphemeralStore;
 import com.linkedin.d2.discovery.stores.zk.ZooKeeperPermanentStore;
-import org.apache.zookeeper.AsyncCallback;
-import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.data.Stat;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.testng.Assert;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
-
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -65,10 +59,17 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import org.apache.zookeeper.AsyncCallback;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.data.Stat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.testng.Assert;
+import org.testng.annotations.AfterMethod;
+import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.Test;
 
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.fail;
+import static org.testng.Assert.*;
 
 public class TestD2Config
 {
@@ -83,14 +84,30 @@ public class TestD2Config
   private static final int ZK_PORT = 11712;
   private static final String ECHO_SERVER_HOST = "127.0.0.1";
 
-  private static List<LoadBalancerEchoServer> _echoServerList = new ArrayList<LoadBalancerEchoServer>();
+  private static List<LoadBalancerEchoServer> _echoServerList = new ArrayList<>();
 
   {
     _zkHosts = ZK_HOST+":"+ZK_PORT;
     _zkUriString = "zk://"+_zkHosts;
   }
 
-  @BeforeMethod
+  private static int testGetPartitionId(URI uri)
+  {
+    String servicePath = uri.getPath();
+    switch (servicePath)
+    {
+      case "/profile":
+        return 0;
+      case "/cap":
+        return 1;
+      case "/seas":
+        return 2;
+      default:
+        return 0;
+    }
+  }
+
+    @BeforeMethod
   public void testSetup() throws IOException, Exception
   {
     // Startup zookeeper server
@@ -191,6 +208,483 @@ public class TestD2Config
 
   }
 
+  // preliminary test for customized partitioning cluster
+  @Test
+  public static void testSingleClusterCustomizedPartitions() throws IOException, InterruptedException, URISyntaxException, Exception
+  {
+    @SuppressWarnings("serial")
+    final Map<String, List<String>> clustersData = new HashMap<String, List<String>>()
+    {{
+      put("partitioned-cluster", Arrays.asList("partitioned-service-1", "partitioned-service-2"));
+    }};
+
+    final Map<String, Object> partitionProperties = new HashMap<>();
+    Map<String, Object> customized = new HashMap<>();
+    List<String> classList = Collections.emptyList();
+    customized.put("partitionType", "CUSTOM");
+    customized.put("partitionCount", "10");
+    customized.put("partitionAccessorList", classList);
+    partitionProperties.put("partitionProperties", customized);
+
+    final PartitionAccessorRegistry registry = new PartitionAccessorRegistry()
+   {
+      final private Map<String, List<BasePartitionAccessor>> _registry = new HashMap<>();
+
+      @Override
+      public void register(String clusterName, BasePartitionAccessor accessor)
+      {
+        List<BasePartitionAccessor> accessors = _registry.computeIfAbsent(clusterName, k -> new ArrayList<>());
+        accessors.add(accessor);
+      }
+
+      @Override
+      public List<BasePartitionAccessor> getPartitionAccessors(String clusterName)
+      {
+        return _registry.get(clusterName);
+      }
+    };
+
+    final BasePartitionAccessor customizedAccessor = new BasePartitionAccessor()
+    {
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException
+      {
+        return testGetPartitionId(uri);
+      }
+    };
+    registry.register("partitioned-cluster", customizedAccessor);
+
+    D2ConfigTestUtil d2Conf = new D2ConfigTestUtil(clustersData, partitionProperties);
+
+    assertEquals(d2Conf.runDiscovery(_zkHosts), 0);
+
+    verifyPartitionProperties("partitioned-cluster", partitionProperties);
+
+    final ClusterProperties clusterprops = getClusterProperties(_zkclient, "partitioned-cluster" );
+
+    final PartitionAccessor accessor = PartitionAccessorFactory.getPartitionAccessor("partitioned-cluster",
+      registry, clusterprops.getPartitionProperties());
+
+    final String legalUri1 = "/profiles?field=position&id=100";
+    final String legalUri2 = "/cap?wid=99&id=176&randid=301";
+    final String legalUri3 = "/seas?id=3324";
+    final String illegalUri = "/?id=1000000000000000000000000000000000000000000000111111111";
+
+    assertEquals(0, accessor.getPartitionId(URI.create(legalUri1)));
+    assertEquals(1, accessor.getPartitionId(URI.create(legalUri2)));
+    assertEquals(2, accessor.getPartitionId(URI.create(legalUri3)));
+    assertEquals(0, accessor.getPartitionId(URI.create(illegalUri)));
+
+    // Start Echo server on cluster-1
+    Map<Integer, Double> serverConfig1 = new HashMap<>();
+    serverConfig1.put(0, 0.5d);
+    serverConfig1.put(3, 0.5d);
+    Map<Integer, Double> serverConfig2 = new HashMap<>();
+    serverConfig2.put(0, 0.25d);
+    serverConfig2.put(1, 0.5d);
+    serverConfig2.put(2, 0.5d);
+
+    final int echoServerPort1 = 2346;
+    final int echoServerPort2 = 2347;
+    _echoServerList.add(startEchoServer(echoServerPort1, "partitioned-cluster", serverConfig1));
+    _echoServerList.add(startEchoServer(echoServerPort2, "partitioned-cluster", serverConfig2));
+
+    Map<URI, Map<Integer, Double>> partitionWeights = new HashMap<>();
+    partitionWeights.put(URI.create("http://127.0.0.1:"+echoServerPort1+"/partitioned-cluster"),
+      serverConfig1);
+    partitionWeights.put(URI.create("http://127.0.0.1:"+echoServerPort2+"/partitioned-cluster"),
+      serverConfig2);
+
+    verifyPartitionedUriProperties("partitioned-cluster", partitionWeights);
+  }
+
+  // Test PartitionAccessorFactory: match ClassList
+  @Test
+  public static void testPartitionAccessorFactory() throws IOException, InterruptedException, URISyntaxException, Exception
+  {
+    @SuppressWarnings("serial")
+    final Map<String,List<String>> clustersData = new HashMap<String,List<String>>()
+    {{
+      put("partitioned-cluster", Arrays.asList(new String[]{"partitioned-service-1", "partitioned-service-2"}));
+    }};
+
+    final Map<String, Object> partitionProperties = new HashMap<>();
+    Map<String, Object> customized = new HashMap<>();
+    List<String> classList = Arrays.asList("TestPartitionAccessor1", "TestPartitionAccessor2");
+    customized.put("partitionType", "CUSTOM");
+    customized.put("partitionCount", "10");
+    customized.put("partitionAccessorList", classList);
+    partitionProperties.put("partitionProperties", customized);
+
+    final PartitionAccessorRegistry registry = new PartitionAccessorRegistry()
+    {
+      final private Map<String, List<BasePartitionAccessor>> _registry = new HashMap<>();
+
+      @Override
+      public void register(String clusterName, BasePartitionAccessor accessor)
+      {
+        List<BasePartitionAccessor> accessors = _registry.computeIfAbsent(clusterName, k -> new ArrayList<>());
+        accessors.add(accessor);
+      }
+
+      @Override
+      public List<BasePartitionAccessor> getPartitionAccessors(String clusterName)
+      {
+        return _registry.get(clusterName);
+      }
+    };
+
+    class TestPartitionAccessor1 implements PartitionAccessor
+    {
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException
+      {
+        return testGetPartitionId(uri);
+      }
+
+      @Override
+      public int getMaxPartitionId()
+      {
+        return 10;
+      }
+    };
+
+    class TestPartitionAccessor2 implements PartitionAccessor
+    {
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException
+      {
+        return 8;
+      }
+
+      @Override
+      public int getMaxPartitionId()
+      {
+        return 10;
+      }
+    };
+
+    PartitionAccessor testAccessor1 = new TestPartitionAccessor1();
+    PartitionAccessor testAccessor2 = new TestPartitionAccessor2();
+
+    registry.register("partitioned-cluster", DefaultPartitionAccessor.getInstance());
+    registry.register("partitioned-cluster", testAccessor1);
+    registry.register("partitioned-cluster", testAccessor2);
+
+    D2ConfigTestUtil d2Conf = new D2ConfigTestUtil(clustersData, partitionProperties);
+
+    assertEquals(d2Conf.runDiscovery(_zkHosts), 0);
+
+    verifyPartitionProperties("partitioned-cluster", partitionProperties);
+
+    final ClusterProperties clusterprops = getClusterProperties(_zkclient, "partitioned-cluster" );
+
+    final PartitionAccessor accessor = PartitionAccessorFactory.getPartitionAccessor("partitioned-cluster",
+      registry, clusterprops.getPartitionProperties());
+
+    final String legalUri1 = "/profiles?field=position&id=100";
+    final String legalUri2 = "/cap?wid=99&id=176&randid=301";
+    final String legalUri3 = "/seas?id=3324";
+    final String illegalUri = "/?id=1000000000000000000000000000000000000000000000111111111";
+
+    assertEquals(0, accessor.getPartitionId(URI.create(legalUri1)));
+    assertEquals(1, accessor.getPartitionId(URI.create(legalUri2)));
+    assertEquals(2, accessor.getPartitionId(URI.create(legalUri3)));
+    assertEquals(0, accessor.getPartitionId(URI.create(illegalUri)));
+  }
+
+  // Test PartitionAccessorFactory: match ClassList with custom matching logic
+  @Test
+  public static void testPartitionAccessorFactoryWithCustomMatchingLogic() throws IOException, InterruptedException, URISyntaxException, Exception
+  {
+    @SuppressWarnings("serial")
+    final Map<String,List<String>> clustersData = new HashMap<String,List<String>>()
+    {{
+      put("partitioned-cluster", Arrays.asList(new String[]{"partitioned-service-1", "partitioned-service-2"}));
+    }};
+
+    final Map<String, Object> partitionProperties = new HashMap<>();
+    Map<String, Object> customized = new HashMap<>();
+    List<String> classList = Arrays.asList("TestPartitionAccessor1!Settings", "TestPartitionAccessor2");
+    customized.put("partitionType", "CUSTOM");
+    customized.put("partitionCount", "10");
+    customized.put("partitionAccessorList", classList);
+    partitionProperties.put("partitionProperties", customized);
+
+    final PartitionAccessorRegistry registry = new PartitionAccessorRegistry()
+    {
+      final private Map<String, List<BasePartitionAccessor>> _registry = new HashMap<>();
+
+      @Override
+      public void register(String clusterName, BasePartitionAccessor accessor)
+      {
+        List<BasePartitionAccessor> accessors = _registry.computeIfAbsent(clusterName, k -> new ArrayList<>());
+        accessors.add(accessor);
+      }
+
+      @Override
+      public List<BasePartitionAccessor> getPartitionAccessors(String clusterName)
+      {
+        return _registry.get(clusterName);
+      }
+    };
+
+    class TestPartitionAccessor1 implements PartitionAccessor
+    {
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException
+      {
+        return testGetPartitionId(uri);
+      }
+
+      @Override
+      public int getMaxPartitionId()
+      {
+        return 10;
+      }
+
+      @Override
+      public boolean checkSupportable(String settings) {
+        return settings.startsWith("TestPartitionAccessor1!");
+      }
+    };
+
+    class TestPartitionAccessor2 implements PartitionAccessor
+    {
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException
+      {
+        return 8;
+      }
+
+      @Override
+      public int getMaxPartitionId()
+      {
+        return 10;
+      }
+    };
+
+    PartitionAccessor testAccessor1 = new TestPartitionAccessor1();
+    PartitionAccessor testAccessor2 = new TestPartitionAccessor2();
+
+    registry.register("partitioned-cluster", DefaultPartitionAccessor.getInstance());
+    registry.register("partitioned-cluster", testAccessor1);
+    registry.register("partitioned-cluster", testAccessor2);
+
+    D2ConfigTestUtil d2Conf = new D2ConfigTestUtil(clustersData, partitionProperties);
+
+    assertEquals(d2Conf.runDiscovery(_zkHosts), 0);
+
+    verifyPartitionProperties("partitioned-cluster", partitionProperties);
+
+    final ClusterProperties clusterprops = getClusterProperties(_zkclient, "partitioned-cluster" );
+
+    final PartitionAccessor accessor = PartitionAccessorFactory.getPartitionAccessor("partitioned-cluster",
+        registry, clusterprops.getPartitionProperties());
+
+    final String legalUri1 = "/profiles?field=position&id=100";
+    final String legalUri2 = "/cap?wid=99&id=176&randid=301";
+    final String legalUri3 = "/seas?id=3324";
+    final String illegalUri = "/?id=1000000000000000000000000000000000000000000000111111111";
+    Field realAccessorField = accessor.getClass().getDeclaredField("_partitionAccessor");
+    realAccessorField.setAccessible(true);
+    assertEquals(TestPartitionAccessor1.class, realAccessorField.get(accessor).getClass());
+    assertEquals(0, accessor.getPartitionId(URI.create(legalUri1)));
+    assertEquals(1, accessor.getPartitionId(URI.create(legalUri2)));
+    assertEquals(2, accessor.getPartitionId(URI.create(legalUri3)));
+    assertEquals(0, accessor.getPartitionId(URI.create(illegalUri)));
+  }
+
+  // Test PartitionAccessorFactory: empty ClassList
+  @Test
+  public static void testPartitionAccessorFactoryWithEmptyClassList() throws IOException, InterruptedException, URISyntaxException, Exception
+  {
+    @SuppressWarnings("serial")
+    final Map<String,List<String>> clustersData = new HashMap<String,List<String>>()
+    {{
+      put("partitioned-cluster", Arrays.asList(new String[]{"partitioned-service-1", "partitioned-service-2"}));
+    }};
+
+    final Map<String, Object> partitionProperties = new HashMap<>();
+    Map<String, Object> customized = new HashMap<>();
+    List<String> classList = Collections.emptyList();
+    customized.put("partitionType", "CUSTOM");
+    customized.put("partitionCount", "10");
+    customized.put("partitionAccessorList", classList);
+    partitionProperties.put("partitionProperties", customized);
+
+    final PartitionAccessorRegistry registry = new PartitionAccessorRegistry()
+    {
+      final private Map<String, List<BasePartitionAccessor>> _registry = new HashMap<>();
+
+      @Override
+      public void register(String clusterName, BasePartitionAccessor accessor)
+      {
+        List<BasePartitionAccessor> accessors = _registry.computeIfAbsent(clusterName, k -> new ArrayList<>());
+        accessors.add(accessor);
+      }
+
+      @Override
+      public List<BasePartitionAccessor> getPartitionAccessors(String clusterName)
+      {
+        return _registry.get(clusterName);
+      }
+    };
+
+    class TestPartitionAccessor1 implements PartitionAccessor
+    {
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException
+      {
+        return testGetPartitionId(uri);
+      }
+
+      @Override
+      public int getMaxPartitionId()
+      {
+        return 10;
+      }
+    };
+
+    class TestPartitionAccessor2 implements PartitionAccessor
+    {
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException
+      {
+        return 8;
+      }
+
+      @Override
+      public int getMaxPartitionId()
+      {
+        return 10;
+      }
+    };
+
+    PartitionAccessor testAccessor1 = new TestPartitionAccessor1();
+    PartitionAccessor testAccessor2 = new TestPartitionAccessor2();
+
+    registry.register("partitioned-cluster", DefaultPartitionAccessor.getInstance());
+    registry.register("partitioned-cluster", testAccessor1);
+    registry.register("partitioned-cluster", testAccessor2);
+
+    D2ConfigTestUtil d2Conf = new D2ConfigTestUtil(clustersData, partitionProperties);
+
+    assertEquals(d2Conf.runDiscovery(_zkHosts), 0);
+
+    verifyPartitionProperties("partitioned-cluster", partitionProperties);
+
+    final ClusterProperties clusterprops = getClusterProperties(_zkclient, "partitioned-cluster" );
+
+    final PartitionAccessor accessor = PartitionAccessorFactory.getPartitionAccessor("partitioned-cluster",
+      registry, clusterprops.getPartitionProperties());
+
+    final String legalUri1 = "/profiles?field=position&id=100";
+    final String legalUri2 = "/cap?wid=99&id=176&randid=301";
+    final String legalUri3 = "/seas?id=3324";
+    final String illegalUri = "/?id=1000000000000000000000000000000000000000000000111111111";
+
+    assertEquals(0, accessor.getPartitionId(URI.create(legalUri1)));
+    assertEquals(0, accessor.getPartitionId(URI.create(legalUri2)));
+    assertEquals(0, accessor.getPartitionId(URI.create(legalUri3)));
+    assertEquals(0, accessor.getPartitionId(URI.create(illegalUri)));
+  }
+
+  // Test PartitionAccessorFactory: no matches
+  @Test
+  public static void testPartitionAccessorFactoryWithoutMatch() throws IOException, InterruptedException, URISyntaxException, Exception
+  {
+    @SuppressWarnings("serial")
+    final Map<String,List<String>> clustersData = new HashMap<String,List<String>>()
+    {{
+      put("partitioned-cluster", Arrays.asList("partitioned-service-1", "partitioned-service-2"));
+    }};
+
+    final Map<String, Object> partitionProperties = new HashMap<>();
+    Map<String, Object> customized = new HashMap<>();
+    List<String> classList = Arrays.asList("NoClass");
+    customized.put("partitionType", "CUSTOM");
+    customized.put("partitionCount", "10");
+    customized.put("partitionAccessorList", classList);
+    partitionProperties.put("partitionProperties", customized);
+
+    final PartitionAccessorRegistry registry = new PartitionAccessorRegistry()
+    {
+      final private Map<String, List<BasePartitionAccessor>> _registry = new HashMap<>();
+
+      @Override
+      public void register(String clusterName, BasePartitionAccessor accessor)
+      {
+        List<BasePartitionAccessor> accessors = _registry.computeIfAbsent(clusterName, k -> new ArrayList<>());
+        accessors.add(accessor);
+      }
+
+      @Override
+      public List<BasePartitionAccessor> getPartitionAccessors(String clusterName)
+      {
+        return _registry.get(clusterName);
+      }
+    };
+
+    class TestPartitionAccessor1 implements PartitionAccessor
+    {
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException
+      {
+        return testGetPartitionId(uri);
+      }
+
+      @Override
+      public int getMaxPartitionId()
+      {
+        return 10;
+      }
+    };
+
+    class TestPartitionAccessor2 implements PartitionAccessor
+    {
+      @Override
+      public int getPartitionId(URI uri) throws PartitionAccessException
+      {
+        return 8;
+      }
+
+      @Override
+      public int getMaxPartitionId()
+      {
+        return 10;
+      }
+    };
+
+    PartitionAccessor testAccessor1 = new TestPartitionAccessor1();
+    PartitionAccessor testAccessor2 = new TestPartitionAccessor2();
+
+    registry.register("partitioned-cluster", DefaultPartitionAccessor.getInstance());
+    registry.register("partitioned-cluster", testAccessor1);
+    registry.register("partitioned-cluster", testAccessor2);
+
+    D2ConfigTestUtil d2Conf = new D2ConfigTestUtil(clustersData, partitionProperties);
+
+    assertEquals(d2Conf.runDiscovery(_zkHosts), 0);
+
+    verifyPartitionProperties("partitioned-cluster", partitionProperties);
+
+    final ClusterProperties clusterprops = getClusterProperties(_zkclient, "partitioned-cluster" );
+
+    final PartitionAccessor accessor = PartitionAccessorFactory.getPartitionAccessor("partitioned-cluster",
+      registry, clusterprops.getPartitionProperties());
+
+    final String legalUri1 = "/profiles?field=position&id=100";
+    final String legalUri2 = "/cap?wid=99&id=176&randid=301";
+    final String legalUri3 = "/seas?id=3324";
+    final String illegalUri = "/?id=1000000000000000000000000000000000000000000000111111111";
+
+    assertEquals(0, accessor.getPartitionId(URI.create(legalUri1)));
+    assertEquals(0, accessor.getPartitionId(URI.create(legalUri2)));
+    assertEquals(0, accessor.getPartitionId(URI.create(legalUri3)));
+    assertEquals(0, accessor.getPartitionId(URI.create(illegalUri)));
+  }
+
   // preliminary test for partitioning cluster
   @Test
   public static void testSingleClusterRangePartitions() throws IOException, InterruptedException, URISyntaxException, Exception
@@ -199,11 +693,11 @@ public class TestD2Config
     @SuppressWarnings("serial")
     final Map<String,List<String>> clustersData = new HashMap<String,List<String>>()
     {{
-        put("partitioned-cluster", Arrays.asList(new String[]{"partitioned-service-1", "partitioned-service-2"}));
+        put("partitioned-cluster", Arrays.asList("partitioned-service-1", "partitioned-service-2"));
       }};
 
-    final Map<String, Object> partitionProperties = new HashMap<String, Object>();
-    Map<String, Object> rangeBased = new HashMap<String, Object>();
+    final Map<String, Object> partitionProperties = new HashMap<>();
+    Map<String, Object> rangeBased = new HashMap<>();
     rangeBased.put("partitionKeyRegex", "\\bid\\b=(\\d+)");
     rangeBased.put("keyRangeStart", "0");
     rangeBased.put("partitionCount", "10");
@@ -218,7 +712,8 @@ public class TestD2Config
     verifyPartitionProperties("partitioned-cluster", partitionProperties);
 
     final ClusterProperties clusterprops = getClusterProperties(_zkclient, "partitioned-cluster" );
-    final PartitionAccessor accessor = PartitionAccessorFactory.getPartitionAccessor(clusterprops.getPartitionProperties());
+    final PartitionAccessor accessor = PartitionAccessorFactory.getPartitionAccessor("partitioned-cluster",
+      null, clusterprops.getPartitionProperties());
     try
     {
       accessor.getPartitionId(-1 + "");
@@ -263,10 +758,10 @@ public class TestD2Config
 
     // Start Echo server on cluster-1
 
-    Map<Integer, Double> serverConfig1 = new HashMap<Integer, Double>();
+    Map<Integer, Double> serverConfig1 = new HashMap<>();
     serverConfig1.put(0, 0.5d);
     serverConfig1.put(3, 0.5d);
-    Map<Integer, Double> serverConfig2 = new HashMap<Integer, Double>();
+    Map<Integer, Double> serverConfig2 = new HashMap<>();
     serverConfig2.put(0, 0.25d);
     serverConfig2.put(1, 0.5d);
     serverConfig2.put(2, 0.5d);
@@ -276,7 +771,7 @@ public class TestD2Config
     _echoServerList.add(startEchoServer(echoServerPort1, "partitioned-cluster", serverConfig1));
     _echoServerList.add(startEchoServer(echoServerPort2, "partitioned-cluster", serverConfig2));
 
-    Map<URI, Map<Integer, Double>> partitionWeights = new HashMap<URI, Map<Integer, Double>>();
+    Map<URI, Map<Integer, Double>> partitionWeights = new HashMap<>();
     partitionWeights.put(URI.create("http://127.0.0.1:"+echoServerPort1+"/partitioned-cluster"),
         serverConfig1);
     partitionWeights.put(URI.create("http://127.0.0.1:"+echoServerPort2+"/partitioned-cluster"),
@@ -293,11 +788,11 @@ public class TestD2Config
     @SuppressWarnings("serial")
     final Map<String,List<String>> clustersData = new HashMap<String,List<String>>()
     {{
-        put("partitioned-cluster", Arrays.asList(new String[]{"partitioned-service-1", "partitioned-service-2"}));
+        put("partitioned-cluster", Arrays.asList("partitioned-service-1", "partitioned-service-2"));
       }};
 
-    final Map<String, Object> partitionProperties = new HashMap<String, Object>();
-    Map<String, Object> hashBased = new HashMap<String, Object>();
+    final Map<String, Object> partitionProperties = new HashMap<>();
+    Map<String, Object> hashBased = new HashMap<>();
     hashBased.put("partitionKeyRegex", "\\bid\\b=(\\d+)");
     hashBased.put("partitionCount", "10");
     hashBased.put("hashAlgorithm", "modulo");
@@ -312,7 +807,8 @@ public class TestD2Config
     verifyPartitionProperties("partitioned-cluster", partitionProperties);
 
     final ClusterProperties clusterprops = getClusterProperties(_zkclient, "partitioned-cluster" );
-    final PartitionAccessor accessor = PartitionAccessorFactory.getPartitionAccessor(clusterprops.getPartitionProperties());
+    final PartitionAccessor accessor = PartitionAccessorFactory.getPartitionAccessor("partitioned-cluster",
+      null, clusterprops.getPartitionProperties());
 
     assertEquals(0, accessor.getPartitionId(0 + ""));
     assertEquals(9, accessor.getPartitionId(99 + ""));
@@ -330,7 +826,7 @@ public class TestD2Config
     final int echoServerPort3 = 2345;
 
     @SuppressWarnings("serial")
-    Map<String,String> servicesData = new HashMap<String,String>()
+    Map<String, String> servicesData = new HashMap<String, String>()
     {{
       put("service1", "testService");
       put("service2", "testService");
@@ -339,7 +835,7 @@ public class TestD2Config
     }};
 
     @SuppressWarnings("serial")
-    Map<String,String> serviceGroupsData = new HashMap<String,String>()
+    Map<String, String> serviceGroupsData = new HashMap<String, String>()
     {{
       put("ServiceGroup1", "Cluster1");
       put("ServiceGroup2", "Cluster2");
@@ -349,7 +845,7 @@ public class TestD2Config
     @SuppressWarnings("serial")
     Map<String, Object> clusterProperties = new HashMap<String, Object>()
     {{
-      put(PropertyKeys.CLUSTER_VARIANTS, Arrays.asList(new String[]{"Cluster1", "Cluster2", "Cluster3"}));
+      put(PropertyKeys.CLUSTER_VARIANTS, Arrays.asList("Cluster1", "Cluster2", "Cluster3"));
     }};
 
     D2ConfigTestUtil d2Conf = new D2ConfigTestUtil("TestServices", servicesData, serviceGroupsData);
@@ -414,15 +910,13 @@ public class TestD2Config
 
     clusterNameWithRouting = D2Config.clusterNameWithRouting("clusterName",
                                                              "destinationColo",
-                                                             "defaultColo",
                                                              "masterColo",
                                                              false,
                                                              false);
-    assertEquals("clusterName-defaultColo", clusterNameWithRouting);
+    assertEquals("clusterName", clusterNameWithRouting);
 
     clusterNameWithRouting = D2Config.clusterNameWithRouting("clusterName",
                                                              "destinationColo",
-                                                             "defaultColo",
                                                              "masterColo",
                                                              true,
                                                              false);
@@ -430,7 +924,6 @@ public class TestD2Config
 
     clusterNameWithRouting = D2Config.clusterNameWithRouting("clusterName",
                                                              "destinationColo",
-                                                             "defaultColo",
                                                              "masterColo",
                                                              true,
                                                              true);
@@ -438,7 +931,6 @@ public class TestD2Config
 
     clusterNameWithRouting = D2Config.clusterNameWithRouting("clusterName",
                                                              "",
-                                                             "defaultColo",
                                                              "masterColo",
                                                              false,
                                                              false);
@@ -446,7 +938,6 @@ public class TestD2Config
 
     clusterNameWithRouting = D2Config.clusterNameWithRouting("clusterName",
                                                              "",
-                                                             "defaultColo",
                                                              "masterColo",
                                                              true,
                                                              false);
@@ -478,20 +969,20 @@ public class TestD2Config
   {
     // D2Config error : "Service group has variants of the same cluster"
 
-    Map<String, Object> clusterServiceConfigurations = new HashMap<String, Object>();
-    Map<String, Object> serviceVariants = new HashMap<String, Object>();
+    Map<String, Object> clusterServiceConfigurations = new HashMap<>();
+    Map<String, Object> serviceVariants = new HashMap<>();
 
     //Cluster Service Configurations
     // Services With Variants
-    Map<String,Object> services = new HashMap<String,Object>();
+    Map<String,Object> services = new HashMap<>();
     services.put("services",D2ConfigTestUtil.generateServicesMap(2, "service", "testService"));
 
     // Service variants
     @SuppressWarnings("serial")
-    Map<String,Object> clusterVariants = new HashMap<String,Object>()
+    Map<String, Object> clusterVariants = new HashMap<String, Object>()
     {{
-      put("zCluster1",new HashMap<String,Object>());
-      put("zCluster2",new HashMap<String,Object>());
+      put("zCluster1", new HashMap<>());
+      put("zCluster2", new HashMap<>());
     }};
 
     services.put("clusterVariants", clusterVariants);
@@ -503,18 +994,18 @@ public class TestD2Config
     // Cluster variants
     // serviceGroup1
     @SuppressWarnings("serial")
-    Map<String,Object> serviceGroup1 = new HashMap<String,Object>()
+    Map<String, Object> serviceGroup1 = new HashMap<String, Object>()
     {{
       put("type", "clusterVariantsList");
-      put("clusterList", Arrays.asList(new String[]{"zCluster1"}));
+      put("clusterList", Arrays.asList("zCluster1"));
     }};
 
     // serviceGroup2
     @SuppressWarnings("serial")
-     Map<String,Object> serviceGroup2 = new HashMap<String,Object>()
+     Map<String, Object> serviceGroup2 = new HashMap<String, Object>()
      {{
        put("type", "clusterVariantsList");
-       put("clusterList", Arrays.asList(new String[]{"zCluster2", "zCluster1"}));
+       put("clusterList", Arrays.asList("zCluster2", "zCluster1"));
      }};
 
     serviceVariants.put("ServiceGroup1", serviceGroup1);
@@ -537,19 +1028,19 @@ public class TestD2Config
   {
     // D2Config error : "Unknown cluster specified"
 
-    Map<String, Object> clusterServiceConfigurations = new HashMap<String, Object>();
-    Map<String, Object> serviceVariants = new HashMap<String, Object>();
+    Map<String, Object> clusterServiceConfigurations = new HashMap<>();
+    Map<String, Object> serviceVariants = new HashMap<>();
 
     //Cluster Service Configurations
     // Services With Variants
-    Map<String,Object> services = new HashMap<String,Object>();
+    Map<String, Object> services = new HashMap<>();
     services.put("services",D2ConfigTestUtil.generateServicesMap(1, "service", "testService"));
 
     // Service variants
     @SuppressWarnings("serial")
-    Map<String,Object> clusterVariants = new HashMap<String,Object>()
+    Map<String, Object> clusterVariants = new HashMap<String, Object>()
     {{
-      put("cluster1",new HashMap<String,Object>());
+      put("cluster1",new HashMap<>());
     }};
 
     services.put("clusterVariants", clusterVariants);
@@ -560,18 +1051,18 @@ public class TestD2Config
     // Cluster variants
     // serviceGroup1
     @SuppressWarnings("serial")
-    Map<String,Object> serviceGroup1 = new HashMap<String,Object>()
+    Map<String, Object> serviceGroup1 = new HashMap<String, Object>()
     {{
       put("type", "clusterVariantsList");
-      put("clusterList", Arrays.asList(new String[]{"cluster1"}));
+      put("clusterList", Arrays.asList("cluster1"));
     }};
 
     // serviceGroup2
     @SuppressWarnings("serial")
-     Map<String,Object> serviceGroup2 = new HashMap<String,Object>()
+     Map<String, Object> serviceGroup2 = new HashMap<String, Object>()
      {{
        put("type", "clusterVariantsList");
-       put("clusterList", Arrays.asList(new String[]{"zCluster2",}));
+       put("clusterList", Arrays.asList("zCluster2"));
      }};
 
     serviceVariants.put("ServiceGroup1", serviceGroup1);
@@ -594,20 +1085,20 @@ public class TestD2Config
   {
     // D2Config error : "unknown serviceVariant type"
 
-    Map<String, Object> clusterServiceConfigurations = new HashMap<String, Object>();
-    Map<String, Object> serviceVariants = new HashMap<String, Object>();
+    Map<String, Object> clusterServiceConfigurations = new HashMap<>();
+    Map<String, Object> serviceVariants = new HashMap<>();
 
     //Cluster Service Configurations
     // Services With Variants
-    Map<String,Object> services = new HashMap<String,Object>();
+    Map<String, Object> services = new HashMap<>();
     services.put("services",D2ConfigTestUtil.generateServicesMap(1, "service", "testService"));
 
     // Service variants
     @SuppressWarnings("serial")
-    Map<String,Object> clusterVariants = new HashMap<String,Object>()
+    Map<String, Object> clusterVariants = new HashMap<String, Object>()
     {{
-      put("cluster1",new HashMap<String,Object>());
-      put("cluster2",new HashMap<String,Object>());
+      put("cluster1", new HashMap<>());
+      put("cluster2", new HashMap<>());
     }};
 
     services.put("clusterVariants", clusterVariants);
@@ -619,18 +1110,18 @@ public class TestD2Config
 
     // serviceGroup1
     @SuppressWarnings("serial")
-    Map<String,Object> serviceGroup1 = new HashMap<String,Object>()
+    Map<String, Object> serviceGroup1 = new HashMap<String, Object>()
     {{
       put("type", "clusterVariantsList");
-      put("clusterList", Arrays.asList(new String[]{"cluster1"}));
+      put("clusterList", Arrays.asList("cluster1"));
     }};
 
     // serviceGroup2
     @SuppressWarnings("serial")
-     Map<String,Object> serviceGroup2 = new HashMap<String,Object>()
+     Map<String, Object> serviceGroup2 = new HashMap<String, Object>()
      {{
        put("type", "someVariantsList");
-       put("clusterList", Arrays.asList(new String[]{"cluster2",}));
+       put("clusterList", Arrays.asList("cluster2"));
      }};
 
     serviceVariants.put("ServiceGroup1", serviceGroup1);
@@ -653,20 +1144,20 @@ public class TestD2Config
   {
     // D2Config error message: "Cluster variant name: ... is not unique!"
 
-    Map<String, Object> clusterServiceConfigurations = new HashMap<String, Object>();
-    Map<String, Object> serviceVariants = new HashMap<String, Object>();
+    Map<String, Object> clusterServiceConfigurations = new HashMap<>();
+    Map<String, Object> serviceVariants = new HashMap<>();
 
     //Cluster Service Configurations
     // Services With Variants
-    Map<String,Object> services = new HashMap<String,Object>();
+    Map<String, Object> services = new HashMap<>();
     services.put("services",D2ConfigTestUtil.generateServicesMap(1, "service", "testService"));
 
     // Service variants
     @SuppressWarnings("serial")
-    Map<String,Object> clusterVariants = new HashMap<String,Object>()
+    Map<String, Object> clusterVariants = new HashMap<String, Object>()
     {{
-      put("Cluster#1",new HashMap<String,Object>());
-      put("Cluster#2",new HashMap<String,Object>());
+      put("Cluster#1",new HashMap<>());
+      put("Cluster#2",new HashMap<>());
     }};
     services.put("clusterVariants",clusterVariants);
 
@@ -676,18 +1167,18 @@ public class TestD2Config
     // Cluster variants
     // serviceGroup1
     @SuppressWarnings("serial")
-    Map<String,Object> serviceGroup1 = new HashMap<String,Object>()
+    Map<String, Object> serviceGroup1 = new HashMap<String, Object>()
     {{
       put("type", "clusterVariantsList");
-      put("clusterList", Arrays.asList(new String[]{"Cluster#1"}));
+      put("clusterList", Arrays.asList("Cluster#1"));
     }};
 
     // serviceGroup2
     @SuppressWarnings("serial")
-     Map<String,Object> serviceGroup2 = new HashMap<String,Object>()
+     Map<String, Object> serviceGroup2 = new HashMap<String, Object>()
      {{
        put("type", "clusterVariantsList");
-       put("clusterList", Arrays.asList(new String[]{"Cluster#2"}));
+       put("clusterList", Arrays.asList("Cluster#2"));
      }};
 
     serviceVariants.put("ServiceGroup1", serviceGroup1);
@@ -747,7 +1238,7 @@ public class TestD2Config
     assertEquals(d2Conf.runDiscovery(_zkHosts), 0);
 
     // Build map of path to expected version.
-    final HashMap<String, Integer> expectedVersionMap = new HashMap<String, Integer>();
+    final HashMap<String, Integer> expectedVersionMap = new HashMap<>();
     expectedVersionMap.put("/d2/services/service-1_a", 2);
     expectedVersionMap.put("/d2/services/service-1_b", 1);
     expectedVersionMap.put("/d2/services/service-1_c", 1);
@@ -759,7 +1250,7 @@ public class TestD2Config
     expectedVersionMap.put("/d2/clusters/cluster-c", 1);
 
     // Get actual version number for each path.
-    final HashMap<String, Integer> actualVersionMap = new HashMap<String, Integer>();
+    final HashMap<String, Integer> actualVersionMap = new HashMap<>();
     final CountDownLatch latch = new CountDownLatch(expectedVersionMap.size());
     final AsyncCallback.StatCallback statCallback = new AsyncCallback.StatCallback()
     {
@@ -859,7 +1350,7 @@ public class TestD2Config
     assertEquals(clusterprops.getClusterName(), cluster);
     assertEquals(clusterprops.getPrioritizedSchemes(), Arrays.asList(new String[] {"http"}));
     assertEquals(clusterprops.getProperties().get("requestTimeout"), String.valueOf(10000));
-    assertEquals(clusterprops.getBanned(), new TreeSet<URI>());
+    assertEquals(clusterprops.getBannedUris(), new TreeSet<>());
   }
 
   @SuppressWarnings("unchecked")
@@ -928,6 +1419,16 @@ public class TestD2Config
           assertEquals(hashAlgorithm, hbp.getHashAlgorithm());
         }
         break;
+        case CUSTOM:
+        {
+          int partitionCount = ((Number) properties.get("partitionCount")).intValue();
+          @SuppressWarnings("unchecked")
+          List<String> classList = (List<String>)properties.get("partitionAccessorList");
+          CustomizedPartitionProperties cbp = (CustomizedPartitionProperties) clusterprops.getPartitionProperties();
+          assertEquals(partitionCount, cbp.getPartitionCount());
+          assertEquals(classList, cbp.getPartitionAccessorList());
+          break;
+        }
         default: break;
       }
 
@@ -963,7 +1464,7 @@ public class TestD2Config
   public static void verifyServiceAsChildOfCluster(String cluster, String service)
       throws KeeperException, InterruptedException
   {
-    Stat stat = _zkclient.getZooKeeper().exists(D2Utils.getServicePathAsChildOfCluster(cluster, service), false);
+    Stat stat = _zkclient.getZooKeeper().exists(D2Utils.getServicePathAsChildOfCluster(cluster, service, "/d2"), false);
     Assert.assertNotNull(stat);
   }
 
@@ -988,7 +1489,7 @@ public class TestD2Config
 
     if (partitionWeights != null)
     {
-      Map<Integer, Set<URI>> partitionUris = new HashMap<Integer, Set<URI>>();
+      Map<Integer, Set<URI>> partitionUris = new HashMap<>();
       for (final URI uri : partitionWeights.keySet())
       {
         for(final int partitionId : partitionWeights.get(uri).keySet())
@@ -996,7 +1497,7 @@ public class TestD2Config
           Set<URI> uriSet = partitionUris.get(partitionId);
           if (uriSet == null)
           {
-            uriSet = new HashSet<URI>();
+            uriSet = new HashSet<>();
             partitionUris.put(partitionId, uriSet);
           }
           uriSet.add(uri);
@@ -1038,20 +1539,20 @@ public class TestD2Config
   @Test
   public static void testSingleClusterNoColo() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String,List<String>> clustersData = new HashMap<>();
     clustersData.put("cluster-1", serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add("cluster-1");
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
-    Map<String,String> masterColoList = new HashMap<String,String>();
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
+    Map<String, String> masterColoList = new HashMap<>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put("cluster-1", clusterProperties);
     String defaultColo = "";
     D2ConfigTestUtil d2Conf = new D2ConfigTestUtil( clustersData, defaultColo, clustersProperties);
@@ -1064,29 +1565,29 @@ public class TestD2Config
   @Test
   public static void testSingleColoCluster() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     String cluster1Name = "cluster-1";
     clustersData.put(cluster1Name, serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("WestCoast");
     peerColos.add("EastCoast");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put("coloVariants", peerColos);
     String masterColo = "WestCoast";
     clusterProperties.put("masterColo", masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
+    Map<String, String> masterColoList = new HashMap<>();
     masterColoList.put(cluster1Name, masterColo);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     String defaultColo = "EastCoast";
     D2ConfigTestUtil d2Conf = new D2ConfigTestUtil( clustersData, defaultColo, clustersProperties);
@@ -1100,20 +1601,20 @@ public class TestD2Config
   public static void testSingleClusterNoColoWithDefaultColo()
     throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     clustersData.put("cluster-1", serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add("cluster-1");
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
-    Map<String,String> masterColoList = new HashMap<String,String>();
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
+    Map<String, String> masterColoList = new HashMap<>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put("cluster-1", clusterProperties);
     String defaultColo = "EastCoast";
     D2ConfigTestUtil d2Conf = new D2ConfigTestUtil( clustersData, defaultColo, clustersProperties);
@@ -1128,22 +1629,22 @@ public class TestD2Config
   @Test
   public static void testSingleClusterNoColoWithDefaultColoMasterColo() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     clustersData.put("cluster-1", serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add("cluster-1");
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     String masterColo = "WestCoast";
     clusterProperties.put("masterColo", masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, String> masterColoList = new HashMap<>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
 
     clustersProperties.put("cluster-1", clusterProperties);
     String defaultColo = "EastCoast";
@@ -1157,36 +1658,36 @@ public class TestD2Config
   @Test
   public static void testOneColoClusterOneNoColoCluster() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     String cluster1Name = "cluster-1";
     clustersData.put(cluster1Name, serviceList);
 
-    List<String> serviceList2 = new ArrayList<String>();
+    List<String> serviceList2 = new ArrayList<>();
     serviceList2.add("service-2_1");
     serviceList2.add("service-2_2");
     String cluster2Name = "cluster-2";
     clustersData.put(cluster2Name, serviceList2);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
     clusterList.add(cluster2Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("WestCoast");
     peerColos.add("EastCoast");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put("coloVariants", peerColos);
     String masterColo = "WestCoast";
     clusterProperties.put("masterColo", masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
+    Map<String, String> masterColoList = new HashMap<>();
     masterColoList.put(cluster1Name, masterColo);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     String defaultColo = "EastCoast";
     D2ConfigTestUtil d2Conf = new D2ConfigTestUtil( clustersData, defaultColo, clustersProperties);
@@ -1199,25 +1700,25 @@ public class TestD2Config
   @Test
   public static void testClusterWithEmptyColoVariants() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     String cluster1Name = "cluster-1";
     clustersData.put(cluster1Name, serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put("coloVariants", peerColos);
-    Map<String,String> masterColoList = new HashMap<String,String>();
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, String> masterColoList = new HashMap<>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     String defaultColo = "EastCoast";
     D2ConfigTestUtil d2Conf = new D2ConfigTestUtil( clustersData, defaultColo, clustersProperties);
@@ -1231,48 +1732,48 @@ public class TestD2Config
   public static void testSingleColoClusterWithClusterVariants()
     throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
 
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     final String cluster1Name = "cluster-1";
     clustersData.put(cluster1Name, serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("WestCoast");
     peerColos.add("EastCoast");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put(PropertyKeys.COLO_VARIANTS, peerColos);
     String masterColo = "WestCoast";
     clusterProperties.put(PropertyKeys.MASTER_COLO, masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
+    Map<String, String> masterColoList = new HashMap<>();
     masterColoList.put(cluster1Name, masterColo);
 
     // add in clusterVariants
-    Map<String,Map<String,Object>> clusterVariants = new HashMap<String, Map<String, Object>>();
+    Map<String, Map<String, Object>> clusterVariants = new HashMap<>();
     final String cluster1Variant1Name = "cluster1Foo";
     final String cluster1Variant2Name = "cluster1Bar";
-    clusterVariants.put(cluster1Variant1Name, Collections.<String,Object>emptyMap());
-    clusterVariants.put(cluster1Variant2Name, Collections.<String,Object>emptyMap());
-    List<String> clusterVariantsList = new ArrayList<String>();
+    clusterVariants.put(cluster1Variant1Name, Collections.emptyMap());
+    clusterVariants.put(cluster1Variant2Name, Collections.emptyMap());
+    List<String> clusterVariantsList = new ArrayList<>();
     clusterVariantsList.add(cluster1Variant1Name);
     clusterVariantsList.add(cluster1Variant2Name);
     clusterProperties.put(PropertyKeys.CLUSTER_VARIANTS, clusterVariants);
-    Map<String,List<String>> clusterVariantsMapping = new HashMap<String, List<String>>();
+    Map<String, List<String>> clusterVariantsMapping = new HashMap<>();
 
     clusterVariantsMapping.put(cluster1Name,clusterVariantsList);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     String defaultColo = "EastCoast";
 
     @SuppressWarnings("serial")
-    Map<String,List<String>> serviceGroupsData = new HashMap<String,List<String>>()
+    Map<String, List<String>> serviceGroupsData = new HashMap<String, List<String>>()
     {{
         put("ServiceGroup1", Collections.singletonList(cluster1Variant1Name));
         put("ServiceGroup2", Collections.singletonList(cluster1Variant2Name));
@@ -1287,22 +1788,22 @@ public class TestD2Config
 
     // It's hard to validate the serviceGroups without replicating all the temporary structures
     // needed inside D2Config. Just doing it manually here.
-    verifyServiceProperties("cluster1Foo-EastCoast", "service-1_1", "/service-1_1", "ServiceGroup1");
+    verifyServiceProperties("cluster1Foo", "service-1_1", "/service-1_1", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-WestCoast", "service-1_1Master", "/service-1_1", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-WestCoast", "service-1_1-WestCoast", "/service-1_1", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_1-EastCoast", "/service-1_1", "ServiceGroup1");
 
-    verifyServiceProperties("cluster1Foo-EastCoast", "service-1_2", "/service-1_2", "ServiceGroup1");
+    verifyServiceProperties("cluster1Foo", "service-1_2", "/service-1_2", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-WestCoast", "service-1_2Master", "/service-1_2", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-WestCoast", "service-1_2-WestCoast", "/service-1_2", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_2-EastCoast", "/service-1_2", "ServiceGroup1");
 
-    verifyServiceProperties("cluster1Bar-EastCoast", "service-1_1", "/service-1_1", "ServiceGroup2");
+    verifyServiceProperties("cluster1Bar", "service-1_1", "/service-1_1", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-WestCoast", "service-1_1Master", "/service-1_1", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-WestCoast", "service-1_1-WestCoast", "/service-1_1", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_1-EastCoast", "/service-1_1", "ServiceGroup2");
 
-    verifyServiceProperties("cluster1Bar-EastCoast", "service-1_2", "/service-1_2", "ServiceGroup2");
+    verifyServiceProperties("cluster1Bar", "service-1_2", "/service-1_2", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-WestCoast", "service-1_2Master", "/service-1_2", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-WestCoast", "service-1_2-WestCoast", "/service-1_2", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_2-EastCoast", "/service-1_2", "ServiceGroup2");
@@ -1315,48 +1816,48 @@ public class TestD2Config
   public static void testSingleColoClusterWithClusterVariants2()
     throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
 
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     final String cluster1Name = "cluster-1";
     clustersData.put(cluster1Name, serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("WestCoast");
     peerColos.add("EastCoast");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put(PropertyKeys.COLO_VARIANTS, peerColos);
     String masterColo = "EastCoast";
     clusterProperties.put(PropertyKeys.MASTER_COLO, masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
+    Map<String, String> masterColoList = new HashMap<>();
     masterColoList.put(cluster1Name, masterColo);
 
     // add in clusterVariants
-    Map<String,Map<String,Object>> clusterVariants = new HashMap<String, Map<String, Object>>();
+    Map<String, Map<String, Object>> clusterVariants = new HashMap<>();
     final String cluster1Variant1Name = "cluster1Foo";
     final String cluster1Variant2Name = "cluster1Bar";
-    clusterVariants.put(cluster1Variant1Name, Collections.<String,Object>emptyMap());
-    clusterVariants.put(cluster1Variant2Name, Collections.<String,Object>emptyMap());
-    List<String> clusterVariantsList = new ArrayList<String>();
+    clusterVariants.put(cluster1Variant1Name, Collections.emptyMap());
+    clusterVariants.put(cluster1Variant2Name, Collections.emptyMap());
+    List<String> clusterVariantsList = new ArrayList<>();
     clusterVariantsList.add(cluster1Variant1Name);
     clusterVariantsList.add(cluster1Variant2Name);
     clusterProperties.put(PropertyKeys.CLUSTER_VARIANTS, clusterVariants);
-    Map<String,List<String>> clusterVariantsMapping = new HashMap<String, List<String>>();
+    Map<String, List<String>> clusterVariantsMapping = new HashMap<>();
 
     clusterVariantsMapping.put(cluster1Name,clusterVariantsList);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     String defaultColo = "EastCoast";
 
     @SuppressWarnings("serial")
-    Map<String,List<String>> serviceGroupsData = new HashMap<String,List<String>>()
+    Map<String, List<String>> serviceGroupsData = new HashMap<String, List<String>>()
     {{
         put("ServiceGroup1", Collections.singletonList(cluster1Variant1Name));
         put("ServiceGroup2", Collections.singletonList(cluster1Variant2Name));
@@ -1371,22 +1872,22 @@ public class TestD2Config
 
     // It's hard to validate the serviceGroups without replicating all the temporary structures
     // needed inside D2Config. Just doing it manually here.
-    verifyServiceProperties("cluster1Foo-EastCoast", "service-1_1", "/service-1_1", "ServiceGroup1");
+    verifyServiceProperties("cluster1Foo", "service-1_1", "/service-1_1", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_1Master", "/service-1_1", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-WestCoast", "service-1_1-WestCoast", "/service-1_1", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_1-EastCoast", "/service-1_1", "ServiceGroup1");
 
-    verifyServiceProperties("cluster1Foo-EastCoast", "service-1_2", "/service-1_2", "ServiceGroup1");
+    verifyServiceProperties("cluster1Foo", "service-1_2", "/service-1_2", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_2Master", "/service-1_2", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-WestCoast", "service-1_2-WestCoast", "/service-1_2", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_2-EastCoast", "/service-1_2", "ServiceGroup1");
 
-    verifyServiceProperties("cluster1Bar-EastCoast", "service-1_1", "/service-1_1", "ServiceGroup2");
+    verifyServiceProperties("cluster1Bar", "service-1_1", "/service-1_1", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_1Master", "/service-1_1", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-WestCoast", "service-1_1-WestCoast", "/service-1_1", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_1-EastCoast", "/service-1_1", "ServiceGroup2");
 
-    verifyServiceProperties("cluster1Bar-EastCoast", "service-1_2", "/service-1_2", "ServiceGroup2");
+    verifyServiceProperties("cluster1Bar", "service-1_2", "/service-1_2", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_2Master", "/service-1_2", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-WestCoast", "service-1_2-WestCoast", "/service-1_2", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_2-EastCoast", "/service-1_2", "ServiceGroup2");
@@ -1400,48 +1901,48 @@ public class TestD2Config
   public static void testSingleColoClusterWithClusterVariants3()
     throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
 
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     final String cluster1Name = "cluster-1";
     clustersData.put(cluster1Name, serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("EastCoast");
     peerColos.add("WestCoast");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put(PropertyKeys.COLO_VARIANTS, peerColos);
     String masterColo = "EastCoast";
     clusterProperties.put(PropertyKeys.MASTER_COLO, masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
+    Map<String, String> masterColoList = new HashMap<>();
     masterColoList.put(cluster1Name, masterColo);
 
     // add in clusterVariants
-    Map<String,Map<String,Object>> clusterVariants = new HashMap<String, Map<String, Object>>();
+    Map<String, Map<String, Object>> clusterVariants = new HashMap<>();
     final String cluster1Variant1Name = "cluster1Foo";
     final String cluster1Variant2Name = "cluster1Bar";
-    clusterVariants.put(cluster1Variant1Name, Collections.<String,Object>emptyMap());
-    clusterVariants.put(cluster1Variant2Name, Collections.<String,Object>emptyMap());
-    List<String> clusterVariantsList = new ArrayList<String>();
+    clusterVariants.put(cluster1Variant1Name, Collections.emptyMap());
+    clusterVariants.put(cluster1Variant2Name, Collections.emptyMap());
+    List<String> clusterVariantsList = new ArrayList<>();
     clusterVariantsList.add(cluster1Variant1Name);
     clusterVariantsList.add(cluster1Variant2Name);
     clusterProperties.put(PropertyKeys.CLUSTER_VARIANTS, clusterVariants);
-    Map<String,List<String>> clusterVariantsMapping = new HashMap<String, List<String>>();
+    Map<String, List<String>> clusterVariantsMapping = new HashMap<>();
 
     clusterVariantsMapping.put(cluster1Name,clusterVariantsList);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     String defaultColo = "EastCoast";
 
     @SuppressWarnings("serial")
-    Map<String,List<String>> serviceGroupsData = new HashMap<String,List<String>>()
+    Map<String, List<String>> serviceGroupsData = new HashMap<String, List<String>>()
     {{
         put("ServiceGroup1", Collections.singletonList(cluster1Variant1Name));
         put("ServiceGroup2", Collections.singletonList(cluster1Variant2Name));
@@ -1456,22 +1957,22 @@ public class TestD2Config
 
     // It's hard to validate the serviceGroups without replicating all the temporary structures
     // needed inside D2Config. Just doing it manually here.
-    verifyServiceProperties("cluster1Foo-EastCoast", "service-1_1", "/service-1_1", "ServiceGroup1");
+    verifyServiceProperties("cluster1Foo", "service-1_1", "/service-1_1", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_1Master", "/service-1_1", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-WestCoast", "service-1_1-WestCoast", "/service-1_1", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_1-EastCoast", "/service-1_1", "ServiceGroup1");
 
-    verifyServiceProperties("cluster1Foo-EastCoast", "service-1_2", "/service-1_2", "ServiceGroup1");
+    verifyServiceProperties("cluster1Foo", "service-1_2", "/service-1_2", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_2Master", "/service-1_2", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-WestCoast", "service-1_2-WestCoast", "/service-1_2", "ServiceGroup1");
     verifyServiceProperties("cluster1Foo-EastCoast", "service-1_2-EastCoast", "/service-1_2", "ServiceGroup1");
 
-    verifyServiceProperties("cluster1Bar-EastCoast", "service-1_1", "/service-1_1", "ServiceGroup2");
+    verifyServiceProperties("cluster1Bar", "service-1_1", "/service-1_1", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_1Master", "/service-1_1", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-WestCoast", "service-1_1-WestCoast", "/service-1_1", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_1-EastCoast", "/service-1_1", "ServiceGroup2");
 
-    verifyServiceProperties("cluster1Bar-EastCoast", "service-1_2", "/service-1_2", "ServiceGroup2");
+    verifyServiceProperties("cluster1Bar", "service-1_2", "/service-1_2", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_2Master", "/service-1_2", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-WestCoast", "service-1_2-WestCoast", "/service-1_2", "ServiceGroup2");
     verifyServiceProperties("cluster1Bar-EastCoast", "service-1_2-EastCoast", "/service-1_2", "ServiceGroup2");
@@ -1483,42 +1984,42 @@ public class TestD2Config
   @Test
   public static void testSingleColoClusterWithOneExcludedService() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     String excludedService = "service-1_22346";
     serviceList.add(excludedService);
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     String cluster1Name = "cluster-1";
     clustersData.put(cluster1Name, serviceList);
 
     List<String> excludeServiceList = Arrays.asList(excludedService);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("WestCoast");
     peerColos.add("EastCoast");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put("coloVariants", peerColos);
     String masterColo = "WestCoast";
     clusterProperties.put("masterColo", masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
+    Map<String, String> masterColoList = new HashMap<>();
     masterColoList.put(cluster1Name, masterColo);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     String defaultColo = "EastCoast";
     D2ConfigTestUtil d2Conf = new D2ConfigTestUtil( clustersData, defaultColo, clustersProperties,
-                                                    new HashMap<String,List<String>>(), excludeServiceList);
+                                                    new HashMap<>(), excludeServiceList);
 
     assertEquals(d2Conf.runDiscovery(_zkHosts), 0);
 
     String coloClusterName = D2Utils.addSuffixToBaseName(cluster1Name, defaultColo);
     verifyClusterProperties(coloClusterName);
-    verifyServiceProperties(coloClusterName, excludedService, "/" + excludedService, null);
+    verifyServiceProperties(cluster1Name, excludedService, "/" + excludedService, null);
     try
     {
       String badService = D2Utils.addSuffixToBaseName(excludedService, defaultColo);
@@ -1534,29 +2035,29 @@ public class TestD2Config
   @Test
   public static void testDefaultColoIsOneOfPeerColo() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     String cluster1Name = "cluster-1";
     clustersData.put(cluster1Name, serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String,Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("WestCoast");
     peerColos.add("EastCoast");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put("coloVariants", peerColos);
     String masterColo = "WestCoast";
     clusterProperties.put("masterColo", masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
+    Map<String, String> masterColoList = new HashMap<>();
     masterColoList.put(cluster1Name, masterColo);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     String defaultColo = "MiddleKingdom";
     D2ConfigTestUtil d2Conf = new D2ConfigTestUtil( clustersData, defaultColo, clustersProperties);
@@ -1575,29 +2076,29 @@ public class TestD2Config
   @Test
   public static void testMasterColoIsOneOfPeerColo() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service-1_1");
     serviceList.add("service-1_2");
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     String cluster1Name = "cluster-1";
     clustersData.put(cluster1Name, serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("WestCoast");
     peerColos.add("EastCoast");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put("coloVariants", peerColos);
     String masterColo = "MiddleKingdom";
     clusterProperties.put("masterColo", masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
+    Map<String, String> masterColoList = new HashMap<>();
     masterColoList.put(cluster1Name, masterColo);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     String defaultColo = "EastCoast";
     D2ConfigTestUtil d2Conf = new D2ConfigTestUtil( clustersData, defaultColo, clustersProperties);
@@ -1624,30 +2125,30 @@ public class TestD2Config
     final String masterColo = "WestCoast";
     final String defaultColo = "EastCoast";
 
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add("service1");
     serviceList.add("service2");
 
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     String cluster1Name = "cluster1";
     clustersData.put(cluster1Name, serviceList);
 
-    List<String> clusterList = new ArrayList<String>();
+    List<String> clusterList = new ArrayList<>();
     clusterList.add(cluster1Name);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
+    Map<String, Object> clusterProperties = new HashMap<>();
 
-    List<String> peerColos = new ArrayList<String>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("WestCoast");
     peerColos.add("EastCoast");
-    Map<String,List<String>> peerColoList = new HashMap<String,List<String>>();
+    Map<String, List<String>> peerColoList = new HashMap<>();
     peerColoList.put(cluster1Name, peerColos);
     clusterProperties.put("coloVariants", peerColos);
     clusterProperties.put("masterColo", masterColo);
-    Map<String,String> masterColoList = new HashMap<String,String>();
+    Map<String, String> masterColoList = new HashMap<>();
     masterColoList.put(cluster1Name, masterColo);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
 
     Set<String> servicesWithDefaultRoutingToMaster = Collections.singleton("service2");
@@ -1656,7 +2157,7 @@ public class TestD2Config
     d2Conf.runDiscovery(_zkHosts);
 
     // Verify default routing
-    verifyServiceProperties("cluster1-EastCoast", "service1", "/service1", null);
+    verifyServiceProperties("cluster1", "service1", "/service1", null);
     verifyServiceProperties("cluster1-WestCoast", "service2", "/service2", null, true);
 
     // Verify explicit routing
@@ -1682,35 +2183,35 @@ public class TestD2Config
     final String clusterVariantName = "clusterVariant1";
     final String serviceGroupName = "serviceGroup1";
 
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add(service1);
     serviceList.add(service2);
 
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     clustersData.put(cluster1Name, serviceList);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add(masterColo);
     peerColos.add(defaultColo);
     @SuppressWarnings("serial")
-    Map<String,Object> clusterVariants = new HashMap<String,Object>()
+    Map<String, Object> clusterVariants = new HashMap<String, Object>()
     {{
-        put(clusterVariantName,new HashMap<String,Object>());
-      }};
+        put(clusterVariantName, new HashMap<>());
+    }};
 
     clusterProperties.put(PropertyKeys.COLO_VARIANTS, peerColos);
     clusterProperties.put(PropertyKeys.MASTER_COLO, masterColo);
     clusterProperties.put(PropertyKeys.CLUSTER_VARIANTS, clusterVariants);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(cluster1Name, clusterProperties);
     @SuppressWarnings("serial")
-    Map<String,Object> serviceGroup = new HashMap<String,Object>()
+    Map<String, Object> serviceGroup = new HashMap<String, Object>()
     {{
         put(PropertyKeys.TYPE, PropertyKeys.CLUSTER_VARIANTS_LIST);
-        put(PropertyKeys.CLUSTER_LIST, Arrays.asList(new String[]{clusterVariantName}));
+        put(PropertyKeys.CLUSTER_LIST, Arrays.asList(clusterVariantName));
       }};
-    Map<String, Object> serviceVariants = new HashMap<String, Object>();
+    Map<String, Object> serviceVariants = new HashMap<>();
     serviceVariants.put(serviceGroupName, serviceGroup);
 
     Set<String> servicesWithDefaultRoutingToMaster = Collections.singleton(service2);
@@ -1721,7 +2222,7 @@ public class TestD2Config
     d2Conf.runDiscovery(_zkHosts);
 
     // Verify default routing
-    verifyServiceProperties(D2Utils.addSuffixToBaseName(clusterVariantName, defaultColo), service1, "/"+service1, serviceGroupName);
+    verifyServiceProperties(clusterVariantName, service1, "/"+service1, serviceGroupName);
     verifyServiceProperties(D2Utils.addSuffixToBaseName(clusterVariantName, masterColo), service2, "/"+service2, serviceGroupName);
   }
 
@@ -1734,22 +2235,22 @@ public class TestD2Config
     final String service2 = "service2";
     final String clusterName = "cluster";
 
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add(service1);
     serviceList.add(service2);
 
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     clustersData.put(clusterName, serviceList);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add(masterColo);
     peerColos.add(defaultColo);
 
     clusterProperties.put(PropertyKeys.COLO_VARIANTS, peerColos);
     clusterProperties.put(PropertyKeys.MASTER_COLO, "MASTER_MANAGED_EXTERNALLY");
     clusterProperties.put(PropertyKeys.ENABLE_SYMLINK, "true");
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(clusterName, clusterProperties);
 
     Set<String> servicesWithDefaultRoutingToMaster = Collections.singleton("service2");
@@ -1762,7 +2263,7 @@ public class TestD2Config
     verifyServiceProperties(D2Utils.getSymlinkNameForMaster(clusterName), D2Utils.addMasterToBaseName(service1), "/"+service1, null);
     verifyServiceProperties(D2Utils.getSymlinkNameForMaster(clusterName), D2Utils.addMasterToBaseName(service2), "/"+service2, null);
     // verify default routing
-    verifyServiceProperties(D2Utils.addSuffixToBaseName(clusterName, defaultColo), service1, "/"+service1, null);
+    verifyServiceProperties(clusterName, service1, "/"+service1, null);
     verifyServiceProperties(D2Utils.getSymlinkNameForMaster(clusterName), service2, "/"+service2, null, true);
   }
 
@@ -1776,36 +2277,36 @@ public class TestD2Config
     final String clusterVariantName = "clusterVariant";
     final String serviceGroupName = "serviceGroup";
 
-    List<String> serviceList = new ArrayList<String>();
+    List<String> serviceList = new ArrayList<>();
     serviceList.add(service1);
     serviceList.add(service2);
 
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>();
+    Map<String, List<String>> clustersData = new HashMap<>();
     clustersData.put(clusterName, serviceList);
 
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add(masterColo);
     peerColos.add(defaultColo);
     @SuppressWarnings("serial")
-    Map<String,Object> clusterVariants = new HashMap<String,Object>()
+    Map<String, Object> clusterVariants = new HashMap<String, Object>()
     {{
-        put(clusterVariantName,new HashMap<String,Object>());
-      }};
+        put(clusterVariantName, new HashMap<>());
+    }};
 
     clusterProperties.put(PropertyKeys.COLO_VARIANTS, peerColos);
     clusterProperties.put(PropertyKeys.MASTER_COLO, "MASTER_MANAGED_EXTERNALLY");
     clusterProperties.put(PropertyKeys.CLUSTER_VARIANTS, clusterVariants);
     clusterProperties.put(PropertyKeys.ENABLE_SYMLINK, "true");
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(clusterName, clusterProperties);
     @SuppressWarnings("serial")
-    Map<String,Object> serviceGroup = new HashMap<String,Object>()
+    Map<String, Object> serviceGroup = new HashMap<String, Object>()
     {{
         put(PropertyKeys.TYPE, PropertyKeys.CLUSTER_VARIANTS_LIST);
-        put(PropertyKeys.CLUSTER_LIST, Arrays.asList(new String[]{clusterVariantName}));
-      }};
-    Map<String, Object> serviceVariants = new HashMap<String, Object>();
+        put(PropertyKeys.CLUSTER_LIST, Arrays.asList(clusterVariantName));
+    }};
+    Map<String, Object> serviceVariants = new HashMap<>();
     serviceVariants.put(serviceGroupName, serviceGroup);
 
     Set<String> servicesWithDefaultRoutingToMaster = Collections.singleton(service2);
@@ -1819,19 +2320,19 @@ public class TestD2Config
     verifyServiceProperties(D2Utils.getSymlinkNameForMaster(clusterVariantName), D2Utils.addMasterToBaseName(service1), "/"+service1, serviceGroupName);
     verifyServiceProperties(D2Utils.getSymlinkNameForMaster(clusterVariantName), D2Utils.addMasterToBaseName(service2), "/"+service2, serviceGroupName);
     // verify default routing
-    verifyServiceProperties(D2Utils.addSuffixToBaseName(clusterVariantName, defaultColo), service1, "/"+service1, serviceGroupName);
+    verifyServiceProperties(clusterVariantName, service1, "/"+service1, serviceGroupName);
     verifyServiceProperties(D2Utils.getSymlinkNameForMaster(clusterVariantName), service2, "/"+service2, serviceGroupName, true);
   }
 
   @Test
   public static void testWithDefaultClusterInFullListMode() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    Map<String, Object> clusterServiceConfigurations = new HashMap<String, Object>();
-    Map<String, Object> serviceVariants = new HashMap<String, Object>();
+    Map<String, Object> clusterServiceConfigurations = new HashMap<>();
+    Map<String, Object> serviceVariants = new HashMap<>();
 
     //Cluster Service Configurations
     // Services With Variants
-    Map<String,Object> services = new HashMap<String,Object>();
+    Map<String, Object> services = new HashMap<>();
     services.put("services",D2ConfigTestUtil.generateServicesMap(1, "service", "testService"));
 
     // We omit adding cluster variants to the cluster.
@@ -1842,10 +2343,10 @@ public class TestD2Config
     // Cluster variants
     // serviceGroup1
     @SuppressWarnings("serial")
-    Map<String,Object> serviceGroup1 = new HashMap<String,Object>()
+    Map<String, Object> serviceGroup1 = new HashMap<String, Object>()
     {{
         put("type", "fullClusterList");
-        put("clusterList", Arrays.asList(new String[]{"zServices"}));
+        put("clusterList", Arrays.asList("zServices"));
       }};
 
     serviceVariants.put("ServiceGroup1", serviceGroup1);
@@ -1864,27 +2365,26 @@ public class TestD2Config
   @Test
   public static void testDefaultClusterWithColoInFullListMode() throws IOException, InterruptedException, URISyntaxException, Exception
   {
-    // Map<String, Object> clusterServiceConfigurations = new HashMap<String, Object>();
-    Map<String, Object> serviceVariants = new HashMap<String, Object>();
+    Map<String, Object> serviceVariants = new HashMap<>();
     final String clusterName = "zServices";
 
     //Cluster Service Configurations
     // Services With Variants
     @SuppressWarnings("serial")
-    Map<String,List<String>> clustersData = new HashMap<String,List<String>>()
+    Map<String, List<String>> clustersData = new HashMap<String, List<String>>()
     {{
-        put(clusterName, Arrays.asList(new String[]{"service-1"}));
-      }};
+        put(clusterName, Arrays.asList("service-1"));
+    }};
 
     // Colo configs
-    Map<String,Object> clusterProperties = new HashMap<String,Object>();
-    List<String> peerColos = new ArrayList<String>();
+    Map<String, Object> clusterProperties = new HashMap<>();
+    List<String> peerColos = new ArrayList<>();
     peerColos.add("WestCoast");
     peerColos.add("EastCoast");
     clusterProperties.put("coloVariants", peerColos);
     String masterColo = "WestCoast";
     clusterProperties.put("masterColo", masterColo);
-    Map<String,Map<String,Object>> clustersProperties = new HashMap<String,Map<String,Object>>();
+    Map<String, Map<String, Object>> clustersProperties = new HashMap<>();
     clustersProperties.put(clusterName, clusterProperties);
     String defaultColo = "EastCoast";
     // We omit adding cluster variants to the cluster.
@@ -1893,11 +2393,11 @@ public class TestD2Config
     // serviceGroup1
     @SuppressWarnings("serial")
 
-    Map<String,Object> serviceGroup1 = new HashMap<String,Object>()
+    Map<String, Object> serviceGroup1 = new HashMap<String, Object>()
     {{
         put("type", "fullClusterList");
-        put("clusterList", Arrays.asList(new String[]{"zServices"}));
-      }};
+        put("clusterList", Arrays.asList("zServices"));
+    }};
 
     serviceVariants.put("ServiceGroup1", serviceGroup1);
 
@@ -1906,7 +2406,7 @@ public class TestD2Config
 
     assertEquals(d2Conf.runDiscovery(_zkHosts), 0);
 
-    verifyServiceProperties("zServices-EastCoast", "service-1", "/service-1", "ServiceGroup1");
+    verifyServiceProperties("zServices", "service-1", "/service-1", "ServiceGroup1");
     verifyServiceProperties("zServices-EastCoast", "service-1-EastCoast", "/service-1", "ServiceGroup1");
     verifyServiceProperties("zServices-WestCoast", "service-1-WestCoast", "/service-1", "ServiceGroup1");
     verifyServiceProperties("zServices-WestCoast", "service-1Master", "/service-1", "ServiceGroup1");
@@ -1973,7 +2473,7 @@ public class TestD2Config
           // yes, we don't need to check the masterServiceName for each service, but there's no harm
           String masterClusterName = D2Utils.addSuffixToBaseName(clusterName, ("".matches(colo) ? null :masterColo));
           String masterServiceName = D2Utils.addSuffixToBaseName(serviceName, ("".matches(colo) ? null :masterColo));
-          String defaultClusterName = D2Utils.addSuffixToBaseName(clusterName, ("".matches(colo) ? null : defaultColo));
+          String defaultClusterName = clusterName;
           verifyServiceProperties(coloClusterName, coloServiceName, "/" + serviceName, null);
           verifyServiceProperties(masterClusterName, masterServiceName, "/" + serviceName, null);
           verifyServiceProperties(defaultClusterName, serviceName, "/" + serviceName, null);
@@ -2009,7 +2509,7 @@ public class TestD2Config
     if (peerColos == null || peerColos.isEmpty())
     {
       // we add an empty String because we want to iterate the default colo
-      peerColos = new ArrayList<String>();
+      peerColos = new ArrayList<>();
       peerColos.add("");
     }
     return peerColos;

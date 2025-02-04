@@ -18,13 +18,15 @@ package com.linkedin.pegasus.generator.spec;
 
 
 import com.linkedin.data.schema.ArrayDataSchema;
+import com.linkedin.data.schema.BindingInfo;
 import com.linkedin.data.schema.DataSchema;
-import com.linkedin.data.schema.EnumDataSchema;
 import com.linkedin.data.schema.FixedDataSchema;
 import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.data.schema.PrimitiveDataSchema;
 import com.linkedin.data.schema.RecordDataSchema;
+import com.linkedin.data.schema.SchemaFormatType;
 import com.linkedin.data.schema.TyperefDataSchema;
+import com.linkedin.data.schema.EnumDataSchema;
 import com.linkedin.data.schema.UnionDataSchema;
 
 import java.util.Arrays;
@@ -35,13 +37,14 @@ import java.util.Set;
 /**
  * @author Keren Jin
  */
-public class ClassTemplateSpec
+public class ClassTemplateSpec implements BindingInfo
 {
   private DataSchema _schema;
   private TyperefDataSchema _originalTyperefSchema;
   private ClassTemplateSpec _enclosingClass;
   private String _namespace;
   private String _className;
+  private String _package;
   private Set<ModifierSpec> _modifiers;
   private String _location;
 
@@ -125,6 +128,17 @@ public class ClassTemplateSpec
     this._namespace = namespace;
   }
 
+  @Override
+  public String getPackage()
+  {
+    return (_package == null || _package.isEmpty()) ? _namespace : _package;
+  }
+
+  public void setPackage(String packageName)
+  {
+    _package = packageName;
+  }
+
   public String getClassName()
   {
     return _className;
@@ -142,7 +156,7 @@ public class ClassTemplateSpec
 
   public void setModifiers(ModifierSpec... modifiers)
   {
-    _modifiers = new HashSet<ModifierSpec>(Arrays.asList(modifiers));
+    _modifiers = new HashSet<>(Arrays.asList(modifiers));
   }
 
   public String getLocation()
@@ -157,12 +171,31 @@ public class ClassTemplateSpec
 
   public String getFullName()
   {
-    return (_namespace == null ? "" : _namespace + ".") + _className;
+    return (_namespace == null || _namespace.isEmpty()) ? _className : _namespace + "." + _className;
+  }
+
+  @Override
+  public String getBindingName() {
+    return (_package == null || _package.isEmpty()) ? getFullName() : _package + "." + _className;
   }
 
   public void setFullName(String fullName)
   {
-    _namespace = fullName.substring(0, fullName.lastIndexOf('.'));
-    _className = fullName.substring(_namespace.length() + 1);
+    final int dotIndex = fullName.lastIndexOf('.');
+    _namespace = dotIndex == -1 ? null : fullName.substring(0, dotIndex);
+    _className = fullName.substring(dotIndex + 1);
+  }
+
+  /**
+   * Returns the schema format in which this template's type was originally encoded, or null if it's indeterminable.
+   * @return schema format type or null
+   */
+  public SchemaFormatType getSourceFileFormat()
+  {
+    if (_enclosingClass != null)
+    {
+      return _enclosingClass.getSourceFileFormat();
+    }
+    return SchemaFormatType.fromFilename(_location);
   }
 }

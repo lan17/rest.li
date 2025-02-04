@@ -14,22 +14,22 @@
    limitations under the License.
 */
 
-/**
- * $Id: $
- */
-
 package com.linkedin.data.transform.filter.request;
 
 import com.linkedin.data.DataMap;
+import com.linkedin.data.schema.MaskMap;
 import com.linkedin.data.schema.PathSpec;
 import com.linkedin.data.transform.DataComplexProcessor;
 import com.linkedin.data.transform.DataProcessingException;
 import com.linkedin.data.transform.Escaper;
+import com.linkedin.data.transform.filter.FilterConstants;
 import com.linkedin.data.transform.filter.MaskComposition;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+
 
 /**
  * @author Josh Walker
@@ -44,14 +44,14 @@ import java.util.Map;
  * The semantics of applying a MaskTree to a DataMap are documented in {@link com.linkedin.data.transform.DataComplexProcessor}
  */
 
-public class MaskTree
+public class MaskTree extends MaskMap
 {
   /**
    * Initialize a new {@link MaskTree}.
    */
   public MaskTree()
   {
-    _representation = new DataMap();
+    super();
   }
 
   /**
@@ -61,7 +61,7 @@ public class MaskTree
    */
   public MaskTree(DataMap rep)
   {
-    _representation = rep;
+    super(rep);
   }
 
   /**
@@ -73,7 +73,7 @@ public class MaskTree
   public void addOperation(PathSpec path, MaskOperation op)
   {
     List<String> segments = path.getPathComponents();
-
+    Map<String, Object> attributes = path.getPathAttributes();
 
     final DataMap fieldMask = new DataMap();
     DataMap map = fieldMask;  //map variable contains DataMap, into which current segment will be put
@@ -84,8 +84,30 @@ public class MaskTree
       map.put(segment, childMap);
       map = childMap;
     }
+
     String lastSegment = Escaper.escapePathSegment(segments.get(segments.size()-1));
-    map.put(lastSegment, op.getRepresentation());
+
+    Object start = attributes.get(PathSpec.ATTR_ARRAY_START);
+    Object count = attributes.get(PathSpec.ATTR_ARRAY_COUNT);
+    if (start != null || count != null)
+    {
+      DataMap childMap = new DataMap();
+      map.put(lastSegment, childMap);
+
+      if (start != null)
+      {
+        childMap.put(FilterConstants.START, start);
+      }
+
+      if (count != null)
+      {
+        childMap.put(FilterConstants.COUNT, count);
+      }
+    }
+    else
+    {
+      map.put(lastSegment, op.getRepresentation());
+    }
 
     //compose existing tree with mask for specific field
     try
@@ -105,18 +127,9 @@ public class MaskTree
    */
   public Map<PathSpec, MaskOperation> getOperations()
   {
-    Map<PathSpec, MaskOperation> result = new HashMap<PathSpec, MaskOperation>();
+    Map<PathSpec, MaskOperation> result = new HashMap<>();
     getOperationsImpl(_representation, PathSpec.emptyPath(), result);
     return result;
-  }
-
-  /**
-   * Returning the underlying representation of this {@link MaskTree}.
-   * @return the {@link DataMap} representing this MaskTree
-   */
-  public DataMap getDataMap()
-  {
-    return _representation;
   }
 
   private void getOperationsImpl(DataMap data, PathSpec path, Map<PathSpec, MaskOperation> result)
@@ -124,6 +137,12 @@ public class MaskTree
     for (Map.Entry<String, Object> entry : data.entrySet())
     {
       String segment = Escaper.unescapePathSegment(entry.getKey());
+      // Ignore if the segment is $start or $count, as we have already taken care of the array ranges
+      if (FilterConstants.START.equals(segment) || FilterConstants.COUNT.equals(segment))
+      {
+        continue;
+      }
+
       PathSpec subpath = new PathSpec(path.getPathComponents(), segment);
       Object value = entry.getValue();
       if (value instanceof Integer)
@@ -143,7 +162,12 @@ public class MaskTree
       }
       else if (value.getClass() == DataMap.class)
       {
-        getOperationsImpl((DataMap) value, subpath, result);
+        DataMap subMask = (DataMap) value;
+
+        Optional<PathSpec> pathWithAttributes = addArrayRangeAttributes(subMask, subpath);
+        pathWithAttributes.ifPresent(p -> result.put(p, MaskOperation.POSITIVE_MASK_OP));
+
+        getOperationsImpl(subMask, subpath, result);
       }
       else
       {
@@ -152,11 +176,24 @@ public class MaskTree
     }
   }
 
-  @Override
-  public String toString()
+  /**
+   * If the specified mask contains array range attributes, add them to the pathSpec parameter and return the updated
+   * pathSpec. If the mask doesn't have any array range attributes return an empty Optional.
+   */
+  private Optional<PathSpec> addArrayRangeAttributes(DataMap mask, PathSpec pathSpec)
   {
-    return _representation.toString();
-  }
+    Object start = mask.get(FilterConstants.START);
+    if (start != null)
+    {
+      pathSpec.setAttribute(PathSpec.ATTR_ARRAY_START, start);
+    }
 
-  private DataMap _representation;
+    Object count = mask.get(FilterConstants.COUNT);
+    if (count != null)
+    {
+      pathSpec.setAttribute(PathSpec.ATTR_ARRAY_COUNT, count);
+    }
+
+    return (start != null || count != null) ? Optional.of(pathSpec) : Optional.empty();
+  }
 }

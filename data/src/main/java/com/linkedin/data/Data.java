@@ -16,17 +16,17 @@
 
 package com.linkedin.data;
 
-
 import com.linkedin.util.ArgumentUtil;
+import java.io.Closeable;
 import java.io.IOException;
 import java.nio.charset.Charset;
-import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
 import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.IdentityHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 
 /**
@@ -50,7 +50,7 @@ import java.util.Map;
  * Null is not a valid Data object.
  * <p>
  *
- * Two are two ways to copy a complex object, one is
+ * There are two ways to copy a complex object, one is
  * shallow copy and the other is a deep copy. A shallow copy only
  * copies the internal state of the complex object. For a {@link DataMap},
  * it logically copies the entries that relates keys to values,
@@ -62,14 +62,13 @@ import java.util.Map;
  *
  * A deep copy copies both the internal state and referenced complex
  * objects recursively. To keep track of complex objects that are referenced
- * more than once in the object graph and also to avoid infinite loops in
+ * more than once in the object graph, and also to avoid infinite loops in
  * recursive traversal of a non-acyclic object graph, a deep copy
  * keeps track of complex objects that have been copied.
- * The {@link DataComplex#copy()} method performs a deep copy, its implementation depends
- * on {@link DataComplex#clone()}, {@link Data#copy(Object, IdentityHashMap)}
- * and {@link DataComplex#copyReferencedObjects(IdentityHashMap)}.
- * The {@link IdentityHashMap} is used to track the complex objects
- * have already been copied.
+ * The {@link DataComplex#copy()} method performs a deep copy; its implementations depend
+ * on {@link Data#copy(Object, DataComplexTable)}.
+ * The {@link DataComplexTable} is used to track the complex objects
+ * that have already been copied.
  * <p>
  *
  * Primitive objects are immutable, neither deep copy nor shallow copy
@@ -95,7 +94,7 @@ import java.util.Map;
  * (following the Avro specification.)
  * <p>
  *
- * @see #copy(Object, IdentityHashMap)
+ * @see #copy(Object, DataComplexTable)
  * @see DataList
  * @see DataMap
  *
@@ -104,6 +103,49 @@ import java.util.Map;
 public class Data
 {
   /**
+   * Placeholder object populated inside {@link DataList#isTraversing()} or {@link DataMap#isTraversing()} by the
+   * default implementation of {@link CycleChecker} to indicate that the given {@link DataList} or {@link DataMap}
+   * is being traversed.
+   */
+  private static final Object TRAVERSAL_INDICATOR = new Object();
+
+  /**
+   * A no-op cycle checker.
+   */
+  private static final CycleChecker NO_OP_CYCLE_CHECKER = new CycleChecker() {};
+
+  /**
+   * Supplier for cycle checker used when traversing instances using a {@link Data.TraverseCallback}. Applications can
+   * choose to replace this with a supplier vending custom implementations, at their own risk of ensuring correctness.
+   *
+   * <p>The default implementation uses a {@link ThreadLocal} in every {@link DataList} and {@link DataMap} to detect
+   * and record cycles when assertions are enabled, and does NO checks when assertions are disabled.</p>
+   */
+  private static Supplier<CycleChecker> CYCLE_CHECKER_SUPPLIER = () -> {
+    boolean assertionsEnabled = false;
+    assert assertionsEnabled = true;
+    return assertionsEnabled ? DefaultCycleChecker.SHARED_INSTANCE : NO_OP_CYCLE_CHECKER;
+  };
+
+  /**
+   * Override the default cycle checker supplier. Applications using this assume responsibility for correctness of their
+   * {@link CycleChecker} implementations provided by this supplier.
+   *
+   * @param supplier The cycle checker supplier to use. Should not be null.
+   *
+   * @throws IllegalArgumentException if a null supplier is passed in.
+   */
+  public static void setCycleCheckerSupplier(Supplier<CycleChecker> supplier)
+  {
+    if (supplier == null)
+    {
+      throw new IllegalArgumentException("Cycle checker supplier cannot be null");
+    }
+
+    CYCLE_CHECKER_SUPPLIER = supplier;
+  }
+
+  /**
    * Constant value used to indicate that a null value was de-serialized.
    */
   public static final Null NULL = Null.getInstance();
@@ -111,7 +153,121 @@ public class Data
   /**
    * Charset UTF-8
    */
-  public static final Charset UTF_8_CHARSET = Charset.forName("UTF-8");
+  public static final Charset UTF_8_CHARSET = StandardCharsets.UTF_8;
+
+  /**
+   * A map of all underlying types supported by Data objects.
+   */
+  public static final Map<Class<?>, Byte> TYPE_MAP = new HashMap<>();
+  static
+  {
+    TYPE_MAP.put(String.class, (byte) 1);
+    TYPE_MAP.put(Integer.class, (byte) 2);
+    TYPE_MAP.put(DataMap.class, (byte) 3);
+    TYPE_MAP.put(DataList.class, (byte) 4);
+    TYPE_MAP.put(Boolean.class, (byte) 5);
+    TYPE_MAP.put(Long.class, (byte) 6);
+    TYPE_MAP.put(Float.class, (byte) 7);
+    TYPE_MAP.put(Double.class, (byte) 8);
+    TYPE_MAP.put(ByteString.class, (byte) 9);
+  }
+
+  /**
+   * Interface to be implemented by cycle checkers.
+   */
+  public interface CycleChecker
+  {
+    /**
+     * Invoked when the start of {@link DataMap} is traversed.
+     *
+     * @param map provides the {@link DataMap} to be traversed.
+     *
+     * @throws IOException If a cycle was detected when processing this.
+     */
+    default void startMap(DataMap map) throws IOException
+    {
+
+    }
+
+    /**
+     * Invoked when the end of {@link DataMap} is traversed.
+     *
+     * @param map provides the {@link DataMap} that ended traversal.
+     *
+     * @throws IOException If a cycle was detected when processing this.
+     */
+    default void endMap(DataMap map) throws IOException
+    {
+
+    }
+
+    /**
+     * Invoked when the start of {@link DataList} is traversed.
+     *
+     * @param list provides the {@link DataList} to be traversed.
+     *
+     * @throws IOException If a cycle was detected when processing this.
+     */
+    default void startList(DataList list) throws IOException
+    {
+
+    }
+
+    /**
+     * Invoked when the end of {@link DataList} is traversed.
+     *
+     * @param list provides the {@link DataList} that ended traversal.
+     *
+     * @throws IOException If a cycle was detected when processing this.
+     */
+    default void endList(DataList list) throws IOException
+    {
+
+    }
+  }
+
+  /**
+   * The default {@link CycleChecker} implementation that leverages {@link DataList#isTraversing()} and
+   * {@link DataMap#isTraversing()} to detect cycles.
+   */
+  private static class DefaultCycleChecker implements CycleChecker
+  {
+    private static final CycleChecker SHARED_INSTANCE = new DefaultCycleChecker();
+
+    @Override
+    public void startMap(DataMap map) throws IOException
+    {
+      if (map.isTraversing().get() == TRAVERSAL_INDICATOR)
+      {
+        throw new IOException("Cycle detected!");
+      }
+
+      map.isTraversing().set(TRAVERSAL_INDICATOR);
+    }
+
+    @Override
+    public void endMap(DataMap map) throws IOException
+    {
+      map.isTraversing().set(null);
+    }
+
+    @Override
+    public void startList(DataList list) throws IOException
+    {
+      if (list.isTraversing().get() == TRAVERSAL_INDICATOR)
+      {
+        throw new IOException("Cycle detected!");
+      }
+
+      list.isTraversing().set(TRAVERSAL_INDICATOR);
+    }
+
+    @Override
+    public void endList(DataList list) throws IOException
+    {
+      list.isTraversing().set(null);
+    }
+  }
 
   /**
    * Callback interface invoked by traverse method.
@@ -126,74 +282,92 @@ public class Data
    * @see #traverse(Object obj, TraverseCallback callback)
    * @author slim
    */
-  public interface TraverseCallback
+  public interface TraverseCallback extends Closeable
   {
     /**
      * Return an {@link Iterable} with the
      * desired output order of the entries in the traversed {@link DataMap}.
      *
-     * If the order is not significant, then this method should return
-     * the result of {@link DataMap#entrySet()}.
+     * If the order is not significant, then this method should return null.
      *
      * @param map provides the {@link DataMap}.
-     * @return entries of the {@link DataMap} entries in the desired output order.
+     * @return entries of the {@link DataMap} entries in the desired output order, null to use the default map ordering.
      */
-    Iterable<Map.Entry<String,Object>> orderMap(DataMap map);
+    default Iterable<Map.Entry<String, Object>> orderMap(DataMap map)
+    {
+      return null;
+    }
 
     /**
      * Invoked when a null value is traversed.
      * This should not happen.
      */
-    void nullValue() throws IOException;
+    default void nullValue() throws IOException
+    {
+    }
 
     /**
      * Invoked when a boolean value is traversed.
      *
      * @param value the boolean value.
      */
-    void booleanValue(boolean value) throws IOException;
+    default void booleanValue(boolean value) throws IOException
+    {
+    }
 
     /**
      * Invoked when a integer value is traversed.
      *
      * @param value the integer value.
      */
-    void integerValue(int value) throws IOException;
+    default void integerValue(int value) throws IOException
+    {
+    }
 
     /**
      * Invoked when a long value is traversed.
      *
      * @param value the long value.
      */
-    void longValue(long value) throws IOException;
+    default void longValue(long value) throws IOException
+    {
+    }
 
     /**
      * Invoked when a float value is traversed.
      *
      * @param value the float value.
      */
-    void floatValue(float value) throws IOException;
+    default void floatValue(float value) throws IOException
+    {
+    }
 
     /**
      * Invoked when a double value is traversed.
      *
      * @param value the double value.
      */
-    void doubleValue(double value) throws IOException;
+    default void doubleValue(double value) throws IOException
+    {
+    }
 
     /**
      * Invoked when a string value is traversed.
      *
      * @param value the string value.
      */
-    void stringValue(String value) throws IOException;
+    default void stringValue(String value) throws IOException
+    {
+    }
 
     /**
      * Invoked when a {@link ByteString} value is traversed.
      *
      * @param value the string value.
      */
-    void byteStringValue(ByteString value) throws IOException;
+    default void byteStringValue(ByteString value) throws IOException
+    {
+    }
 
     /**
      * Invoked when an illegal value is traversed.
@@ -201,7 +375,9 @@ public class Data
      *
      * @param value the illegal value.
      */
-    void illegalValue(Object value) throws IOException;
+    default void illegalValue(Object value) throws IOException
+    {
+    }
 
     /**
      * Invoked when an empty {@link DataMap} is traversed.
@@ -209,14 +385,18 @@ public class Data
      * and {@link #endMap} callbacks will not
      * be invoked for an empty {@link DataMap}.
      */
-    void emptyMap() throws IOException;
+    default void emptyMap() throws IOException
+    {
+    }
 
     /**
      * Invoked when the start of {@link DataMap} is traversed.
      *
      * @param map provides the {@link DataMap}to be traversed.
      */
-    void startMap(DataMap map) throws IOException;
+    default void startMap(DataMap map) throws IOException
+    {
+    }
 
     /**
      * Invoked when the key of {@link DataMap} entry is traversed.
@@ -224,12 +404,26 @@ public class Data
      *
      * @param key of the {@link DataMap} entry.
      */
-    void key(String key) throws IOException;
+    default void key(String key) throws IOException
+    {
+    }
+
+    /**
+     * Invoked when the key of {@link DataMap} entry is finished being traversed.
+     * This callback is invoked after the value callback.
+     *
+     * @param key of the {@link DataMap} entry.
+     */
+    default void endKey(String key) throws IOException
+    {
+    }
 
     /**
      * Invoked when the end of {@link DataMap} is traversed.
      */
-    void endMap() throws IOException;
+    default void endMap() throws IOException
+    {
+    }
 
     /**
      * Invoked when an empty list is traversed.
@@ -237,14 +431,18 @@ public class Data
      * {@link #endList} callbacks will not
      * be invoked for an empty {@link DataList}.
      */
-    void emptyList() throws IOException;
+    default void emptyList() throws IOException
+    {
+    }
 
     /**
      * Invoked when the start of a {@link DataList} is traversed.
      *
      * @param list provides the {@link DataList}to be traversed.
      */
-    void startList(DataList list) throws IOException;
+    default void startList(DataList list) throws IOException
+    {
+    }
 
     /**
      * Invoked to provide the index of the next {@link DataList} entry.
@@ -252,12 +450,21 @@ public class Data
      *
      * @param index of the next {@link DataList} entry, starts from 0.
      */
-    void index(int index) throws IOException;
+    default void index(int index) throws IOException
+    {
+    }
 
     /**
      * Invoked when the end of a {@link DataList} is traversed.
      */
-    void endList() throws IOException;
+    default void endList() throws IOException
+    {
+    }
+
+    @Override
+    default void close() throws IOException
+    {
+    }
   }
 
   /**
@@ -268,86 +475,177 @@ public class Data
    */
   public static void traverse(Object obj, TraverseCallback callback) throws IOException
   {
+    CycleChecker cycleChecker = CYCLE_CHECKER_SUPPLIER.get();
+    if (cycleChecker == null)
+    {
+      throw new IllegalArgumentException("Supplier returned a null cycle checker");
+    }
+
+    traverse(obj, callback, cycleChecker);
+  }
+
+  /**
+   * Traverse object and invoke the callback object with parse events with the given cycle checker.
+   *
+   * @param obj object to parse
+   * @param callback to receive parse events.
+   * @param cycleChecker to detect cycles when processing the object
+   */
+  private static void traverse(Object obj, TraverseCallback callback, CycleChecker cycleChecker) throws IOException
+  {
     if (obj == null || obj == Data.NULL)
     {
       callback.nullValue();
       return;
     }
 
-    /* Expecting string and integer to be most popular */
-    Class<?> clas = obj.getClass();
-    if (clas == String.class)
+    // We intentionally use a string switch here for performance.
+    switch (obj.getClass().getName())
     {
-      callback.stringValue((String) obj);
-    }
-    else if (clas == Integer.class)
-    {
-      callback.integerValue((Integer) obj);
-    }
-    else if (clas == DataMap.class)
-    {
-      DataMap map = (DataMap) obj;
-      if (map.isEmpty())
+      case "java.lang.String":
+        callback.stringValue((String) obj);
+        return;
+      case "java.lang.Integer":
+        callback.integerValue((Integer) obj);
+        return;
+      case "com.linkedin.data.DataMap":
       {
-        callback.emptyMap();
-      }
-      else
-      {
-        callback.startMap(map);
-        Iterable<Map.Entry<String,Object>> orderedEntrySet = callback.orderMap(map);
-        for (Map.Entry<String,Object> e : orderedEntrySet)
+        DataMap map = (DataMap) obj;
+        if (map.isEmpty())
         {
-          String key = e.getKey();
-          callback.key(key);
-          traverse(e.getValue(), callback);
+          callback.emptyMap();
         }
-        callback.endMap();
-      }
-    }
-    else if (clas == DataList.class)
-    {
-      DataList list = (DataList) obj;
-      if (list.isEmpty())
-      {
-        callback.emptyList();
-      }
-      else
-      {
-        callback.startList(list);
-        int index = 0;
-        for (Object o : list)
+        else
         {
-          callback.index(index);
-          ++index;
-          traverse(o, callback);
+          try
+          {
+            cycleChecker.startMap(map);
+            callback.startMap(map);
+            Iterable<Map.Entry<String, Object>> orderedEntrySet = callback.orderMap(map);
+
+            //
+            // If the ordered entry set is null, use Java 8 forEach to avoid intermediary object
+            // creation for better performance.
+            //
+            if (orderedEntrySet == null)
+            {
+              try
+              {
+                map.forEach((key, value) ->
+                {
+                  try
+                  {
+                    callback.key(key);
+                    traverse(value, callback, cycleChecker);
+                    callback.endKey(key);
+                  }
+                  catch (IOException e)
+                  {
+                    throw new IllegalStateException(e);
+                  }
+                });
+              }
+              catch (IllegalStateException e)
+              {
+                if (e.getCause() instanceof IOException)
+                {
+                  throw (IOException) e.getCause();
+                }
+                else
+                {
+                  throw new IOException(e);
+                }
+              }
+            }
+            else
+            {
+              for (Map.Entry<String, Object> entry : orderedEntrySet)
+              {
+                callback.key(entry.getKey());
+                traverse(entry.getValue(), callback, cycleChecker);
+                callback.endKey(entry.getKey());
+              }
+            }
+
+            callback.endMap();
+          }
+          finally
+          {
+            cycleChecker.endMap(map);
+          }
         }
-        callback.endList();
+        return;
       }
+      case "com.linkedin.data.DataList":
+      {
+        DataList list = (DataList) obj;
+        if (list.isEmpty())
+        {
+          callback.emptyList();
+        }
+        else
+        {
+          try
+          {
+            cycleChecker.startList(list);
+            callback.startList(list);
+
+            // Use Java 8 forEach to minimize intermediary object creation for better performance.
+            final int[] index = {0};
+            try
+            {
+              list.forEach((element) ->
+              {
+                try
+                {
+                  callback.index(index[0]);
+                  traverse(element, callback, cycleChecker);
+                  index[0]++;
+                }
+                catch (IOException e)
+                {
+                  throw new IllegalStateException(e);
+                }
+              });
+            }
+            catch (IllegalStateException e)
+            {
+              if (e.getCause() instanceof IOException)
+              {
+                throw (IOException) e.getCause();
+              }
+              else
+              {
+                throw new IOException(e);
+              }
+            }
+            callback.endList();
+          }
+          finally
+          {
+            cycleChecker.endList(list);
+          }
+        }
+        return;
+      }
+      case "java.lang.Boolean":
+        callback.booleanValue((Boolean) obj);
+        return;
+      case "java.lang.Long":
+        callback.longValue((Long) obj);
+        return;
+      case "java.lang.Float":
+        callback.floatValue((Float) obj);
+        return;
+      case "java.lang.Double":
+        callback.doubleValue((Double) obj);
+        return;
+      case "com.linkedin.data.ByteString":
+        callback.byteStringValue((ByteString) obj);
+        return;
     }
-    else if (clas == Boolean.class)
-    {
-      callback.booleanValue((Boolean) obj);
-    }
-    else if (clas == Long.class)
-    {
-      callback.longValue((Long) obj);
-    }
-    else if (clas == Float.class)
-    {
-      callback.floatValue((Float) obj);
-    }
-    else if (clas == Double.class)
-    {
-      callback.doubleValue((Double) obj);
-    }
-    else if (clas == ByteString.class)
-    {
-      callback.byteStringValue((ByteString) obj);
-    }
-    else
-    {
-      callback.illegalValue(obj);
-    }
+
+    callback.illegalValue(obj);
   }
 
   /**
@@ -392,20 +690,9 @@ public class Data
    * @param map provide the {@link DataMap}.
    * @return a list of the entries of the {@link DataMap} sorted by the map's keys.
    */
-  public static List<Map.Entry<String,Object>> orderMapEntries(DataMap map)
+  public static List<Map.Entry<String, Object>> orderMapEntries(DataMap map)
   {
-    List<Map.Entry<String,Object>> copy = new ArrayList<Map.Entry<String,Object>>(map.entrySet());
-    Collections.sort(copy,
-                     new Comparator<Map.Entry<String, Object>>()
-                     {
-                       @Override
-                       public int compare(Map.Entry<String, Object> o1,
-                                          Map.Entry<String, Object> o2)
-                       {
-                         return o1.getKey().compareTo(o2.getKey());
-                       }
-                     });
-    return copy;
+    return map.entrySet().stream().sorted(Map.Entry.comparingByKey()).collect(Collectors.toList());
   }
 
   /**
@@ -665,7 +952,7 @@ public class Data
    */
   static boolean isAllowedClass(Class<?> clas)
   {
-    return (isPrimitiveClass(clas) || isComplexClass(clas));
+    return isPrimitiveClass(clas) || isComplexClass(clas);
   }
   /**
    * Return whether the input object is primitive object.
@@ -742,7 +1029,7 @@ public class Data
    * @return the copy.
    * @throws CloneNotSupportedException if the complex object cannot be deep copied.
    */
-  static <T> T copy(T object, IdentityHashMap<DataComplex, DataComplex> alreadyCopied) throws CloneNotSupportedException
+  static <T> T copy(T object, DataComplexTable alreadyCopied) throws CloneNotSupportedException
   {
     if (object == null)
     {
@@ -750,18 +1037,28 @@ public class Data
     }
     else if (isComplex(object))
     {
+      DataComplex src = (DataComplex) object;
+
       @SuppressWarnings("unchecked")
-      T found = (T) alreadyCopied.get(object);
+      T found = (T) alreadyCopied.get(src);
+
       if (found != null)
       {
         return found;
       }
       else
       {
-        DataComplex src = (DataComplex) object;
         DataComplex clone = src.clone();
         alreadyCopied.put(src, clone);
-        clone.copyReferencedObjects(alreadyCopied);
+
+        if (clone instanceof DataMap)
+        {
+          ((DataMap)clone).copyReferencedObjects(alreadyCopied);
+        }
+        else if (clone instanceof DataList)
+        {
+          ((DataList)clone).copyReferencedObjects(alreadyCopied);
+        }
 
         @SuppressWarnings("unchecked")
         T converted = (T) clone;
@@ -777,6 +1074,7 @@ public class Data
       throw new CloneNotSupportedException("Illegal value encountered: " + object);
     }
   }
+
   /**
    * Make a Data object and its contained mutable Data objects read-only.
    *
@@ -805,13 +1103,53 @@ public class Data
    */
   public static String bytesToString(byte[] input, int offset, int length)
   {
-    ArgumentUtil.checkBounds(input.length, offset, length);
+    return new String(bytesToCharArray(input, offset, length));
+  }
+
+  /**
+   * Get character array from bytes following Avro convention.
+   *
+   * This method expands each byte into a character in the output array by encoding
+   * the byte's value into the least significant 8-bits of the character. The returned
+   * array will have the same length as the byte array, i.e. if there are 8 bytes in
+   * the byte array, the array will have 8 characters.
+   *
+   * @param input byte array to get characters from.
+   * @param offset the offset to read in the input byte array
+   * @param length the length to read in the input byte array
+   * @return array whose least significant 8-bits of each character represents one byte.
+   */
+  public static char[] bytesToCharArray(byte[] input, int offset, int length)
+  {
     char[] charArray = new char[length];
-    for (int i = 0; i < length; ++i)
+    bytesToCharArray(input, offset, length, charArray, 0);
+
+    return charArray;
+  }
+
+  /**
+   * Store character array retrieved from bytes following Avro convention.
+   *
+   * This method expands each byte into a character in the output array by encoding
+   * the byte's value into the least significant 8-bits of the character. The returned
+   * array will have the same length as the byte array, i.e. if there are 8 bytes in
+   * the byte array, the array will have 8 characters.
+   *
+   * @param input byte array to get characters from.
+   * @param offset the offset to read in the input byte array
+   * @param length the length to read in the input byte array
+   * @param dest the destination character array.
+   * @param destOffset the offset to start writing from in the destination character array.
+   */
+  public static void bytesToCharArray(byte[] input, int offset, int length, char[] dest, int destOffset)
+  {
+    ArgumentUtil.checkBounds(input.length, offset, length);
+    ArgumentUtil.checkBounds(dest.length, destOffset, length);
+
+    for (int i = 0; i < length; i++)
     {
-      charArray[i] = (char) (((char) input[i + offset]) & 0x00ff);
+      dest[destOffset++] = (char) (((char) input[i + offset]) & 0x00ff);
     }
-    return new String(charArray);
   }
 
   /**
@@ -884,61 +1222,38 @@ public class Data
   /**
    * Validate that the Data object is acyclic, i.e. has no loops.
    *
-   * @param o is the Data object to validate.
+   * @param object is the Data object to validate.
    * @return true if the Data object is a acyclic, else return false.
    */
-  static boolean objectIsAcyclic(Object o)
+  static boolean objectIsAcyclic(Object object)
   {
-    return new Object()
+    if (object == null)
     {
-      private IdentityHashMap<DataComplex, Boolean> _visited = new IdentityHashMap<DataComplex, Boolean>();
-      private IdentityHashMap<DataComplex, Boolean> _path = new IdentityHashMap<DataComplex, Boolean>();
+      return true;
+    }
 
-      boolean objectIsAcyclic(Object object)
+    Class<?> klass = object.getClass();
+    if (isPrimitiveClass(klass))
+    {
+      return true;
+    }
+    else if (isComplexClass(klass))
+    {
+      DataComplex complex = (DataComplex) object;
+      try
       {
-        if (object == null)
-        {
-          return true;
-        }
-        Class<?> clas = object.getClass();
-        if (isPrimitiveClass(clas))
-        {
-          return true;
-        }
-        else if (isComplex(object))
-        {
-          DataComplex mutable = (DataComplex) object;
-          Collection<Object> values = mutable.values();
-          Boolean loop = _path.put(mutable, Boolean.TRUE);
-          if (loop == Boolean.TRUE)
-          {
-            // already seen this object in path to root
-            // must be in a loop
-            return false;
-          }
-          // mark as visited to avoid traversing again
-          Boolean visited = _visited.put(mutable, Boolean.TRUE);
-          if (visited == null)
-          {
-            // have not visited this object
-            for (Object value : values)
-            {
-              if (objectIsAcyclic(value) == false)
-              {
-                return false;
-              }
-            }
-            // remove object from path to root
-          }
-          _path.remove(mutable);
-          return true;
-        }
-        else
-        {
-          throw new IllegalStateException("Object of unknown type: " + object);
-        }
+        Data.traverse(complex, new TraverseCallback() {});
+        return true;
       }
-    }.objectIsAcyclic(o);
+      catch (IOException e)
+      {
+        return false;
+      }
+    }
+    else
+    {
+      throw new IllegalStateException("Object of unknown type: " + object);
+    }
   }
 
   /**

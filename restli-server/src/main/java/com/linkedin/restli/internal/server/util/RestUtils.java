@@ -17,25 +17,20 @@
 package com.linkedin.restli.internal.server.util;
 
 
-import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.collections.CheckedUtil;
 import com.linkedin.data.element.DataElement;
 import com.linkedin.data.it.Builder;
 import com.linkedin.data.it.IterationOrder;
 import com.linkedin.data.it.Predicate;
-import com.linkedin.data.schema.ArrayDataSchema;
-import com.linkedin.data.schema.DataSchema;
-import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.data.schema.RecordDataSchema;
-import com.linkedin.data.schema.UnionDataSchema;
-import com.linkedin.data.template.DynamicRecordTemplate;
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.data.transform.filter.CopyFilter;
 import com.linkedin.data.transform.filter.request.MaskTree;
 import com.linkedin.jersey.api.uri.UriBuilder;
+import com.linkedin.r2.message.RequestContext;
 import com.linkedin.restli.common.CollectionMetadata;
-import com.linkedin.restli.common.CreateIdStatus;
+import com.linkedin.restli.common.ContentType;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.common.Link;
 import com.linkedin.restli.common.LinkArray;
@@ -51,13 +46,12 @@ import com.linkedin.restli.server.ProjectionMode;
 import com.linkedin.restli.server.ResourceContext;
 import com.linkedin.restli.server.RestLiServiceException;
 import com.linkedin.restli.server.RoutingException;
-
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.ParameterizedType;
 import java.net.URI;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-
+import java.util.Set;
+import java.util.stream.Stream;
 import org.apache.commons.lang.StringUtils;
 
 
@@ -66,7 +60,6 @@ import org.apache.commons.lang.StringUtils;
  */
 public class RestUtils
 {
-
   public static CollectionMetadata buildMetadata(final URI requestUri,
                                                  final ResourceContext resourceContext,
                                                  final ResourceMethodDescriptor methodDescriptor,
@@ -97,13 +90,8 @@ public class RestUtils
 
     LinkArray links = new LinkArray();
 
-    String bestEncoding = RestConstants.HEADER_VALUE_APPLICATION_JSON;
-    if (resourceContext.getRawRequest() != null)
-    {
-      bestEncoding = pickBestEncoding(resourceContext.getRequestHeaders().get(RestConstants.HEADER_ACCEPT));
-    }
+    String bestEncoding = pickBestEncoding(resourceContext.getRequestHeaders().get(RestConstants.HEADER_ACCEPT), Collections.emptySet());
 
-    //links use count as the step interval, so links don't make sense with count==0
     if (pagingContext.getCount() > 0)
     {
       // prev link
@@ -134,8 +122,10 @@ public class RestUtils
         links.add(nextLink);
       }
 
-      metadata.setLinks(links);
     }
+    // even when we are getting count = 0, we should honor that links
+    // is a required field in the CollectionMetadata record
+    metadata.setLinks(links);
     return metadata;
   }
 
@@ -188,11 +178,8 @@ public class RestUtils
   public static PagingContext getPagingContext(final ResourceContext context,
                                                final PagingContext defaultContext)
   {
-    String startString =
-        ArgumentUtils.argumentAsString(context.getParameter(RestConstants.START_PARAM), RestConstants.START_PARAM);
-    String countString =
-        ArgumentUtils.argumentAsString(context.getParameter(RestConstants.COUNT_PARAM),
-                                       RestConstants.COUNT_PARAM);
+    String startString = context.getParameter(RestConstants.START_PARAM);
+    String countString = context.getParameter(RestConstants.COUNT_PARAM);
     try
     {
       int defaultStart =
@@ -220,21 +207,39 @@ public class RestUtils
     }
   }
 
-  public static String pickBestEncoding(String acceptHeader)
+  public static String pickBestEncoding(String acceptHeader, Set<String> customMimeTypesSupported)
+  {
+    return pickBestEncoding(acceptHeader, null, customMimeTypesSupported);
+  }
+
+  public static String pickBestEncoding(String acceptHeader, List<String> supportedAcceptTypes, Set<String> customMimeTypesSupported)
   {
     if (acceptHeader == null || acceptHeader.isEmpty())
+    {
       return RestConstants.HEADER_VALUE_APPLICATION_JSON;
+    }
+
+    //For backward compatibility reasons, we have to assume that if there is ONLY multipart/related as an accept
+    //type that this means to default to JSON.
     try
     {
-      return MIMEParse.bestMatch(RestConstants.SUPPORTED_MIME_TYPES, acceptHeader);
+      final List<String> acceptTypes = MIMEParse.parseAcceptType(acceptHeader);
+      if (acceptTypes.size() == 1 && acceptTypes.get(0).equalsIgnoreCase(RestConstants.HEADER_VALUE_MULTIPART_RELATED))
+      {
+        return RestConstants.HEADER_VALUE_APPLICATION_JSON;
+      }
+
+      return MIMEParse.bestMatch(supportedAcceptTypes != null && !supportedAcceptTypes.isEmpty() ? supportedAcceptTypes.stream() :
+          Stream.concat(customMimeTypesSupported.stream(), RestConstants.SUPPORTED_MIME_TYPES.stream()),
+          acceptHeader);
     }
+
     // Handle the case when an accept MIME type that was passed in along with the
     // request is invalid.
     catch (InvalidMimeTypeException e)
     {
-      throw new RestLiServiceException(HttpStatus.S_400_BAD_REQUEST,
-                                       String.format("Encountered invalid MIME type '%s' in accept header.",
-                                                     e.getType()));
+      throw new RestLiServiceException(HttpStatus.S_400_BAD_REQUEST, String
+        .format("Encountered invalid MIME type '%s' in accept header.", e.getType()));
     }
   }
 
@@ -250,6 +255,36 @@ public class RestUtils
   public static DataMap projectFields(final DataMap dataMap, final ProjectionMode projectionMode,
       final MaskTree projectionMask)
   {
+    return projectFields(dataMap, projectionMode, projectionMask, Collections.emptySet());
+  }
+
+  /**
+   * Filter input {@link DataMap} by the projection mask from the resource context {@link ResourceContext}.
+   *
+   * @param dataMap {@link DataMap} to filter
+   * @param resourceContext Resource context from which projection inputs like mask, mode and always included fields
+   *                        are obtained.
+   * @return filtered DataMap. Empty one if the projection mask specifies no fields.
+   */
+  public static DataMap projectFields(final DataMap dataMap, final ResourceContext resourceContext)
+  {
+    return projectFields(dataMap, resourceContext.getProjectionMode(), resourceContext.getProjectionMask(),
+        resourceContext.getAlwaysProjectedFields());
+  }
+
+  /**
+   * Filter input {@link DataMap} by the projection mask from the input.
+   * {@link ResourceContext}.
+   *
+   * @param dataMap {@link DataMap} to filter
+   * @param projectionMode {@link ProjectionMode} to decide if restli should project or not
+   * @param  projectionMask {@link MaskTree} the mask to use when projecting
+   * @param alwaysIncludedFields Set of fields that are always included in the result.
+   * @return filtered DataMap. Empty one if the projection mask specifies no fields.
+   */
+  public static DataMap projectFields(final DataMap dataMap, final ProjectionMode projectionMode,
+      final MaskTree projectionMask, Set<String> alwaysIncludedFields)
+  {
     if (projectionMode == ProjectionMode.MANUAL)
     {
       return dataMap;
@@ -261,15 +296,15 @@ public class RestUtils
     }
 
     final DataMap filterMap = projectionMask.getDataMap();
-    //Special-case: when present, an empty filter should not return any fields.
-    if (projectionMask.getDataMap().isEmpty())
+    //Special-case: when present, an empty filter and no fields to include by default means the result would be empty.
+    if (filterMap.isEmpty() && (alwaysIncludedFields == null || alwaysIncludedFields.isEmpty()))
     {
       return EMPTY_DATAMAP;
     }
 
     try
     {
-      return (DataMap) new CopyFilter().filter(dataMap, filterMap);
+      return (DataMap) new CopyFilter(alwaysIncludedFields).filter(dataMap, filterMap);
     }
     catch (Exception e)
     {
@@ -278,24 +313,72 @@ public class RestUtils
   }
 
   /**
-   * Validate request headers.
+   * Validate request headers and set response mime type in the server resource context.
    *
-   * @param headers
-   *          Request headers.
-   * @throws RestLiServiceException
-   *           if any of the headers are invalid.
+   * @param headers                    Request headers.
+   * @param customMimeTypesSupported   Set of supported custom mime types.
+   * @param resourceContext            Server resource context.
+   *
+   * @throws RestLiServiceException if any of the headers are invalid.
    */
   public static void validateRequestHeadersAndUpdateResourceContext(final Map<String, String> headers,
+                                                                    final Set<String> customMimeTypesSupported,
                                                                     ServerResourceContext resourceContext)
   {
+    validateRequestHeadersAndUpdateResourceContext(headers, customMimeTypesSupported, resourceContext,
+        new RequestContext());
+  }
+
+  /**
+   * Validate request headers and set response mime type in the server resource context.
+   *
+   * @param headers                    Request headers.
+   * @param customMimeTypesSupported   Set of supported custom mime types.
+   * @param resourceContext            Server resource context.
+   * @param requestContext             Incoming request context.
+   *
+   * @throws RestLiServiceException if any of the headers are invalid.
+   */
+  public static void validateRequestHeadersAndUpdateResourceContext(final Map<String, String> headers,
+                                                                    final Set<String> customMimeTypesSupported,
+                                                                    ServerResourceContext resourceContext,
+                                                                    RequestContext requestContext)
+  {
+    validateRequestHeadersAndUpdateResourceContext(headers, null, customMimeTypesSupported, resourceContext, requestContext);
+  }
+
+  /**
+   * Validate request headers and set response mime type in the server resource context.
+   *
+   * @param headers                    Request headers.
+   * @param supportedAcceptTypes       List of supported content type header keys for response payload.
+   * @param customMimeTypesSupported   Set of supported custom mime types.
+   * @param resourceContext            Server resource context.
+   * @param requestContext             Incoming request context.
+   *
+   * @throws RestLiServiceException if any of the headers are invalid.
+   */
+  public static void validateRequestHeadersAndUpdateResourceContext(final Map<String, String> headers,
+                                                                    final List<String> supportedAcceptTypes,
+                                                                    final Set<String> customMimeTypesSupported,
+                                                                    ServerResourceContext resourceContext,
+                                                                    RequestContext requestContext)
+  {
+    // In process requests don't serialize the response, so just set response mime-type to JSON.
+    if (Boolean.TRUE.equals(requestContext.getLocalAttr(ServerResourceContext.CONTEXT_IN_PROCESS_RESOLUTION_KEY))) {
+      resourceContext.setResponseMimeType(ContentType.JSON.getHeaderKey());
+      return;
+    }
+
     // Validate whether the accept headers have at least one type that we support.
     // Fail the validation if we will be unable to support the requested accept type.
-    String mimeType = pickBestEncoding(headers.get(RestConstants.HEADER_ACCEPT));
+    String mimeType = pickBestEncoding(headers.get(RestConstants.HEADER_ACCEPT), supportedAcceptTypes, customMimeTypesSupported);
     if (StringUtils.isEmpty(mimeType))
     {
       throw new RestLiServiceException(HttpStatus.S_406_NOT_ACCEPTABLE,
-                                       "None of the types in the request's 'Accept' header are supported. Supported MIME types are: "
-                                           + RestConstants.SUPPORTED_MIME_TYPES);
+          "None of the types in the request's 'Accept' header are supported. Supported MIME types are: "
+              + RestConstants.SUPPORTED_MIME_TYPES
+              + customMimeTypesSupported);
     }
     else
     {

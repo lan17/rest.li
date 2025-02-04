@@ -1,3 +1,7 @@
+plugins {
+    id "com.google.protobuf" version "0.8.10"
+}
+
 dependencies {
   compile project(':degrader')
   compile project(':r2-core')
@@ -12,14 +16,42 @@ dependencies {
   compile externalDependency.commonsHttpClient
   compile externalDependency.httpclient
   compile externalDependency.httpcore
+  compile externalDependency.hdrhistogram
   compile externalDependency.zookeeper
   compile externalDependency.jacksonCore
   compile externalDependency.jacksonDataBind
-  compile externalDependency.jdkTools
+  compile externalDependency.zero_allocation_hashing
+  compile externalDependency.xchart
+  compileOnly externalDependency.findbugs
+  testCompile externalDependency.metricsCore
+  testCompile externalDependency.xerialSnappy
   testCompile externalDependency.testng
+  testCompile externalDependency.junit
   testCompile externalDependency.commonsIo
   testCompile externalDependency.easymock
+  testCompile externalDependency.mockito
+  testCompile externalDependency.guava
   testCompile project(':r2-jetty')
+  testCompile project(':test-util')
+  testCompile project(':d2-test-api')
+  testCompileOnly externalDependency.findbugs
+
+  compile externalDependency.grpcNettyShaded
+  compile externalDependency.grpcProtobuf
+  compile externalDependency.grpcStub
+  compile externalDependency.protobufJava
+  compile externalDependency.protobufJavaUtil
+  compile externalDependency.envoyApi
+}
+
+sourceSets.main.java {
+    srcDir 'build/generated/source/proto/main/java'
+}
+
+protobuf {
+    protoc {
+        artifact = externalDependency.protoc
+    }
 }
 
 task packup(dependsOn: configurations.default.allArtifacts, type: Copy) {
@@ -37,22 +69,6 @@ task packup(dependsOn: configurations.default.allArtifacts, type: Copy) {
     }
 }
 
-task packupTest(dependsOn: [testJar, packup], type: Copy) {
-    into "$buildDir/package"
-    from configurations.testArtifacts
-    from { configurations.testArtifacts.allArtifacts.files }
-    from "src/test/sh"
-
-    description = "Packages all test jars, scripts, etc into a \"packages\" folder under the build directory."
-
-    doLast {
-        exec {
-            executable = 'chmod'
-            args = [ '+x', fileTree(dir: "$buildDir/package", include: '*.sh') as Object[] ].flatten()
-        }
-    }
-}
-
 task scripts(dependsOn: packup, type: Zip) {
     from "$buildDir/package"
     baseName = 'lb-tool'
@@ -60,7 +76,6 @@ task scripts(dependsOn: packup, type: Zip) {
 }
 
 configurations {
-  testArtifacts {
-    visible = true
-  }
+  // exclude slf4j-log4j12 which is pulled in from zookeeper
+  all*.exclude group: 'org.slf4j', module: 'slf4j-log4j12'
 }

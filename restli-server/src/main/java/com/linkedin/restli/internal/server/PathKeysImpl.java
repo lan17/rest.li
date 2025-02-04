@@ -35,7 +35,7 @@ public class PathKeysImpl implements MutablePathKeys
   public PathKeysImpl()
   {
     super();
-    _keyMap = new HashMap<String, Object>(4);
+    _keyMap = new HashMap<>(4);
   }
 
   @Override
@@ -75,6 +75,11 @@ public class PathKeysImpl implements MutablePathKeys
   public String getAsString(final String key)
   {
     return (String) _keyMap.get(key);
+  }
+
+  @Override
+  public Map<String, Object> getKeyMap() {
+    return Collections.unmodifiableMap(_keyMap);
   }
 
   @Deprecated

@@ -25,6 +25,7 @@ package com.linkedin.util.degrader;
  * @version $Rev$
  */
 
+import com.linkedin.common.stats.LongStats;
 import java.util.Date;
 
 public class DegraderControl implements DegraderControlMBean
@@ -46,6 +47,24 @@ public class DegraderControl implements DegraderControlMBean
   public double getCurrentComputedDropRate()
   {
     return _degrader.getStats().getCurrentComputedDropRate();
+  }
+
+  @Override
+  public boolean isHigh()
+  {
+    return _degrader.isHigh();
+  }
+
+  @Override
+  public boolean isLow()
+  {
+    return _degrader.isLow();
+  }
+
+  @Override
+  public LongStats getCallTimeStats()
+  {
+    return _degrader.getStats().getCallTimeStats();
   }
 
   @Override
@@ -169,6 +188,12 @@ public class DegraderControl implements DegraderControlMBean
   }
 
   @Override
+  public double getInitialDropRate()
+  {
+    return _degrader.getConfig().getInitialDropRate();
+  }
+
+  @Override
   public int getMinCallCount()
   {
     return _degrader.getConfig().getMinCallCount();
@@ -208,6 +233,18 @@ public class DegraderControl implements DegraderControlMBean
   public long getLowOutstanding()
   {
     return _degrader.getConfig().getLowOutstanding();
+  }
+
+  @Override
+  public double getLogThreshold()
+  {
+    return _degrader.getConfig().getLogThreshold();
+  }
+
+  @Override
+  public double getPreemptiveRequestTimeoutRate()
+  {
+    return _degrader.getConfig().getPreemptiveRequestTimeoutRate();
   }
 
   @Override
@@ -344,6 +381,22 @@ public class DegraderControl implements DegraderControlMBean
   {
     DegraderImpl.Config config = new DegraderImpl.Config(_degrader.getConfig());
     config.setOverrideMinCallCount(overrideMinCallCount);
+    _degrader.setConfig(config);
+  }
+
+  @Override
+  public void setLogThreshold(double logThreshold)
+  {
+    DegraderImpl.Config config = new DegraderImpl.Config(_degrader.getConfig());
+    config.setLogThreshold(logThreshold);
+    _degrader.setConfig(config);
+  }
+
+  @Override
+  public void setPreemptiveRequestTimeoutRate(double preemptiveRequestTimeoutRate)
+  {
+    DegraderImpl.Config config = new DegraderImpl.Config(_degrader.getConfig());
+    config.setPreemptiveRequestTimeoutRate(preemptiveRequestTimeoutRate);
     _degrader.setConfig(config);
   }
 

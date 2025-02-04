@@ -22,6 +22,7 @@ import com.linkedin.data.template.DataTemplateUtil;
 import com.linkedin.data.template.RecordTemplate;
 
 import org.testng.Assert;
+import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 public class TestComplexResourceKey
@@ -36,12 +37,12 @@ public class TestComplexResourceKey
     paramMap.put("paramField1", "paramValue1");
     EmptyRecord param1 = new EmptyRecord(paramMap);
     ComplexResourceKey<EmptyRecord, EmptyRecord> complexKey1 =
-        new ComplexResourceKey<EmptyRecord, EmptyRecord>(key1, param1);
+        new ComplexResourceKey<>(key1, param1);
 
     EmptyRecord key2 = key1.copy();
     EmptyRecord param2 = param1.copy();
     ComplexResourceKey<EmptyRecord, EmptyRecord> complexKey2 =
-        new ComplexResourceKey<EmptyRecord, EmptyRecord>(key2, param2);
+        new ComplexResourceKey<>(key2, param2);
 
     Assert.assertTrue(complexKey1.equals(complexKey2));
 
@@ -56,13 +57,13 @@ public class TestComplexResourceKey
     complexKey2.params.data().put("paramField1", "paramValue1");
 
     // One param null, other not
-    complexKey1 = new ComplexResourceKey<EmptyRecord, EmptyRecord>(key1, null);
-    complexKey2 = new ComplexResourceKey<EmptyRecord, EmptyRecord>(key2, param2);
+    complexKey1 = new ComplexResourceKey<>(key1, null);
+    complexKey2 = new ComplexResourceKey<>(key2, param2);
     Assert.assertFalse(complexKey1.equals(complexKey2));
     Assert.assertFalse(complexKey2.equals(complexKey1));
 
     // Both param null
-    complexKey2 = new ComplexResourceKey<EmptyRecord, EmptyRecord>(key2, null);
+    complexKey2 = new ComplexResourceKey<>(key2, null);
     Assert.assertTrue(complexKey1.equals(complexKey2));
   }
 
@@ -78,7 +79,7 @@ public class TestComplexResourceKey
     EmptyRecord params = new EmptyRecord(paramsDataMap);
 
     ComplexResourceKey<EmptyRecord, EmptyRecord> complexResourceKey =
-        new ComplexResourceKey<EmptyRecord, EmptyRecord>(key, params);
+        new ComplexResourceKey<>(key, params);
 
     complexResourceKey.makeReadOnly();
 
@@ -111,7 +112,7 @@ public class TestComplexResourceKey
     EmptyRecord key = new EmptyRecord(keyDataMap);
 
     ComplexResourceKey<EmptyRecord, EmptyRecord> complexResourceKey =
-        new ComplexResourceKey<EmptyRecord, EmptyRecord>(key, null);
+        new ComplexResourceKey<>(key, null);
 
     complexResourceKey.makeReadOnly();
 
@@ -126,30 +127,58 @@ public class TestComplexResourceKey
     }
   }
 
-  @Test
-  public void testKeySchema()
+  @DataProvider
+  public Object[][] keySchemaValidation() {
+    return new Object[][]
+        {
+            {11, 11, false, OmniRecord.class},
+            {11, 1, true, OmniRecord.class},
+            {1, 11, true, OmniRecord.class},
+            {1, 1, false, NullSchemaRecord.class},
+        };
+  }
+
+  @Test(dataProvider = "keySchemaValidation")
+  public void testKeySchema(int keyValue, int paramValue, boolean validationFailure, Class<RecordTemplate> schemaClass)
   {
-    RecordDataSchema schema = OmniRecord.schema;
-    TypeSpec<OmniRecord> keyType = new TypeSpec<OmniRecord>(OmniRecord.class, schema);
-    TypeSpec<OmniRecord> paramsType = new TypeSpec<OmniRecord>(OmniRecord.class, schema);
-    ComplexKeySpec<OmniRecord, OmniRecord> keySpec = new ComplexKeySpec<OmniRecord, OmniRecord>(keyType, paramsType);
-
+    TypeSpec<RecordTemplate> keyType = new TypeSpec<>(schemaClass);
+    TypeSpec<RecordTemplate> paramsType = new TypeSpec<>(schemaClass);
+    ComplexKeySpec<RecordTemplate, RecordTemplate> keySpec =
+        new ComplexKeySpec<>(keyType, paramsType);
+    DataMap paramsData = new DataMap();
+    paramsData.put("int", paramValue);
     DataMap data = new DataMap();
-    data.put("int", 1);
+    data.put("int", keyValue);
+    data.put("$params", paramsData);
 
-    ComplexResourceKey<RecordTemplate, RecordTemplate> key = ComplexResourceKey.buildFromDataMap(data, keySpec);
-
-    Assert.assertEquals(key.getKey().schema(), schema);
-    Assert.assertEquals(key.getParams().schema(), schema);
+    try
+    {
+      ComplexResourceKey<RecordTemplate, RecordTemplate> key = ComplexResourceKey.buildFromDataMap(data, keySpec);
+      key.validate();
+      Assert.assertEquals(key.getKey().schema(), keyType.getSchema());
+      Assert.assertEquals(key.getParams().schema(), paramsType.getSchema());
+      Assert.assertFalse(validationFailure);
+    }
+    catch (IllegalArgumentException ex)
+    {
+      Assert.assertTrue(validationFailure, "Unexpected validation failure");
+    }
   }
 
   public static class OmniRecord extends RecordTemplate {
-    private static RecordDataSchema schema =
-            (RecordDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"record\", \"name\" : \"omni\", \"fields\" : [ { \"name\" : \"int\", \"type\" : \"int\" } ] }");
+    private static RecordDataSchema SCHEMA =
+            (RecordDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"record\", \"name\" : \"omni\", \"fields\" : [ { \"name\" : \"int\", \"type\" : \"int\", \"validate\": { \"regex\": { \"regex\": \"[0-9][0-9]\" } } } ] }");
 
     public OmniRecord(DataMap map)
     {
-      super(map, schema);
+      super(map, SCHEMA);
+    }
+  }
+
+  public static class NullSchemaRecord extends RecordTemplate {
+    public NullSchemaRecord(DataMap map)
+    {
+      super(map, null);
     }
   }
 }

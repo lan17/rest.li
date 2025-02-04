@@ -29,26 +29,33 @@ import com.linkedin.restli.common.ComplexResourceKey;
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.server.ActionResult;
 import com.linkedin.restli.server.PagingContext;
-import com.linkedin.restli.server.annotations.Context;
 import com.linkedin.restli.server.annotations.PagingContextParam;
-import com.linkedin.restli.server.annotations.ParSeqContext;
 import com.linkedin.restli.server.annotations.ParSeqContextParam;
 import com.linkedin.restli.server.resources.AssociationResource;
 import com.linkedin.restli.server.resources.AssociationResourceAsync;
-import com.linkedin.restli.server.resources.AssociationResourcePromise;
 import com.linkedin.restli.server.resources.AssociationResourceTask;
 import com.linkedin.restli.server.resources.CollectionResource;
 import com.linkedin.restli.server.resources.CollectionResourceAsync;
-import com.linkedin.restli.server.resources.CollectionResourcePromise;
 import com.linkedin.restli.server.resources.CollectionResourceTask;
 import com.linkedin.restli.server.resources.ComplexKeyResource;
 import com.linkedin.restli.server.resources.ComplexKeyResourceAsync;
-import com.linkedin.restli.server.resources.ComplexKeyResourcePromise;
 import com.linkedin.restli.server.resources.ComplexKeyResourceTask;
 import com.linkedin.restli.server.resources.SimpleResource;
 import com.linkedin.restli.server.resources.SimpleResourceAsync;
-import com.linkedin.restli.server.resources.SimpleResourcePromise;
 import com.linkedin.restli.server.resources.SimpleResourceTask;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataAssociationResource;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataAssociationResourceAsync;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataAssociationResourceReactive;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataAssociationResourceTask;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataCollectionResource;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataCollectionResourceAsync;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataCollectionResourceReactive;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataCollectionResourceTask;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataSimpleResource;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataSimpleResourceAsync;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataSimpleResourceReactive;
+import com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataSimpleResourceTask;
+
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -89,6 +96,7 @@ public interface RestModelConstants
       double[].class,
       Double[].class,
       Enum[].class,
+      ByteString[].class,
       DataTemplate[].class
   };
 
@@ -184,44 +192,62 @@ public interface RestModelConstants
   Map<DataSchema.Type, Class<?>[]> PRIMITIVE_DATA_SCHEMA_TYPE_ALLOWED_TYPES = new HashMap<DataSchema.Type, Class<?>[]>()
   {
     {
-      put(DataSchema.Type.BOOLEAN, new Class[] { boolean.class, Boolean.class });
-      put(DataSchema.Type.INT, new Class[] { int.class, Integer.class });
-      put(DataSchema.Type.LONG, new Class[] { long.class, Long.class });
-      put(DataSchema.Type.FLOAT, new Class[] { float.class, Float.class});
-      put(DataSchema.Type.DOUBLE, new Class[] { double.class, Double.class});
-      put(DataSchema.Type.STRING, new Class[] { String.class });
-      put(DataSchema.Type.BYTES, new Class[] { ByteString.class });
+      put(DataSchema.Type.BOOLEAN, new Class<?>[] { boolean.class, Boolean.class });
+      put(DataSchema.Type.INT, new Class<?>[] { int.class, Integer.class });
+      put(DataSchema.Type.LONG, new Class<?>[] { long.class, Long.class });
+      put(DataSchema.Type.FLOAT, new Class<?>[] { float.class, Float.class});
+      put(DataSchema.Type.DOUBLE, new Class<?>[] { double.class, Double.class});
+      put(DataSchema.Type.STRING, new Class<?>[] { String.class });
+      put(DataSchema.Type.BYTES, new Class<?>[] { ByteString.class });
     }
   };
 
+  @SuppressWarnings("deprecation")
   Class<?>[] FIXED_RESOURCE_CLASSES = {
       CollectionResource.class,
       CollectionResourceAsync.class,
-      CollectionResourcePromise.class,
+      // Use full-qualified classname here since we cannot add @SuppressWarnings("deprecation") in import
+      com.linkedin.restli.server.resources.CollectionResourcePromise.class,
       CollectionResourceTask.class,
       AssociationResource.class,
       AssociationResourceAsync.class,
-      AssociationResourcePromise.class,
+      com.linkedin.restli.server.resources.AssociationResourcePromise.class,
       AssociationResourceTask.class,
       ComplexKeyResource.class,
       ComplexKeyResourceAsync.class,
-      ComplexKeyResourcePromise.class,
+      com.linkedin.restli.server.resources.ComplexKeyResourcePromise.class,
       ComplexKeyResourceTask.class,
       SimpleResource.class,
       SimpleResourceAsync.class,
-      SimpleResourcePromise.class,
+      com.linkedin.restli.server.resources.SimpleResourcePromise.class,
       SimpleResourceTask.class,
+      UnstructuredDataCollectionResource.class,
+      UnstructuredDataCollectionResourceAsync.class,
+      com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataCollectionResourcePromise.class,
+      UnstructuredDataCollectionResourceTask.class,
+      UnstructuredDataCollectionResourceReactive.class,
+      UnstructuredDataAssociationResource.class,
+      UnstructuredDataAssociationResourceAsync.class,
+      com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataAssociationResourcePromise.class,
+      UnstructuredDataAssociationResourceTask.class,
+      UnstructuredDataAssociationResourceReactive.class,
+      UnstructuredDataSimpleResource.class,
+      UnstructuredDataSimpleResourceAsync.class,
+      com.linkedin.restli.server.resources.unstructuredData.UnstructuredDataSimpleResourcePromise.class,
+      UnstructuredDataSimpleResourceTask.class,
+      UnstructuredDataSimpleResourceReactive.class
   };
 
-  Set<Class<?>> CLASSES_WITHOUT_SCHEMAS = new HashSet<Class<?>>(
-          Arrays.<Class<?>>asList(
+  @SuppressWarnings("deprecation")
+  Set<Class<?>> CLASSES_WITHOUT_SCHEMAS = new HashSet<>(
+          Arrays.asList(
                           ComplexResourceKey.class,
                           CompoundKey.class,
-                          Context.class,
+                          com.linkedin.restli.server.annotations.Context.class,
                           PagingContextParam.class,
                           Callback.class,
                           PagingContext.class,
-                          ParSeqContext.class,
+                          com.linkedin.restli.server.annotations.ParSeqContext.class,
                           ParSeqContextParam.class)
   );
 

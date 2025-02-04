@@ -29,6 +29,7 @@ import java.util.Date;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertSame;
 import static org.testng.Assert.assertTrue;
 
 /**
@@ -70,6 +71,9 @@ public class TestDegrader
   private static final long _testHighOutstanding = Time.milliseconds(15555);
   private static final long _testLowOutstanding = Time.milliseconds(1555);
   private static final Integer _testMinOutstandingCount = 23;
+  private static final double _testInitialDropRate = 0.99;
+  private static final double _testSlowStartThreshold = 0.2;
+  private static final double _testPreemptiveRequestTimeoutRate = 0.75;
 
   private static final long _defaultMidLatency = Time.milliseconds((_defaultHighLatency + _defaultLowLatency) / 2);
 
@@ -149,6 +153,11 @@ public class TestDegrader
     return _degrader.checkDrop(v);
   }
 
+  boolean checkPreemptiveTimeout()
+  {
+    return _degrader.checkPreemptiveTimeout();
+  }
+
   CallCompletion[] startCall(int count)
   {
     CallCompletion[] cc = new CallCompletion[count];
@@ -224,6 +233,8 @@ public class TestDegrader
     assertTrue(config.getHighOutstanding() == DegraderImpl.DEFAULT_HIGH_OUTSTANDING);
     assertTrue(config.getLowOutstanding() == DegraderImpl.DEFAULT_LOW_OUTSTANDING);
     assertTrue(config.getMinOutstandingCount() == DegraderImpl.DEFAULT_MIN_OUTSTANDING_COUNT);
+    assertTrue(config.getPreemptiveRequestTimeoutRate() == DegraderImpl.DEFAULT_PREEMPTIVE_REQUEST_TIMEOUT_RATE);
+    assertTrue(config.getLogger() == DegraderImpl.DEFAULT_LOGGER);
 
     String testName = "aaaa";
     config.setName(testName);
@@ -279,6 +290,15 @@ public class TestDegrader
     config.setMinOutstandingCount(_testMinOutstandingCount);
     assertTrue(config.getMinOutstandingCount() == _testMinOutstandingCount);
 
+    config.setInitialDropRate(_testInitialDropRate);
+    assertEquals(config.getInitialDropRate(), _testInitialDropRate);
+
+    config.setSlowStartThreshold(_testSlowStartThreshold);
+    assertEquals(config.getSlowStartThreshold(), _testSlowStartThreshold);
+
+    config.setPreemptiveRequestTimeoutRate(_testPreemptiveRequestTimeoutRate);
+    assertEquals(config.getPreemptiveRequestTimeoutRate(), _testPreemptiveRequestTimeoutRate);
+
     DegraderImpl.ImmutableConfig immutableConfig = new DegraderImpl.ImmutableConfig(config);
     assertConfigEquals(immutableConfig, config);
 
@@ -333,6 +353,9 @@ public class TestDegrader
 
     _control.setMinOutstandingCount(_testMinOutstandingCount);
     assertTrue(_control.getMinOutstandingCount() == _testMinOutstandingCount);
+
+    _control.setPreemptiveRequestTimeoutRate(_testPreemptiveRequestTimeoutRate);
+    assertTrue(_control.getPreemptiveRequestTimeoutRate() == _testPreemptiveRequestTimeoutRate);
   }
 
   @Test
@@ -341,7 +364,8 @@ public class TestDegrader
     DegraderImpl.Stats stats;
     long lastNotDroppedTime = _clock.currentTimeMillis();
 
-    checkDrop(0.0);
+    assertFalse(checkDrop(0.0));
+    assertFalse(checkPreemptiveTimeout());
     makeCall(1, _defaultHighLatency, false);
     setClockToNextInterval();
     double expectedDropRate = _defaultUpStep; // 0.20
@@ -364,6 +388,7 @@ public class TestDegrader
     assertEquals(0, stats.getOutstandingCount());
 
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(2, stats.getCurrentCountTotal());
@@ -372,6 +397,7 @@ public class TestDegrader
     assertEquals(1, _control.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -398,12 +424,14 @@ public class TestDegrader
     assertEquals(0, stats.getOutstandingCount());
 
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(4, stats.getCurrentCountTotal());
     assertEquals(2, stats.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -438,12 +466,14 @@ public class TestDegrader
     assertEquals(0, stats.getOutstandingCount());
 
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(6, stats.getCurrentCountTotal());
     assertEquals(3, stats.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -459,12 +489,14 @@ public class TestDegrader
     assertEquals(expectedDropRate, stats.getCurrentDropRate());
 
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(8, stats.getCurrentCountTotal());
     assertEquals(4, stats.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -480,12 +512,14 @@ public class TestDegrader
     assertEquals(expectedDropRate, stats.getCurrentDropRate());
 
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
     assertEquals(10, stats.getCurrentCountTotal());
     assertEquals(5, stats.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -504,12 +538,14 @@ public class TestDegrader
     assertEquals(expectedDropRate, stats.getCurrentDropRate());
 
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
     assertEquals(12, stats.getCurrentCountTotal());
     assertEquals(6, stats.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -519,6 +555,7 @@ public class TestDegrader
     long now = _clock.currentTimeMillis();
     setClockToNextInterval();
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
     assertEquals(14, stats.getCurrentCountTotal());
@@ -528,6 +565,7 @@ public class TestDegrader
 
     _clock.setCurrentTimeMillis(now + _config.getMaxDropDuration());
     assertFalse(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -536,6 +574,7 @@ public class TestDegrader
 
     _clock.setCurrentTimeMillis(now + _config.getMaxDropDuration() + 1000);
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
     assertEquals(16, stats.getCurrentCountTotal());
@@ -543,6 +582,7 @@ public class TestDegrader
 
     _clock.setCurrentTimeMillis(now + _config.getMaxDropDuration() * 2);
     assertFalse(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -558,12 +598,14 @@ public class TestDegrader
     assertEquals(expectedDropRate, stats.getCurrentDropRate());
 
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
     assertEquals(18, stats.getCurrentCountTotal());
     assertEquals(9, stats.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -579,12 +621,14 @@ public class TestDegrader
     assertEquals(expectedDropRate, stats.getCurrentDropRate());
 
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
     assertEquals(20, stats.getCurrentCountTotal());
     assertEquals(10, stats.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -600,12 +644,14 @@ public class TestDegrader
     assertEquals(expectedDropRate, stats.getCurrentDropRate());
 
     assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
     assertEquals(22, stats.getCurrentCountTotal());
     assertEquals(11, stats.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertTrue(checkPreemptiveTimeout());
     stats = _degrader.getStats();
     lastNotDroppedTime = _clock.currentTimeMillis();
     assertEquals(lastNotDroppedTime, stats.getLastNotDroppedTime());
@@ -625,6 +671,7 @@ public class TestDegrader
     assertEquals(11, stats.getCurrentDroppedCountTotal());
 
     assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertFalse(checkPreemptiveTimeout());
 
     setClockToNextInterval();
     long outstandingStartTime = _clock.currentTimeMillis();
@@ -1072,5 +1119,308 @@ public class TestDegrader
     _control.setOverrideDropRate(-0.01);
     assertEquals(computedDropRate, _control.getCurrentDropRate());
     assertEquals(computedDropRate, _control.getCurrentComputedDropRate());
+  }
+
+  @Test
+  public void testInitialDropRate()
+  {
+    double expectedDropRate;
+
+    _config.setInitialDropRate(_testInitialDropRate);
+    _degrader = new DegraderImpl(_config);
+    _control = new DegraderControl(_degrader);
+
+    expectedDropRate = _config.getInitialDropRate(); // 0.99
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkPreemptiveTimeout());
+
+    makeCall(1, _defaultLowLatency, false);
+    expectedDropRate -= _config.getDownStep(); // 0.74
+    setClockToNextInterval();
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertFalse(checkPreemptiveTimeout());
+
+    makeCall(2, _defaultLowLatency, false);
+    expectedDropRate -= _config.getDownStep(); // 0.49
+    setClockToNextInterval();
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertFalse(checkPreemptiveTimeout());
+
+    makeCall(5, _defaultLowLatency, false);
+    expectedDropRate -= _config.getDownStep(); // 0.24
+    setClockToNextInterval();
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertFalse(checkPreemptiveTimeout());
+
+    makeCall(10, _defaultLowLatency, false);
+    expectedDropRate -= _config.getDownStep(); // -0.01
+    expectedDropRate = Math.max(0.0d, expectedDropRate); // 0.0
+    setClockToNextInterval();
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+    assertFalse(checkPreemptiveTimeout());
+  }
+
+  @Test
+  public void testPreemptiveRequestTimeout()
+  {
+    double expectedDropRate = 0.0d;
+    _config.setMaxDropRate(1.0d); // set max drop rate to 100%
+    _config.setUpStep(0.5d);
+    _config.setDownStep(0.25d);
+    _degrader = new DegraderImpl(_config);
+    _control = new DegraderControl(_degrader);
+
+    // Preemptive timeout should be initially disabled
+    assertFalse(checkPreemptiveTimeout());
+
+    DegraderImpl.Stats stats;
+
+    // Preemptive timeout should be enabled as we observe high latency
+    makeCall(1, _defaultHighLatency, false);
+    setClockToNextInterval();
+    stats = _degrader.getStats();
+    assertEquals(stats.getCallCount(), 1);
+    assertEquals(stats.getLatency(), _defaultHighLatency);
+    assertTrue(checkPreemptiveTimeout());
+
+    // Preemptive timeout should stay enabled even if there is no request
+    setClockToNextInterval();
+    stats = _degrader.getStats();
+    assertEquals(stats.getCallCount(), 0);
+    assertEquals(stats.getLatency(), 0);
+    assertTrue(checkPreemptiveTimeout());
+
+    // Preemptive timeout should stay enabled if latency stays high
+    makeCall(1, _defaultHighLatency, false);
+    setClockToNextInterval();
+    stats = _degrader.getStats();
+    assertEquals(stats.getCallCount(), 1);
+    assertEquals(stats.getLatency(), _defaultHighLatency);
+    assertTrue(checkPreemptiveTimeout());
+
+    // Preemptive timeout should stay enabled even if latency starts to reduce but drop rate is not zero
+    makeCall(1, _defaultLowLatency, false);
+    setClockToNextInterval();
+    stats = _degrader.getStats();
+    assertEquals(stats.getCallCount(), 1);
+    assertEquals(stats.getLatency(), _defaultLowLatency);
+    assertTrue(checkPreemptiveTimeout());
+
+    // Preemptive timeout should be disabled as soon as drop rate is zero
+    makeCall(1, _defaultLowLatency, false);
+    setClockToNextInterval();
+    makeCall(1, _defaultLowLatency, false);
+    setClockToNextInterval();
+    makeCall(1, _defaultLowLatency, false);
+    setClockToNextInterval();
+    stats = _degrader.getStats();
+    assertEquals(stats.getCallCount(), 1);
+    assertEquals(stats.getLatency(), _defaultLowLatency);
+    assertFalse(checkPreemptiveTimeout());
+  }
+
+  @Test
+  public void testSlowStartThreshold()
+  {
+    double expectedDropRate = 0.0;
+
+    _config.setSlowStartThreshold(_testSlowStartThreshold);
+    _config.setMaxDropRate(1.0d); // set max drop rate to 100%
+    _degrader = new DegraderImpl(_config);
+    _control = new DegraderControl(_degrader);
+
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate);
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    // Stepping up
+
+    makeCall(15, _defaultHighLatency, false);
+    expectedDropRate += _config.getUpStep(); // 0.2
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    makeCall(10, _defaultHighLatency, false);
+    expectedDropRate += _config.getUpStep(); // 0.4
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    makeCall(5, _defaultHighLatency, false);
+    expectedDropRate += _config.getUpStep(); // 0.6
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    makeCall(2, _defaultHighLatency, false);
+    expectedDropRate += _config.getUpStep(); // 0.8
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    // Max drop rate
+
+    makeCall(1, _defaultHighLatency, false);
+    expectedDropRate += _config.getUpStep(); // 1.0
+
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+
+    // Slow start
+
+    double transmissionRate = 0.01; // initial slow start transmission rate
+
+    makeCall(1, _defaultLowLatency, false);
+    expectedDropRate = 1 - transmissionRate; // 0.99
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+
+    makeCall(1, _defaultLowLatency, false);
+    transmissionRate *= 2;
+    expectedDropRate = 1 - transmissionRate; // 0.98
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+
+    makeCall(2, _defaultLowLatency, false);
+    transmissionRate *= 2;
+    expectedDropRate = 1 - transmissionRate; // 0.96
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+
+    makeCall(4, _defaultLowLatency, false);
+    transmissionRate *= 2;
+    expectedDropRate = 1 - transmissionRate; // 0.92
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    makeCall(8, _defaultLowLatency, false);
+    transmissionRate *= 2;
+    expectedDropRate = 1 - transmissionRate; // 0.84
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+
+    makeCall(16, _defaultLowLatency, false);
+    transmissionRate *= 2;
+    expectedDropRate = 1 - transmissionRate; // 0.68
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    // Stepping down
+
+    makeCall(32, _defaultLowLatency, false);
+    expectedDropRate -= _config.getDownStep(); // 0.43
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    makeCall(57, _defaultLowLatency, false);
+    expectedDropRate -= _config.getDownStep(); // 0.18
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+    assertTrue(checkDrop(expectedDropRate - 0.05));
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    makeCall(72, _defaultLowLatency, false);
+    expectedDropRate -= _config.getDownStep();
+    expectedDropRate = Math.max(expectedDropRate, 0.0d); // 0.0
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+  }
+
+  @Test
+  public void testLoggerWithSlowStart()
+  {
+    double expectedDropRate = 0.0;
+
+    _callTracker = new CallTrackerImpl(_defaultInterval, _clock);
+    _config.setCallTracker(_callTracker);
+    _config.setSlowStartThreshold(_testSlowStartThreshold);
+    _config.setMaxDropRate(1.0d); // set max drop rate to 100%
+    _config.setLogger(log);
+    _degrader = new DegraderImpl(_config);
+    _control = new DegraderControl(_degrader);
+
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate);
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    // Fully degrading so the expectedDropRate becomes 1
+    for (int i = 0; i < 5; ++i)
+    {
+      makeCall(1, _defaultHighLatency, false);
+      setClockToNextInterval();
+    }
+    expectedDropRate = 1.0;
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+
+
+    // Go through the slowStart steps
+    int steps = 0;
+    do
+    {
+      steps++;
+      makeCall(1, _defaultLowLatency, false);
+      setClockToNextInterval();
+      _degrader.getStats();
+      assertSame(_degrader.getLogger(), log);
+    } while (_control.getCurrentComputedDropRate() > 0);
+
+    assertTrue(steps < 10);
+    makeCall(10, _defaultLowLatency, false);
+    setClockToNextInterval();
+    _degrader.getStats();
+    assertEquals(_control.getCurrentComputedDropRate(), 0, 10E-6);
+  }
+
+
+  @Test
+  public void testLoggerWithSlowStartAndErrors()
+  {
+    double expectedDropRate = 0.0;
+
+    _callTracker = new CallTrackerImpl(_defaultInterval, _clock);
+    _config.setCallTracker(_callTracker);
+    _config.setSlowStartThreshold(_testSlowStartThreshold);
+    _config.setMaxDropRate(1.0d); // set max drop rate to 100%
+    _config.setLogger(log);
+    _degrader = new DegraderImpl(_config);
+    _control = new DegraderControl(_degrader);
+
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate);
+    assertFalse(checkDrop(expectedDropRate + 0.05));
+
+    // Fully degrading so the expectedDropRate becomes 1
+    for (int i = 0; i < 5; ++i)
+    {
+      makeCall(1, _defaultHighLatency, false);
+      setClockToNextInterval();
+    }
+    expectedDropRate = 1.0;
+    assertEquals(_control.getCurrentComputedDropRate(), expectedDropRate, 10E-6);
+
+    // Go through the slowStart steps
+    makeCall(10, _defaultLowLatency, true);
+    setClockToNextInterval();
+    assertEquals(_control.getCurrentComputedDropRate(), 1.0, 10E-6);
+    assertTrue(_degrader.getLogger() != log);
   }
 }

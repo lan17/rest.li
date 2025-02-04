@@ -49,11 +49,14 @@ import org.testng.annotations.Test;
  */
 public class TestMockHttpServerFactory
 {
+  public static final Map<String, String> ORIGINAL_TRANSPORT_PROPERTIES = Collections.singletonMap(HttpClientFactory.HTTP_REQUEST_TIMEOUT,
+      "10000");
+
   private static final int PORT = 7777;
   private static final PhotosRequestBuilders PHOTOS_BUILDERS = new PhotosRequestBuilders();
   private static final AlbumsRequestBuilders ALBUMS_BUILDERS = new AlbumsRequestBuilders();
   private static final TransportClient TRANSPORT_CLIENT =
-      new HttpClientFactory().getClient(Collections.<String, Object>emptyMap());
+      new HttpClientFactory.Builder().build().getClient(ORIGINAL_TRANSPORT_PROPERTIES);
   private static final RestClient REST_CLIENT =
       new RestClient(new TransportClientAdapter(TRANSPORT_CLIENT), "http://localhost:" + PORT + "/");
 
@@ -61,7 +64,7 @@ public class TestMockHttpServerFactory
   public void testCreateUsingClassNames()
       throws IOException, RemoteInvocationException
   {
-    Set<Class<?>> resourceClasses = new HashSet<Class<?>>();
+    Set<Class<?>> resourceClasses = new HashSet<>();
     resourceClasses.add(PhotoResource.class);
     resourceClasses.add(AlbumResource.class);
 
@@ -101,7 +104,7 @@ public class TestMockHttpServerFactory
    */
   private Map<String, Object> getBeans()
   {
-    Map<String, Object> beans = new HashMap<String, Object>();
+    Map<String, Object> beans = new HashMap<>();
     final PhotoDatabase photoDb = new PhotoDatabaseImpl(10);
     beans.put("photoDb", photoDb);
     beans.put("albumDb", new AlbumDatabaseImpl(5));

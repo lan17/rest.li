@@ -27,8 +27,8 @@ import com.linkedin.restli.client.Response;
 import com.linkedin.restli.client.ResponseFuture;
 import com.linkedin.restli.client.RestLiResponseException;
 import com.linkedin.restli.common.ErrorResponse;
+import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.common.ProtocolVersion;
-import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.internal.client.ResponseFutureImpl;
 import com.linkedin.restli.internal.common.AllProtocolVersions;
 import com.linkedin.restli.internal.common.CookieUtil;
@@ -133,7 +133,6 @@ public class MockFailedResponseFutureBuilder<K, V extends RecordTemplate> extend
    * {@link #setErrorResponse(com.linkedin.restli.common.ErrorResponse)} is called.
    *
    * @param entity the entity
-   * @return
    */
   @Override
   public MockFailedResponseFutureBuilder<K, V> setEntity(V entity)
@@ -151,7 +150,6 @@ public class MockFailedResponseFutureBuilder<K, V extends RecordTemplate> extend
    * An {@link IllegalArgumentException} is thrown if the status lies in the range [200, 300)
    *
    * @param status the HTTP status
-   * @return
    */
   @Override
   public MockFailedResponseFutureBuilder<K, V> setStatus(int status)
@@ -175,7 +173,6 @@ public class MockFailedResponseFutureBuilder<K, V extends RecordTemplate> extend
    * </ul>
    *
    * @param headers the headers to set
-   * @return
    */
   @Override
   public MockFailedResponseFutureBuilder<K, V> setHeaders(Map<String, String> headers)
@@ -195,7 +192,6 @@ public class MockFailedResponseFutureBuilder<K, V extends RecordTemplate> extend
    * Sets the {@link ProtocolVersion}
    *
    * @param protocolVersion the {@link ProtocolVersion} we want to set
-   * @return
    */
   @Override
   public MockFailedResponseFutureBuilder<K, V> setProtocolVersion(ProtocolVersion protocolVersion)
@@ -211,8 +207,6 @@ public class MockFailedResponseFutureBuilder<K, V extends RecordTemplate> extend
    * see how this {@link ErrorResponse} is used. In short, this is used to create a {@link RestLiResponseException}.
    *
    * If {@code errorResponse} does not have a status code then {@link #DEFAULT_HTTP_STATUS} will be used.
-   *
-   * @return
    */
   public MockFailedResponseFutureBuilder<K, V> setErrorResponse(ErrorResponse errorResponse)
   {
@@ -228,7 +222,6 @@ public class MockFailedResponseFutureBuilder<K, V extends RecordTemplate> extend
    * Set how server errors are treated. Please see {@link ErrorHandlingBehavior} for more details.
    *
    * @param errorHandlingBehavior the {@link ErrorHandlingBehavior} we want to set.
-   * @return
    */
   public MockFailedResponseFutureBuilder<K, V> setErrorHandlingBehavior(ErrorHandlingBehavior errorHandlingBehavior)
   {
@@ -238,7 +231,7 @@ public class MockFailedResponseFutureBuilder<K, V extends RecordTemplate> extend
 
   /**
    * Builds the {@link ResponseFuture}
-   * @return
+
    */
   @Override
   public ResponseFuture<V> build()
@@ -268,42 +261,18 @@ public class MockFailedResponseFutureBuilder<K, V extends RecordTemplate> extend
   private ResponseFuture<V> buildWithErrorResponse(ProtocolVersion protocolVersion)
   {
     int status = (_errorResponse.hasStatus()) ? _errorResponse.getStatus() : DEFAULT_HTTP_STATUS;
-    byte[] entity = mapToBytes(_errorResponse.data());
-
-    // The header indicating that this RestResponse is an ErrorResponse depends on the version of the Rest.li
-    // protocol being used.
-    String errorHeaderName;
-    if (protocolVersion.equals(AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion()))
-    {
-      errorHeaderName = RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE;
-    }
-    else
-    {
-      errorHeaderName = RestConstants.HEADER_RESTLI_ERROR_RESPONSE;
-    }
-
-    Map<String, String> headers = new HashMap<String, String>();
-    if (getHeaders() != null)
-    {
-      headers.putAll(getHeaders());
-    }
-    headers.put(errorHeaderName, "true");
-    headers.put(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString());
-    List<HttpCookie> cookies = getCookies() == null ? Collections.<HttpCookie>emptyList() : getCookies();
-
-    RestResponse restResponse = new RestResponseBuilder()
-        .setEntity(entity)
-        .setStatus(status)
-        .setHeaders(Collections.unmodifiableMap(headers))
-        .setCookies(Collections.unmodifiableList(CookieUtil.encodeCookies(cookies)))
-        .build();
 
     // create a RestLiResponseException and wrap it in an ExecutionException that will be thrown by the ResponseFuture
-    RestLiResponseException restLiResponseException = new RestLiResponseException(restResponse, null, _errorResponse);
-    ExecutionException executionException = new ExecutionException(restLiResponseException);
+    RestLiResponseException restLiResponseException = new MockRestliResponseExceptionBuilder()
+        .setErrorResponse(_errorResponse)
+        .setStatus(HttpStatus.fromCode(status))
+        .setCookies(getCookies() == null ? Collections.emptyList() : getCookies())
+        .setHeaders(getHeaders() == null ? new HashMap<>() : getHeaders())
+        .build();
 
+    ExecutionException executionException = new ExecutionException(restLiResponseException);
     Future<Response<V>> responseFuture = buildFuture(null, executionException);
-    return new ResponseFutureImpl<V>(responseFuture, _errorHandlingBehavior);
+    return new ResponseFutureImpl<>(responseFuture, _errorHandlingBehavior);
   }
 
   private ResponseFuture<V> buildWithEntity()
@@ -332,7 +301,7 @@ public class MockFailedResponseFutureBuilder<K, V extends RecordTemplate> extend
     ExecutionException executionException = new ExecutionException(restLiResponseException);
 
     Future<Response<V>> responseFuture = buildFuture(null, executionException);
-    return new ResponseFutureImpl<V>(responseFuture, _errorHandlingBehavior);
+    return new ResponseFutureImpl<>(responseFuture, _errorHandlingBehavior);
   }
 
   private static byte[] mapToBytes(DataMap dataMap)

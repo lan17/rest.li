@@ -17,32 +17,59 @@
 
 package com.linkedin.restli.server;
 
+
+import com.google.common.collect.ImmutableSet;
 import com.linkedin.common.callback.Callback;
+import com.linkedin.data.ByteString;
 import com.linkedin.data.DataMap;
+import com.linkedin.jersey.api.uri.UriComponent;
+import com.linkedin.multipart.MultiPartMIMEReader;
+import com.linkedin.multipart.MultiPartMIMEStreamRequestFactory;
+import com.linkedin.multipart.MultiPartMIMEWriter;
+import com.linkedin.multipart.utils.MIMETestUtils.MultiPartMIMEFullReaderCallback;
+import com.linkedin.multipart.utils.MIMETestUtils.SinglePartMIMEFullReaderCallback;
 import com.linkedin.parseq.Engine;
+import com.linkedin.r2.message.Messages;
+import com.linkedin.r2.message.Request;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.message.rest.RestException;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.r2.message.rest.RestRequestBuilder;
 import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.message.rest.RestResponseBuilder;
+import com.linkedin.r2.message.stream.StreamException;
+import com.linkedin.r2.message.stream.StreamRequest;
+import com.linkedin.r2.message.stream.StreamRequestBuilder;
+import com.linkedin.r2.message.stream.StreamResponse;
+import com.linkedin.r2.message.stream.entitystream.ByteStringWriter;
+import com.linkedin.r2.message.stream.entitystream.EntityStream;
+import com.linkedin.r2.message.stream.entitystream.EntityStreams;
+import com.linkedin.r2.message.stream.entitystream.FullEntityReader;
+import com.linkedin.r2.message.stream.entitystream.Observer;
 import com.linkedin.restli.common.ErrorResponse;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.common.ProtocolVersion;
 import com.linkedin.restli.common.RestConstants;
+import com.linkedin.restli.common.RestLiTraceInfo;
+import com.linkedin.restli.common.attachments.RestLiAttachmentReader;
+import com.linkedin.restli.docgen.DefaultDocumentationRequestHandler;
 import com.linkedin.restli.internal.common.AllProtocolVersions;
+import com.linkedin.restli.internal.common.AttachmentUtils;
 import com.linkedin.restli.internal.common.TestConstants;
-import com.linkedin.restli.internal.server.methods.response.ErrorResponseBuilder;
+import com.linkedin.restli.internal.server.model.ResourceModel;
+import com.linkedin.restli.internal.server.response.ErrorResponseBuilder;
+import com.linkedin.restli.internal.server.response.RestLiResponse;
+import com.linkedin.restli.internal.server.response.RestLiResponseException;
 import com.linkedin.restli.internal.server.util.DataMapUtils;
+import com.linkedin.restli.internal.testutils.RestLiTestAttachmentDataSource;
+import com.linkedin.restli.server.filter.Filter;
 import com.linkedin.restli.server.filter.FilterRequestContext;
 import com.linkedin.restli.server.filter.FilterResponseContext;
-import com.linkedin.restli.server.filter.NextRequestFilter;
-import com.linkedin.restli.server.filter.NextResponseFilter;
-import com.linkedin.restli.server.filter.RequestFilter;
-import com.linkedin.restli.server.filter.ResponseFilter;
 import com.linkedin.restli.server.resources.BaseResource;
 import com.linkedin.restli.server.test.EasyMockResourceFactory;
 import com.linkedin.restli.server.twitter.AsyncStatusCollectionResource;
+import com.linkedin.restli.server.twitter.FeedDownloadResource;
+import com.linkedin.restli.server.twitter.FeedDownloadResourceReactive;
 import com.linkedin.restli.server.twitter.StatusCollectionResource;
 import com.linkedin.restli.server.twitter.TwitterTestDataModels.Status;
 
@@ -53,9 +80,18 @@ import java.net.URISyntaxException;
 import java.nio.charset.Charset;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import javax.mail.internet.ContentType;
+import javax.mail.internet.ParseException;
 
 import org.apache.commons.io.IOUtils;
+import org.easymock.Capture;
 import org.easymock.EasyMock;
 import org.easymock.IAnswer;
 import org.testng.Assert;
@@ -65,11 +101,10 @@ import org.testng.annotations.BeforeTest;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
-import static org.easymock.EasyMock.eq;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
+import com.google.common.base.Charsets;
+import com.google.common.collect.ImmutableMap;
+import static org.easymock.EasyMock.*;
+import static org.testng.Assert.*;
 
 
 /**
@@ -82,24 +117,29 @@ public class TestRestLiServer
   private static final String DEBUG_HANDLER_RESPONSE_A = "Response A";
   private static final String DEBUG_HANDLER_RESPONSE_B = "Response B";
 
+  private static final String DOCUMENTATION_RESPONSE = "Documentation Response";
+  private static final String CUSTOM_HANDLER_RESPONSE = "Custom Response";
+
   private RestLiServer _server;
   private RestLiServer _serverWithFilters;
   private RestLiServer _serverWithCustomErrorResponseConfig; // configured different than server
+  private RestLiServer _serverWithNoExceptionStacktrace;
   private EasyMockResourceFactory _resourceFactory;
-  private RequestFilter _mockRequestFilter;
-  private ResponseFilter _mockResponseFilter;
+  private Filter _mockFilter;
 
   @BeforeTest
   protected void setUp()
   {
     // silence null engine warning and get EasyMock failure if engine is used
     Engine fakeEngine = EasyMock.createMock(Engine.class);
-    _mockRequestFilter = EasyMock.createMock(RequestFilter.class);
-    _mockResponseFilter = EasyMock.createMock(ResponseFilter.class);
+    _mockFilter = EasyMock.createMock(Filter.class);
+    _resourceFactory = new EasyMockResourceFactory();
+
     setUpServer(fakeEngine);
     setupServerWithFilters(fakeEngine);
     setupServerWithCustomErrorResponseConfig(fakeEngine);
-    EasyMock.replay(fakeEngine);
+    setUpServerWithNoExceptionStackTrace(fakeEngine);
+    replay(fakeEngine);
   }
 
   private void setupServerWithCustomErrorResponseConfig(Engine fakeEngine)
@@ -115,8 +155,7 @@ public class TestRestLiServer
   {
     RestLiConfig config = new RestLiConfig(); // default is to use STRICT checking
     config.addResourcePackageNames("com.linkedin.restli.server.twitter");
-    config.addRequestFilter(_mockRequestFilter);
-    config.addResponseFilter(_mockResponseFilter);
+    config.addFilter(_mockFilter);
     _serverWithFilters = new RestLiServer(config, _resourceFactory, fakeEngine);
   }
 
@@ -124,68 +163,33 @@ public class TestRestLiServer
   {
     RestLiConfig config = new RestLiConfig();
     config.addResourcePackageNames("com.linkedin.restli.server.twitter");
-    _resourceFactory  = new EasyMockResourceFactory();
 
-    RestLiDebugRequestHandler debugRequestHandlerA = new RestLiDebugRequestHandler()
-      {
-        @Override
-        public void handleRequest(RestRequest request,
-                                  RequestContext context,
-                                  ResourceDebugRequestHandler resourceRequestHandler,
-                                  Callback<RestResponse> callback)
-        {
-          handleRequestWithCustomResponse(callback, DEBUG_HANDLER_RESPONSE_A);
-        }
+    RestLiDebugRequestHandler debugRequestHandlerA = new DebugRequestHandler("a", DEBUG_HANDLER_RESPONSE_A);
 
-        @Override
-        public String getHandlerId()
-        {
-          return "a";
-        }
-      };
-
-    RestLiDebugRequestHandler debugRequestHandlerB = new RestLiDebugRequestHandler()
-    {
-      @Override
-      @SuppressWarnings("unchecked")
-      public void handleRequest(RestRequest request,
-                                RequestContext context,
-                                ResourceDebugRequestHandler resourceRequestHandler,
-                                Callback<RestResponse> callback)
-      {
-        resourceRequestHandler.handleRequest(request,
-                                             context,
-                                             EasyMock.createMock(RequestExecutionCallback.class));
-        handleRequestWithCustomResponse(callback, DEBUG_HANDLER_RESPONSE_B);
-      }
-
-      @Override
-      public String getHandlerId()
-      {
-        return "b";
-      }
-    };
+    RestLiDebugRequestHandler debugRequestHandlerB = new DebugRequestHandler("b", DEBUG_HANDLER_RESPONSE_B);
 
     config.addDebugRequestHandlers(debugRequestHandlerA, debugRequestHandlerB);
     _server = new RestLiServer(config, _resourceFactory, engine);
   }
 
-  private void handleRequestWithCustomResponse(Callback<RestResponse> callback, String response)
+  private void setUpServerWithNoExceptionStackTrace(Engine engine)
   {
-    RestResponseBuilder responseBuilder = new RestResponseBuilder();
-    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+    RestLiConfig config = new RestLiConfig();
+    config.setWritableStackTrace(false);
+    config.addResourcePackageNames("com.linkedin.restli.server.twitter");
 
-    try
-    {
-      IOUtils.write(response, outputStream);
-    }
-    catch (IOException exc)
-    {
-      //Test will fail later.
-    }
+    RestLiDebugRequestHandler debugRequestHandlerA = new DebugRequestHandler("a", DEBUG_HANDLER_RESPONSE_A);
 
-    responseBuilder.setEntity(outputStream.toByteArray());
-    callback.onSuccess(responseBuilder.build());
+    RestLiDebugRequestHandler debugRequestHandlerB = new DebugRequestHandler("b", DEBUG_HANDLER_RESPONSE_B);
+
+    config.addDebugRequestHandlers(debugRequestHandlerA, debugRequestHandlerB);
+    _serverWithNoExceptionStacktrace = new RestLiServer(config, _resourceFactory, engine);
+  }
+
+  private enum RestOrStream
+  {
+    REST,
+    STREAM
   }
 
   @AfterTest
@@ -193,13 +197,13 @@ public class TestRestLiServer
   {
     _resourceFactory = null;
     _server = null;
-    EasyMock.reset(_mockRequestFilter, _mockResponseFilter);
+    EasyMock.reset(_mockFilter, _mockFilter);
   }
 
   @AfterMethod
   protected void afterMethod()
   {
-    EasyMock.reset(_mockRequestFilter, _mockResponseFilter);
+    EasyMock.reset(_mockFilter, _mockFilter);
   }
 
   @DataProvider(name = "validClientProtocolVersionData")
@@ -207,10 +211,28 @@ public class TestRestLiServer
   {
     return new Object[][]
         {
-            { _server, AllProtocolVersions.BASELINE_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION },
-            { _server, AllProtocolVersions.LATEST_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION },
-            { _server, AllProtocolVersions.NEXT_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION },
-            { _server, AllProtocolVersions.PREVIOUS_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION },
+            //Rest
+            { _server, AllProtocolVersions.BASELINE_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.REST },
+            { _server, AllProtocolVersions.LATEST_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.REST },
+            { _server, AllProtocolVersions.NEXT_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.REST },
+            { _server, AllProtocolVersions.PREVIOUS_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.REST },
+            //Stream
+            { _server, AllProtocolVersions.BASELINE_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.STREAM },
+            { _server, AllProtocolVersions.LATEST_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.STREAM },
+            { _server, AllProtocolVersions.NEXT_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.STREAM },
+            { _server, AllProtocolVersions.PREVIOUS_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.STREAM }
+        };
+  }
+
+  @DataProvider(name = "validClientProtocolVersionDataStreamOnly")
+  public Object[][] provideValidClientProtocolVersionDataStreamOnly()
+  {
+    return new Object[][]
+        {
+            { _server, AllProtocolVersions.BASELINE_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION},
+            { _server, AllProtocolVersions.LATEST_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION},
+            { _server, AllProtocolVersions.NEXT_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION},
+            { _server, AllProtocolVersions.PREVIOUS_PROTOCOL_VERSION, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION}
         };
   }
 
@@ -223,77 +245,273 @@ public class TestRestLiServer
 
     return new Object[][]
         {
-            { _server, greaterThanNext, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION },
-            { _server, new ProtocolVersion(0, 0, 0), RestConstants.HEADER_RESTLI_PROTOCOL_VERSION },
+            //Rest
+            { _server, greaterThanNext, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.REST, true},
+            { _server, new ProtocolVersion(0, 0, 0), RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.REST, true},
+
+            //Stream
+            { _server, greaterThanNext, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.STREAM, true},
+            { _server, new ProtocolVersion(0, 0, 0), RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.STREAM, true},
+
+            //Rest with no exception stacktrace
+            { _serverWithNoExceptionStacktrace, greaterThanNext, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.REST, false},
+            { _serverWithNoExceptionStacktrace, new ProtocolVersion(0, 0, 0), RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.REST, false},
+
+            //Stream with no exception stacktrace
+            { _serverWithNoExceptionStacktrace, greaterThanNext, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.STREAM, false},
+            { _serverWithNoExceptionStacktrace, new ProtocolVersion(0, 0, 0), RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, RestOrStream.STREAM, false}
+        };
+  }
+
+  @DataProvider(name = "restOrStream")
+  public Object[][] restOrStream()
+  {
+    return new Object[][]
+        {
+            { RestOrStream.REST },
+            { RestOrStream.STREAM }
         };
   }
 
   @Test
-  public void testServer() throws Exception
+  public void testResourceDefinitionListeners() throws Exception
   {
-    testValidRequest(_server, null, false, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION);
+    int[] counts = new int[2];
+
+    RestLiConfig config = new RestLiConfig();
+    config.addResourcePackageNames("com.linkedin.restli.server.twitter");
+    config.addResourceDefinitionListener(new ResourceDefinitionListener()
+    {
+      @Override
+      public void onInitialized(Map<String, ResourceDefinition> definitions)
+      {
+        int resourceCount = 0;
+        for (ResourceDefinition definition : definitions.values()) {
+          resourceCount = resourceCount + 1 + countSubResources(definition);
+        }
+
+        counts[0] = definitions.size();
+        counts[1] = resourceCount;
+      }
+    });
+
+    new RestLiServer(config, new EasyMockResourceFactory(), EasyMock.createMock(Engine.class));
+
+    assertEquals(counts[0], 18);
+    assertEquals(counts[1], 25);
   }
 
-  @Test
-  public void testServerWithFilters() throws Exception
+  private int countSubResources(ResourceDefinition definition) {
+    int count = 0;
+    if (definition.hasSubResources()) {
+      for (ResourceDefinition subResource : definition.getSubResourceDefinitions().values()) {
+        count = count + 1 + countSubResources(subResource);
+      }
+    }
+    return count;
+  }
+
+  @Test(dataProvider = "restOrStream")
+  public void testServer(final RestOrStream restOrStream) throws Exception
   {
-    testValidRequest(_serverWithFilters, null, true, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION);
+    testValidRequest(_server, null, false, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, restOrStream);
+  }
+
+  @Test(dataProvider = "restOrStream")
+  public void testServerWithFilters(final RestOrStream restOrStream) throws Exception
+  {
+    testValidRequest(_serverWithFilters, null, true, RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, restOrStream);
   }
 
   @Test(dataProvider = "validClientProtocolVersionData")
-  public void testValidClientProtocolVersion(RestLiServer server, ProtocolVersion clientProtocolVersion, String headerConstant)
-      throws URISyntaxException
+  public void testValidClientProtocolVersion(RestLiServer server, ProtocolVersion clientProtocolVersion,
+                                             String headerConstant, RestOrStream restOrStream) throws URISyntaxException
   {
-    testValidRequest(server, clientProtocolVersion, false, headerConstant);
+    testValidRequest(server, clientProtocolVersion, false, headerConstant, restOrStream);
   }
 
-  private void testValidRequest(RestLiServer restLiServer, final ProtocolVersion clientProtocolVersion, boolean filters, final String headerConstant) throws URISyntaxException
+  @Test(dataProvider = "validClientProtocolVersionDataStreamOnly")
+  public void testValidReactiveUnstructuredDataRequest(RestLiServer server,
+                                                       ProtocolVersion clientProtocolVersion,
+                                                       String headerConstant)
+    throws URISyntaxException, IOException
   {
-    RestRequest request;
+    StreamRequest streamRequest = new StreamRequestBuilder(new URI("/reactiveFeedDownloads/1")).setHeader(headerConstant,
+                                                                                                  clientProtocolVersion.toString())
+                                                                                       .build(EntityStreams.emptyStream());
+
+    final FeedDownloadResourceReactive resource = getMockResource(FeedDownloadResourceReactive.class);
+    resource.get(eq(1L), anyObject());
+    EasyMock.expectLastCall().andDelegateTo(new FeedDownloadResourceReactive()).once();
+    replay(resource);
+
+    @SuppressWarnings("unchecked")
+    Callback<StreamResponse> r2Callback = createMock(Callback.class);
+    final Capture<StreamResponse> streamResponse = EasyMock.newCapture();
+    r2Callback.onSuccess(capture(streamResponse));
+    expectLastCall().once();
+    replay(r2Callback);
+
+    RequestContext requestContext = new RequestContext();
+    server.handleRequest(streamRequest, requestContext, r2Callback);
+
+    verify(resource);
+    verify(r2Callback);
+    assertNotNull(streamResponse);
+    assertEquals(streamResponse.getValue().getHeader(RestConstants.HEADER_CONTENT_TYPE), FeedDownloadResourceReactive.CONTENT_TYPE);
+    FullEntityReader fullEntityReader = new FullEntityReader(new Callback<ByteString>() {
+      @Override
+      public void onError(Throwable e)
+      {
+        fail("Error inside callback!! Failed to read response data from stream!", e);
+      }
+
+      @Override
+      public void onSuccess(ByteString result)
+      {
+        assertEquals(result, FeedDownloadResourceReactive.CONTENT);
+      }
+    });
+    streamResponse.getValue().getEntityStream().setReader(fullEntityReader);
+  }
+
+  @Test(dataProvider = "validClientProtocolVersionDataStreamOnly")
+  public void testValidUnstructuredDataRequest(RestLiServer server,
+                                               ProtocolVersion clientProtocolVersion,
+                                               String headerConstant)
+    throws URISyntaxException, IOException
+  {
+    StreamRequest streamRequest = new StreamRequestBuilder(new URI("/feedDownloads/1")).setHeader(headerConstant,
+                                                                                                  clientProtocolVersion.toString())
+                                                                                       .build(EntityStreams.emptyStream());
+
+    final FeedDownloadResource resource = getMockResource(FeedDownloadResource.class);
+    resource.get(eq(1L), anyObject(UnstructuredDataWriter.class));
+    EasyMock.expectLastCall().andDelegateTo(new FeedDownloadResource()).once();
+    replay(resource);
+
+    @SuppressWarnings("unchecked")
+    Callback<StreamResponse> r2Callback = createMock(Callback.class);
+    final Capture<StreamResponse> streamResponse = EasyMock.newCapture();
+    r2Callback.onSuccess(capture(streamResponse));
+    expectLastCall().once();
+    replay(r2Callback);
+
+    RequestContext requestContext = new RequestContext();
+    server.handleRequest(streamRequest, requestContext, r2Callback);
+
+    verify(resource);
+    verify(r2Callback);
+
+    assertNotNull(streamResponse);
+    assertEquals(streamResponse.getValue().getHeader(RestConstants.HEADER_CONTENT_TYPE), FeedDownloadResource.CONTENT_TYPE);
+    FullEntityReader fullEntityReader = new FullEntityReader(new Callback<ByteString>() {
+      @Override
+      public void onError(Throwable e)
+      {
+        fail("Error inside callback!! Failed to read response data from stream!", e);
+      }
+
+      @Override
+      public void onSuccess(ByteString result)
+      {
+        assertEquals(result.copyBytes(), FeedDownloadResource.CONTENT);
+      }
+    });
+    streamResponse.getValue().getEntityStream().setReader(fullEntityReader);
+  }
+
+  @Test(dataProvider = "validClientProtocolVersionDataStreamOnly")
+  public void testValidUnstructuredDataRequestMissingHeader(RestLiServer server,
+                                                            ProtocolVersion clientProtocolVersion,
+                                                            String headerConstant)
+    throws URISyntaxException, IOException
+  {
+    StreamRequest streamRequest = new StreamRequestBuilder(new URI("/feedDownloads/1")).setHeader(headerConstant,
+                                                                                                  clientProtocolVersion.toString())
+                                                                                       .build(EntityStreams.emptyStream());
+
+    final FeedDownloadResource resource = getMockResource(FeedDownloadResource.class);
+    resource.get(eq(1L), anyObject(UnstructuredDataWriter.class));
+    EasyMock.expectLastCall().andDelegateTo(new FeedDownloadResource() {
+      @Override
+      public void get(Long key, UnstructuredDataWriter writer)
+      {
+        // do nothing here, this should cause error
+      }
+    }).once();
+    replay(resource);
+
+    @SuppressWarnings("unchecked")
+    Callback<StreamResponse> r2Callback = createMock(Callback.class);
+    r2Callback.onError(anyObject());
+    expectLastCall().once();
+    replay(r2Callback);
+
+    RequestContext requestContext = new RequestContext();
+    server.handleRequest(streamRequest, requestContext, r2Callback);
+
+    verify(resource);
+    verify(r2Callback);
+  }
+
+  private void testValidRequest(RestLiServer restLiServer, final ProtocolVersion clientProtocolVersion, boolean filters,
+                                final String headerConstant, final RestOrStream restOrStream) throws URISyntaxException
+  {
+    RestRequest request = null;
+    StreamRequest streamRequest = null;
     if (clientProtocolVersion != null)
     {
-      request =
-          new RestRequestBuilder(new URI("/statuses/1")).setHeader(headerConstant,
-                                                                   clientProtocolVersion.toString()).build();
+      if (restOrStream == RestOrStream.REST)
+      {
+        request = new RestRequestBuilder(new URI("/statuses/1")).setHeader(headerConstant, clientProtocolVersion.toString()).build();
+      }
+      else
+      {
+        streamRequest = new StreamRequestBuilder(new URI("/statuses/1")).setHeader(headerConstant, clientProtocolVersion.toString()).build(EntityStreams.emptyStream());
+      }
     }
     else
     {
-      request = new RestRequestBuilder(new URI("/statuses/1")).build();
+      if (restOrStream == RestOrStream.REST)
+      {
+        request = new RestRequestBuilder(new URI("/statuses/1")).build();
+      }
+      else
+      {
+        streamRequest = new StreamRequestBuilder(new URI("/statuses/1")).build(EntityStreams.emptyStream());
+      }
     }
 
     final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
     EasyMock.expect(statusResource.get(eq(1L))).andReturn(buildStatusRecord()).once();
     if (filters)
     {
-      _mockRequestFilter.onRequest(EasyMock.anyObject(FilterRequestContext.class),
-                                   EasyMock.anyObject(NextRequestFilter.class));
+      _mockFilter.onRequest(anyObject(FilterRequestContext.class));
       EasyMock.expectLastCall().andAnswer(new IAnswer<Object>()
       {
         @Override
         public Object answer() throws Throwable
         {
-          ((NextRequestFilter) EasyMock.getCurrentArguments()[1]).onRequest((FilterRequestContext) EasyMock.getCurrentArguments()[0]);
-          return null;
+          return CompletableFuture.completedFuture(null);
         }
       }).times(1);
 
-      _mockResponseFilter.onResponse(EasyMock.anyObject(FilterRequestContext.class),
-                                     EasyMock.anyObject(FilterResponseContext.class),
-                                     EasyMock.anyObject(NextResponseFilter.class));
+      _mockFilter.onResponse(anyObject(FilterRequestContext.class),
+                             anyObject(FilterResponseContext.class));
       EasyMock.expectLastCall().andAnswer(new IAnswer<Object>()
       {
         @Override
         public Object answer() throws Throwable
         {
-          ((NextResponseFilter) EasyMock.getCurrentArguments()[2]).onResponse((FilterRequestContext) EasyMock.getCurrentArguments()[0],
-                                                                              (FilterResponseContext) EasyMock.getCurrentArguments()[1]);
-          return null;
+          return CompletableFuture.completedFuture(null);
         }
       }).times(1);
-      EasyMock.replay(_mockRequestFilter, _mockResponseFilter);
+      replay(_mockFilter);
     }
-    EasyMock.replay(statusResource);
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    replay(statusResource);
+
+    final Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -318,26 +536,64 @@ public class TestRestLiServer
         fail();
       }
     };
-    restLiServer.handleRequest(request, new RequestContext(), callback);
+
+    final RequestContext requestContext = new RequestContext();
+
+    if (restOrStream == RestOrStream.REST)
+    {
+      restLiServer.handleRequest(request, requestContext, restResponseCallback);
+    }
+    else
+    {
+      Callback<StreamResponse> streamResponseCallback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          Messages.toRestResponse(streamResponse, new Callback<RestResponse>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestResponse result)
+            {
+              restResponseCallback.onSuccess(result);
+            }
+          });
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          fail();
+        }
+      };
+
+      restLiServer.handleRequest(streamRequest, requestContext, streamResponseCallback);
+    }
     if (filters)
     {
-      EasyMock.verify(_mockRequestFilter, _mockResponseFilter);
+      EasyMock.verify(_mockFilter, _mockFilter);
     }
+
+    Assert.assertNotNull(RestLiTraceInfo.from(requestContext), "RestLiTraceInfo not found in request context");
   }
 
   @Test(dataProvider = "invalidClientProtocolVersionData")
-  public void testInvalidClientProtocolVersion(RestLiServer server, ProtocolVersion clientProtocolVersion, String headerConstant)
-      throws URISyntaxException
+  public void testInvalidClientProtocolVersion(RestLiServer server, ProtocolVersion clientProtocolVersion,
+                                               String headerConstant, RestOrStream restOrStream, Boolean hasStackTrace) throws URISyntaxException
   {
-    testBadRequest(server, clientProtocolVersion, headerConstant);
+    testBadRequest(server, clientProtocolVersion, headerConstant, restOrStream, hasStackTrace);
   }
 
-  private void testBadRequest(RestLiServer restLiServer, final ProtocolVersion clientProtocolVersion, String headerConstant)
-      throws URISyntaxException
+  private void testBadRequest(RestLiServer restLiServer, final ProtocolVersion clientProtocolVersion, String headerConstant,
+                              final RestOrStream restOrStream, final boolean hasStackTrace) throws URISyntaxException
   {
-    RestRequest request = new RestRequestBuilder(new URI("/statuses/1")).setHeader(headerConstant, clientProtocolVersion.toString()).build();
-
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -348,26 +604,76 @@ public class TestRestLiServer
       @Override
       public void onError(Throwable e)
       {
-        assertEquals(((RestException)e).getResponse().getStatus(), 400);
-        String expectedErrorMessage =
-            "Rest.li protocol version " + clientProtocolVersion + " used by the client is not supported!";
+        assertEquals(((RestException) e).getResponse().getStatus(), 400);
+        String expectedErrorMessage = "Rest.li protocol version " + clientProtocolVersion + " used by the client is not supported!";
         assertEquals(e.getCause().getMessage(), expectedErrorMessage);
+        assertEquals(e.getStackTrace().length != 0, hasStackTrace);
       }
     };
-    restLiServer.handleRequest(request, new RequestContext(), callback);
+
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request =
+          new RestRequestBuilder(new URI("/statuses/1")).setHeader(headerConstant, clientProtocolVersion.toString()).build();
+
+      restLiServer.handleRequest(request, new RequestContext(), restResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest =
+          new StreamRequestBuilder(new URI("/statuses/1")).setHeader(headerConstant, clientProtocolVersion.toString()).build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          fail("The request should have failed!");
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          Messages.toRestException((StreamException)e, new Callback<RestException>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestException result)
+            {
+              restResponseCallback.onError(result);
+            }
+          });
+        }
+      };
+      restLiServer.handleRequest(streamRequest, new RequestContext(), callback);
+    }
   }
 
   @SuppressWarnings({"unchecked"})
-  @Test
-  public void testAsyncServer() throws Exception
+  @Test(dataProvider = "restOrStream")
+  public void testAsyncServer(final RestOrStream restOrStream) throws Exception
   {
-    RestRequest request = new RestRequestBuilder(new URI("/asyncstatuses/1"))
-        .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString())
-        .build();
-
     final AsyncStatusCollectionResource statusResource = getMockResource(AsyncStatusCollectionResource.class);
 
-    final Callback<RestResponse> callback = new Callback<RestResponse>()
+    statusResource.get(eq(1L), EasyMock.<Callback<Status>> anyObject());
+    EasyMock.expectLastCall().andAnswer(new IAnswer<Object>()
+    {
+      @Override
+      public Object answer() throws Throwable {
+        Callback<Status> callback = (Callback<Status>) EasyMock.getCurrentArguments()[1];
+        Status stat = buildStatusRecord();
+        callback.onSuccess(stat);
+        return null;
+      }
+    });
+    replay(statusResource);
+
+    final Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -385,32 +691,169 @@ public class TestRestLiServer
       }
     };
 
-    statusResource.get(eq(1L), EasyMock.<Callback<Status>> anyObject());
-    EasyMock.expectLastCall().andAnswer(new IAnswer<Object>() {
-      @Override
-      public Object answer() throws Throwable {
-        Callback<Status> callback = (Callback<Status>) EasyMock.getCurrentArguments()[1];
-        Status stat = buildStatusRecord();
-        callback.onSuccess(stat);
-        return null;
-      }
-    });
-    EasyMock.replay(statusResource);
-    _server.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      final RestRequest request = new RestRequestBuilder(new URI("/asyncstatuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString()).build();
+
+      _server.handleRequest(request, new RequestContext(), restResponseCallback);
+    }
+    else
+    {
+      final StreamRequest streamRequest = new StreamRequestBuilder(new URI("/asyncstatuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString()).build(EntityStreams.emptyStream());
+
+      final Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          Messages.toRestResponse(streamResponse, new Callback<RestResponse>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestResponse result)
+            {
+              restResponseCallback.onSuccess(result);
+            }
+          });
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          fail();
+        }
+      };
+
+      _server.handleRequest(streamRequest, new RequestContext(), callback);
+    }
   }
 
   @Test
-  public void testSyncNullObject404() throws Exception
+  public void testUnstructuredDataGetWithBody() throws Exception
   {
-    RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
+    EntityStream streams = EntityStreams.newEntityStream(new ByteStringWriter(ByteString.copy(new byte[] {1,2,3,4})));
+    Observer observer = new TestObserver();
+    streams.addObserver(observer);
+
+    final StreamRequest streamRequest = new StreamRequestBuilder(new URI("/reactiveGreetingCollectionUnstructuredData/hello"))
         .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString())
-        .build();
+        .build(streams);
+
+    final Callback<StreamResponse> callback = new Callback<StreamResponse>()
+    {
+      @Override
+      public void onSuccess(StreamResponse streamResponse) {}
+
+      @Override
+      public void onError(Throwable e) {}
+    };
+
+    _server.handleRequest(streamRequest, new RequestContext(), callback);
+    assertTrue(((TestObserver) observer).isDone());
+  }
+
+  @Test(dataProvider = "restOrStream")
+  public void testHandleRequestWithRestLiResponseSuccess(final RestOrStream restOrStream) throws Exception
+  {
+    Status status = new Status();
+    status.data().put("test", "this is a test");
 
     final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
-    EasyMock.expect(statusResource.get(eq(1L))).andReturn(null).once();
-    EasyMock.replay(statusResource);
+    EasyMock.expect(statusResource.get(eq(1L))).andReturn(status).once();
+    replay(statusResource);
 
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    Callback<RestLiResponse> restLiResponseCallback = new Callback<RestLiResponse>()
+    {
+      @Override
+      public void onSuccess(RestLiResponse restLiResponse)
+      {
+        assertEquals(restLiResponse.getDataMap(), status.data());
+        EasyMock.verify(statusResource);
+        EasyMock.reset(statusResource);
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        fail("We should not get an error here. The server should have returned a 200!");
+      }
+    };
+
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString()).build();
+
+      _server.handleRequestWithRestLiResponse(request, new RequestContext(), restLiResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest = new StreamRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString())
+          .build(EntityStreams.emptyStream());
+
+      _server.handleRequestWithRestLiResponse(streamRequest, new RequestContext(), restLiResponseCallback);
+    }
+  }
+
+  @Test(dataProvider = "restOrStream")
+  public void testHandleRequestWithRestLiResponseError(final RestOrStream restOrStream) throws Exception
+  {
+    final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
+    EasyMock.expect(statusResource.get(eq(1L))).andReturn(null).once();
+    replay(statusResource);
+
+    Callback<RestLiResponse> restLiResponseCallback = new Callback<RestLiResponse>()
+    {
+      @Override
+      public void onSuccess(RestLiResponse restLiResponse)
+      {
+        fail("We should not get a success here. The server should have returned a 404!");
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        RestLiResponseException restLiResponseException = (RestLiResponseException) e;
+        assertEquals(restLiResponseException.getRestLiResponse().getStatus(), HttpStatus.S_404_NOT_FOUND,
+            "We should get a 404 back here!");
+        EasyMock.verify(statusResource);
+        EasyMock.reset(statusResource);
+      }
+    };
+
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString()).build();
+
+      _server.handleRequestWithRestLiResponse(request, new RequestContext(), restLiResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest = new StreamRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString())
+          .build(EntityStreams.emptyStream());
+
+      _server.handleRequestWithRestLiResponse(streamRequest, new RequestContext(), restLiResponseCallback);
+    }
+  }
+
+  @Test(dataProvider = "restOrStream")
+  public void testSyncNullObject404(final RestOrStream restOrStream) throws Exception
+  {
+    final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
+    EasyMock.expect(statusResource.get(eq(1L))).andReturn(null).once();
+    replay(statusResource);
+
+    Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -428,20 +871,60 @@ public class TestRestLiServer
       }
     };
 
-    _server.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString()).build();
+
+      _server.handleRequest(request, new RequestContext(), restResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest = new StreamRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString())
+          .build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          fail("We should not get a success here. The server should have returned a 404!");
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          Messages.toRestException((StreamException) e, new Callback<RestException>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestException result)
+            {
+              restResponseCallback.onError(result);
+            }
+          });
+        }
+      };
+
+      _server.handleRequest(streamRequest, new RequestContext(), callback);
+    }
   }
 
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "protocolVersions")
-  public void testPreprocessingError(final ProtocolVersion protocolVersion, final String errorResponseHeaderName) throws Exception
+  public void testPreprocessingError(final ProtocolVersion protocolVersion, final String errorResponseHeaderName,
+                                     final RestOrStream restOrStream) throws Exception
   {
     //Bad key type will generate a routing error
-    RestRequest request = new RestRequestBuilder(new URI("/statuses/abcd"))
-        .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString())
-        .build();
     final StatusCollectionResource statusResource = _resourceFactory.getMock(StatusCollectionResource.class);
-    EasyMock.replay(statusResource);
+    replay(statusResource);
 
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -453,7 +936,7 @@ public class TestRestLiServer
       public void onError(Throwable e)
       {
         assertTrue(e instanceof RestException);
-        RestException restException = (RestException)e;
+        RestException restException = (RestException) e;
         RestResponse restResponse = restException.getResponse();
 
         assertEquals(restResponse.getStatus(), 400);
@@ -465,21 +948,61 @@ public class TestRestLiServer
       }
     };
 
-    _server.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/abcd"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString()).build();
+
+      _server.handleRequest(request, new RequestContext(), restResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest = new StreamRequestBuilder(new URI("/statuses/abcd"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString())
+          .build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          fail();
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          Messages.toRestException((StreamException) e, new Callback<RestException>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestException result)
+            {
+              restResponseCallback.onError(result);
+            }
+          });
+        }
+      };
+
+      _server.handleRequest(streamRequest, new RequestContext(), callback);
+    }
   }
 
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "protocolVersions")
-  public void testApplicationException(final ProtocolVersion protocolVersion, final String errorResponseHeaderName) throws Exception
+  public void testApplicationException(final ProtocolVersion protocolVersion, final String errorResponseHeaderName,
+                                       final RestOrStream restOrStream) throws Exception
   {
-    RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
-        .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString())
-        .build();
     final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
     EasyMock.expect(statusResource.get(eq(1L))).andThrow(new RestLiServiceException(
-            HttpStatus.S_500_INTERNAL_SERVER_ERROR, "Mock Exception")).once();
-    EasyMock.replay(statusResource);
+        HttpStatus.S_500_INTERNAL_SERVER_ERROR, "Mock Exception")).once();
+    replay(statusResource);
 
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -491,7 +1014,7 @@ public class TestRestLiServer
       public void onError(Throwable e)
       {
         assertTrue(e instanceof RestException);
-        RestException restException = (RestException)e;
+        RestException restException = (RestException) e;
         RestResponse restResponse = restException.getResponse();
 
         try
@@ -499,7 +1022,8 @@ public class TestRestLiServer
           assertEquals(restResponse.getStatus(), 500);
           assertTrue(restResponse.getEntity().length() > 0);
           assertEquals(restResponse.getHeader(errorResponseHeaderName), RestConstants.HEADER_VALUE_ERROR);
-          ErrorResponse responseBody = DataMapUtils.read(restResponse.getEntity().asInputStream(), ErrorResponse.class);
+          ErrorResponse responseBody =
+              DataMapUtils.read(restResponse.getEntity().asInputStream(), ErrorResponse.class, restResponse.getHeaders());
           assertEquals(responseBody.getMessage(), "Mock Exception");
           assertEquals(responseBody.getExceptionClass(), "com.linkedin.restli.server.RestLiServiceException");
           assertTrue(responseBody.getStackTrace().startsWith(
@@ -516,20 +1040,59 @@ public class TestRestLiServer
       }
     };
 
-    _server.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString()).build();
+
+      _server.handleRequest(request, new RequestContext(), restResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest = new StreamRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString())
+          .build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          fail();
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          Messages.toRestException((StreamException) e, new Callback<RestException>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestException result)
+            {
+              restResponseCallback.onError(result);
+            }
+          });
+        }
+      };
+
+      _server.handleRequest(streamRequest, new RequestContext(), callback);
+    }
   }
 
-  @Test
-  public void testInternalErrorMessage() throws Exception
+  @Test(dataProvider = "restOrStream")
+  public void testInternalErrorMessage(final RestOrStream restOrStream) throws Exception
   {
-    RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
-        .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString())
-        .build();
     final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
     EasyMock.expect(statusResource.get(eq(1L))).andThrow(new IllegalArgumentException("oops")).once();
-    EasyMock.replay(statusResource);
+    replay(statusResource);
 
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -541,12 +1104,13 @@ public class TestRestLiServer
       public void onError(Throwable e)
       {
         assertTrue(e instanceof RestException);
-        RestException restException = (RestException)e;
+        RestException restException = (RestException) e;
         RestResponse restResponse = restException.getResponse();
 
         try
         {
-          ErrorResponse responseBody = DataMapUtils.read(restResponse.getEntity().asInputStream(), ErrorResponse.class);
+          ErrorResponse responseBody =
+              DataMapUtils.read(restResponse.getEntity().asInputStream(), ErrorResponse.class, restResponse.getHeaders());
           assertEquals(responseBody.getMessage(), ErrorResponseBuilder.DEFAULT_INTERNAL_ERROR_MESSAGE);
 
           EasyMock.verify(statusResource);
@@ -559,20 +1123,59 @@ public class TestRestLiServer
       }
     };
 
-    _server.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString()).build();
+
+      _server.handleRequest(request, new RequestContext(), restResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest = new StreamRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString())
+          .build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          fail();
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          Messages.toRestException((StreamException) e, new Callback<RestException>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestException result)
+            {
+              restResponseCallback.onError(result);
+            }
+          });
+        }
+      };
+
+      _server.handleRequest(streamRequest, new RequestContext(), callback);
+    }
   }
 
-  @Test
-  public void testCustomizedInternalErrorMessage() throws Exception
+  @Test(dataProvider = "restOrStream")
+  public void testCustomizedInternalErrorMessage(final RestOrStream restOrStream) throws Exception
   {
-    RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
-        .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString())
-        .build();
     final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
     EasyMock.expect(statusResource.get(eq(1L))).andThrow(new IllegalArgumentException("oops")).once();
-    EasyMock.replay(statusResource);
+    replay(statusResource);
 
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -584,12 +1187,13 @@ public class TestRestLiServer
       public void onError(Throwable e)
       {
         assertTrue(e instanceof RestException);
-        RestException restException = (RestException)e;
+        RestException restException = (RestException) e;
         RestResponse restResponse = restException.getResponse();
 
         try
         {
-          ErrorResponse responseBody = DataMapUtils.read(restResponse.getEntity().asInputStream(), ErrorResponse.class);
+          ErrorResponse responseBody =
+              DataMapUtils.read(restResponse.getEntity().asInputStream(), ErrorResponse.class, restResponse.getHeaders());
           assertEquals(responseBody.getMessage(), "kthxbye.");
 
           EasyMock.verify(statusResource);
@@ -602,23 +1206,63 @@ public class TestRestLiServer
       }
     };
 
-    _serverWithCustomErrorResponseConfig.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString()).build();
+
+      _serverWithCustomErrorResponseConfig.handleRequest(request, new RequestContext(), restResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest = new StreamRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, AllProtocolVersions.BASELINE_PROTOCOL_VERSION.toString())
+          .build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          fail();
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          Messages.toRestException((StreamException) e, new Callback<RestException>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestException result)
+            {
+              restResponseCallback.onError(result);
+            }
+          });
+        }
+      };
+
+      _serverWithCustomErrorResponseConfig.handleRequest(streamRequest, new RequestContext(), callback);
+    }
   }
 
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "protocolVersions")
-  public void testMessageAndDetailsErrorFormat(final ProtocolVersion protocolVersion, final String errorResponseHeaderName) throws Exception
+  public void testMessageAndDetailsErrorFormat(final ProtocolVersion protocolVersion, final String errorResponseHeaderName,
+                                               final RestOrStream restOrStream) throws Exception
   {
-    RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
-        .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString())
-        .build();
     final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
     final DataMap details = new DataMap();
     details.put("errorKey", "errorDetail");
     EasyMock.expect(statusResource.get(eq(1L))).andThrow(new RestLiServiceException(
         HttpStatus.S_500_INTERNAL_SERVER_ERROR, "Mock Exception").setErrorDetails(details)).once();
-    EasyMock.replay(statusResource);
+    replay(statusResource);
 
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -630,7 +1274,7 @@ public class TestRestLiServer
       public void onError(Throwable e)
       {
         assertTrue(e instanceof RestException);
-        RestException restException = (RestException)e;
+        RestException restException = (RestException) e;
         RestResponse restResponse = restException.getResponse();
 
         try
@@ -638,7 +1282,8 @@ public class TestRestLiServer
           assertEquals(restResponse.getStatus(), 500);
           assertTrue(restResponse.getEntity().length() > 0);
           assertEquals(restResponse.getHeader(errorResponseHeaderName), RestConstants.HEADER_VALUE_ERROR);
-          ErrorResponse responseBody = DataMapUtils.read(restResponse.getEntity().asInputStream(), ErrorResponse.class);
+          ErrorResponse responseBody =
+              DataMapUtils.read(restResponse.getEntity().asInputStream(), ErrorResponse.class, restResponse.getHeaders());
 
           // in this test, we're using the _serverWithCustomErrorResponseConfig (see below), which has been configure to use the
           // MESSAGE_AND_DETAILS ErrorResponseFormat, so stack trace and other error response parts should be absent
@@ -658,21 +1303,61 @@ public class TestRestLiServer
       }
     };
 
-    _serverWithCustomErrorResponseConfig.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString()).build();
+
+      _serverWithCustomErrorResponseConfig.handleRequest(request, new RequestContext(), restResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest = new StreamRequestBuilder(new URI("/statuses/1"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString())
+          .build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          fail();
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          Messages.toRestException((StreamException) e, new Callback<RestException>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestException result)
+            {
+              restResponseCallback.onError(result);
+            }
+          });
+        }
+      };
+
+      _serverWithCustomErrorResponseConfig.handleRequest(streamRequest, new RequestContext(), callback);
+    }
   }
 
   @Test(dataProvider = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "protocolVersions")
-  public void testPostProcessingException(final ProtocolVersion protocolVersion, final String errorResponseHeaderName) throws Exception
+  public void testPostProcessingException(final ProtocolVersion protocolVersion, final String errorResponseHeaderName,
+                                          final RestOrStream restOrStream) throws Exception
   {
     //request for nested projection within string field will generate error
-    RestRequest request = new RestRequestBuilder(new URI("/statuses/1?fields=text:(invalid)"))
-        .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString())
-        .build();
     final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
     EasyMock.expect(statusResource.get(eq(1L))).andReturn(buildStatusRecord()).once();
-    EasyMock.replay(statusResource);
+    replay(statusResource);
 
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    Callback<RestResponse> restResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -684,7 +1369,7 @@ public class TestRestLiServer
       public void onError(Throwable e)
       {
         assertTrue(e instanceof RestException);
-        RestException restException = (RestException)e;
+        RestException restException = (RestException) e;
         RestResponse restResponse = restException.getResponse();
 
         try
@@ -703,7 +1388,49 @@ public class TestRestLiServer
       }
     };
 
-    _server.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1?fields=text:(invalid)"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString()).build();
+
+      _server.handleRequest(request, new RequestContext(), restResponseCallback);
+    }
+    else
+    {
+      StreamRequest streamRequest = new StreamRequestBuilder(new URI("/statuses/1?fields=text:(invalid)"))
+          .setHeader(RestConstants.HEADER_RESTLI_PROTOCOL_VERSION, protocolVersion.toString())
+          .build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          fail();
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          Messages.toRestException((StreamException) e, new Callback<RestException>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestException result)
+            {
+              restResponseCallback.onError(result);
+            }
+          });
+        }
+      };
+
+      _server.handleRequest(streamRequest, new RequestContext(), callback);
+    }
   }
 
   @Test
@@ -715,10 +1442,10 @@ public class TestRestLiServer
     assertEquals(3, config.getResourcePackageNamesSet().size());
     config.setResourcePackageNames("foo");
     assertEquals(1, config.getResourcePackageNamesSet().size());
-    config.setResourcePackageNames("foo,bar,baz");
-    assertEquals(3, config.getResourcePackageNamesSet().size());
+    config.setResourcePackageNames("foo, bar , baz");
+    assertEquals(ImmutableSet.of("foo", "bar", "baz"), config.getResourcePackageNamesSet());
 
-    Set<String> packageSet = new HashSet<String>();
+    Set<String> packageSet = new HashSet<>();
     packageSet.add("a");
     packageSet.add("b");
     config.setResourcePackageNamesSet(packageSet);
@@ -741,12 +1468,11 @@ public class TestRestLiServer
     assertEquals(4, config.getResourcePackageNamesSet().size());
   }
 
-  @Test
-  public void testDebugRequestHandlers() throws URISyntaxException
+  @Test(dataProvider =  "restOrStream")
+  public void testDebugRequestHandlers(final RestOrStream restOrStream) throws URISyntaxException
   {
-    RestRequest request = new RestRequestBuilder(new URI("/statuses/1/__debug/a/s")).build();
-
-    Callback<RestResponse> callback = new Callback<RestResponse>()
+    //Without a resource
+    final Callback<RestResponse> noResourceRestResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -763,15 +1489,54 @@ public class TestRestLiServer
       }
     };
 
-    _server.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1/__debug/a/s")).build();
 
+      _server.handleRequest(request, new RequestContext(), noResourceRestResponseCallback);
+    }
+    else
+    {
+      StreamRequest request = new StreamRequestBuilder(new URI("/statuses/1/__debug/a/s")).build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          Messages.toRestResponse(streamResponse, new Callback<RestResponse>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestResponse result)
+            {
+              noResourceRestResponseCallback.onSuccess(result);
+            }
+          });
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          fail();
+        }
+      };
+
+      _server.handleRequest(request, new RequestContext(), callback);
+    }
+
+
+    //With a resource this time
     final StatusCollectionResource statusResource = getMockResource(StatusCollectionResource.class);
     EasyMock.expect(statusResource.get(eq(1L))).andReturn(buildStatusRecord()).once();
-    EasyMock.replay(statusResource);
+    replay(statusResource);
 
-    request = new RestRequestBuilder(new URI("/statuses/1/__debug/b")).build();
-
-    callback = new Callback<RestResponse>()
+    final Callback<RestResponse> resourceRestResponseCallback = new Callback<RestResponse>()
     {
       @Override
       public void onSuccess(RestResponse restResponse)
@@ -791,14 +1556,757 @@ public class TestRestLiServer
       }
     };
 
-    _server.handleRequest(request, new RequestContext(), callback);
+    if (restOrStream == RestOrStream.REST)
+    {
+      RestRequest request = new RestRequestBuilder(new URI("/statuses/1/__debug/b")).build();
+
+      _server.handleRequest(request, new RequestContext(), resourceRestResponseCallback);
+    }
+    else
+    {
+      StreamRequest request = new StreamRequestBuilder(new URI("/statuses/1/__debug/b")).build(EntityStreams.emptyStream());
+
+      Callback<StreamResponse> callback = new Callback<StreamResponse>()
+      {
+        @Override
+        public void onSuccess(StreamResponse streamResponse)
+        {
+          Messages.toRestResponse(streamResponse, new Callback<RestResponse>()
+          {
+            @Override
+            public void onError(Throwable e)
+            {
+              Assert.fail();
+            }
+
+            @Override
+            public void onSuccess(RestResponse result)
+            {
+              resourceRestResponseCallback.onSuccess(result);
+            }
+          });
+        }
+
+        @Override
+        public void onError(Throwable e)
+        {
+          fail();
+        }
+      };
+
+      _server.handleRequest(request, new RequestContext(), callback);
+    }
+  }
+
+  @DataProvider(name = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "protocolVersions")
+  private Object[][] protocolVersions1And2DataProvider()
+  {
+    return new Object[][] {
+        //Rest
+        {
+            AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
+            RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE, RestOrStream.REST
+        },
+        {
+            AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
+            RestConstants.HEADER_RESTLI_ERROR_RESPONSE, RestOrStream.REST
+        },
+
+        //Stream
+        {
+            AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
+            RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE, RestOrStream.STREAM
+        },
+        {
+            AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
+            RestConstants.HEADER_RESTLI_ERROR_RESPONSE, RestOrStream.STREAM
+        }
+    };
+  }
+
+  @Test
+  public void testRestRequestAttachmentsPresent() throws Exception
+  {
+    //This test verifies that a RestRequest sent to the RestLiServer throws an exception if the content type is multipart/related
+    RestRequest contentTypeMultiPartRelated = new RestRequestBuilder(new URI("/statuses/abcd"))
+        .setHeader(RestConstants.HEADER_CONTENT_TYPE, RestConstants.HEADER_VALUE_MULTIPART_RELATED).build();
+
+    Callback<RestResponse> callback = new Callback<RestResponse>()
+    {
+      @Override
+      public void onSuccess(RestResponse restResponse)
+      {
+        fail();
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        assertTrue(e instanceof RestException);
+        RestException restException = (RestException)e;
+        RestResponse restResponse = restException.getResponse();
+
+        assertEquals(restResponse.getStatus(), 415);
+        assertTrue(restResponse.getEntity().length() > 0);
+        assertEquals(restResponse.getEntity().asString(Charset.defaultCharset()), "This server cannot handle requests with a content type of multipart/related");
+      }
+    };
+
+    _server.handleRequest(contentTypeMultiPartRelated, new RequestContext(), callback);
+  }
+
+  @Test
+  public void testRestRequestResponseAttachmentsDesired() throws Exception
+  {
+    //This test verifies that a RestRequest sent to the RestLiServer throws an exception if the accept type
+    //includes multipart related
+    RestRequest acceptTypeMultiPartRelated = new RestRequestBuilder(new URI("/statuses/abcd"))
+        .setHeader(RestConstants.HEADER_ACCEPT, RestConstants.HEADER_VALUE_MULTIPART_RELATED).build();
+
+    Callback<RestResponse> callback = new Callback<RestResponse>()
+    {
+      @Override
+      public void onSuccess(RestResponse restResponse)
+      {
+        fail();
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        assertTrue(e instanceof RestException);
+        RestException restException = (RestException)e;
+        RestResponse restResponse = restException.getResponse();
+
+        assertEquals(restResponse.getStatus(), 406);
+        assertTrue(restResponse.getEntity().length() > 0);
+        assertEquals(restResponse.getEntity().asString(Charset.defaultCharset()), "This server cannot handle requests with an accept type of multipart/related");
+      }
+    };
+
+    _server.handleRequest(acceptTypeMultiPartRelated, new RequestContext(), callback);
+  }
+
+  @Test
+  public void testRestRequestAttemptVerifyParseFailed() throws Exception
+  {
+    //This test verifies that a RestRequest sent to the RestLiServer throws an exception if the content type or accept types
+    //fail to parse properly. This occurs when we try to verify that the request's content type or accept types do
+    //not include multipart/related.
+    RestRequest invalidContentTypeRequest = new RestRequestBuilder(new URI("/statuses/abcd"))
+        .setHeader(RestConstants.HEADER_CONTENT_TYPE, "©").build();
+
+    Callback<RestResponse> callback = new Callback<RestResponse>()
+    {
+      @Override
+      public void onSuccess(RestResponse restResponse)
+      {
+        fail();
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        assertTrue(e instanceof RestException);
+        RestException restException = (RestException)e;
+        RestResponse restResponse = restException.getResponse();
+
+        assertEquals(restResponse.getStatus(), 400);
+        assertTrue(restResponse.getEntity().length() > 0);
+        assertEquals(restResponse.getEntity().asString(Charset.defaultCharset()), "Unable to parse content or accept types.");
+      }
+    };
+
+    _server.handleRequest(invalidContentTypeRequest, new RequestContext(), callback);
+  }
+
+  @Test
+  public void testStreamRequestMultiplexedRequestMultiPartAcceptType() throws Exception
+  {
+    //This test verifies that a StreamRequest sent to the RestLiServer throws an exception if the accept type contains
+    //multipart/related.
+    StreamRequest streamRequestMux = new StreamRequestBuilder(new URI("/mux"))
+        .setHeader(RestConstants.HEADER_ACCEPT, RestConstants.HEADER_VALUE_MULTIPART_RELATED).build(EntityStreams.emptyStream());
+
+    Callback<StreamResponse> callback = new Callback<StreamResponse>()
+    {
+      @Override
+      public void onSuccess(StreamResponse restResponse)
+      {
+        fail();
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        assertTrue(e instanceof StreamException);
+        StreamException streamException = (StreamException)e;
+        StreamResponse streamResponse = streamException.getResponse();
+
+        assertEquals(streamResponse.getStatus(), 406);
+        final FullEntityReader fullEntityReader = new FullEntityReader(new Callback<ByteString>()
+        {
+          @Override
+          public void onError(Throwable e)
+          {
+            Assert.fail();
+          }
+
+          @Override
+          public void onSuccess(ByteString result)
+          {
+            //We have the body so assert
+            assertTrue(result.length() > 0);
+            assertEquals(result.asString(Charset.defaultCharset()),
+                         "This server cannot handle multiplexed requests that have an accept type of multipart/related");
+          }
+        });
+        streamResponse.getEntityStream().setReader(fullEntityReader);
+      }
+    };
+
+    _server.handleRequest(streamRequestMux, new RequestContext(), callback);
+  }
+
+  @Test
+  public void testRequestAttachmentsAndResponseAttachments() throws Exception
+  {
+    //This test verifies the server's ability to accept request attachments and send back response attachments. This is the
+    //main test to verify the wire protocol for streaming. We send a payload that contains the rest.li payload and some attachments
+    //and we send a response back with a rest.li payload and some attachments.
+
+    //Define the server side resource attachments to be sent back.
+    final RestLiResponseAttachments.Builder responseAttachmentsBuilder = new RestLiResponseAttachments.Builder();
+    responseAttachmentsBuilder.appendSingleAttachment(new RestLiTestAttachmentDataSource("1",
+                                                                                         ByteString.copyString("one", Charset.defaultCharset())));
+
+    Capture<ResourceContext> resourceContextCapture = EasyMock.newCapture();
+    final AsyncStatusCollectionResource statusResource = getMockResource(AsyncStatusCollectionResource.class,
+                                                                         capture(resourceContextCapture));
+
+    statusResource.streamingAction(EasyMock.<String>anyObject(), EasyMock.<RestLiAttachmentReader>anyObject(),
+                                   EasyMock.<Callback<Long>> anyObject());
+    EasyMock.expectLastCall().andAnswer(new IAnswer<Object>()
+    {
+      @Override
+      public Object answer() throws Throwable
+      {
+        //Verify there are still attachments to be read.
+        final RestLiAttachmentReader attachmentReader = (RestLiAttachmentReader)EasyMock.getCurrentArguments()[1];
+        Assert.assertFalse(attachmentReader.haveAllAttachmentsFinished());
+
+        //Verify the action param.
+        Assert.assertEquals((String)EasyMock.getCurrentArguments()[0], "someMetadata");
+
+        //Set the response attachments
+        resourceContextCapture.getValue().setResponseAttachments(responseAttachmentsBuilder.build());
+
+        //Now respond back to the request.
+        @SuppressWarnings("unchecked")
+        Callback<Long> callback = (Callback<Long>) EasyMock.getCurrentArguments()[2];
+        callback.onSuccess(1234l);
+        return null;
+      }
+    });
+    replay(statusResource);
+
+    //Now we create a multipart/related payload.
+    final String payload = "{\"metadata\": \"someMetadata\"}";
+    final ByteStringWriter byteStringWriter = new ByteStringWriter(ByteString.copyString(payload, Charset.defaultCharset()));
+    final MultiPartMIMEWriter.Builder builder = new MultiPartMIMEWriter.Builder();
+    AttachmentUtils.appendSingleAttachmentToBuilder(builder,
+                                                    new RestLiTestAttachmentDataSource("2", ByteString.copyString("two", Charset.defaultCharset())));
+    final MultiPartMIMEWriter writer = AttachmentUtils.createMultiPartMIMEWriter(byteStringWriter, "application/json", builder);
+
+    final StreamRequest streamRequest =
+        MultiPartMIMEStreamRequestFactory.generateMultiPartMIMEStreamRequest(new URI("/asyncstatuses/?action=streamingAction"),
+                                                                             "related",
+                                                                             writer, Collections.<String, String>emptyMap(),
+                                                                             "POST",
+                                                                             ImmutableMap.of(RestConstants.HEADER_ACCEPT, RestConstants.HEADER_VALUE_MULTIPART_RELATED),
+                                                                             Collections.emptyList());
+
+    final Callback<StreamResponse> callback = new Callback<StreamResponse>()
+    {
+      @Override
+      public void onSuccess(StreamResponse streamResponse)
+      {
+        //Before reading the data make sure top level type is multipart/related
+        Assert.assertEquals(streamResponse.getStatus(), 200);
+        try
+        {
+          ContentType contentType = new ContentType(streamResponse.getHeader(RestConstants.HEADER_CONTENT_TYPE));
+          Assert.assertEquals(contentType.getBaseType(), RestConstants.HEADER_VALUE_MULTIPART_RELATED);
+        }
+        catch (ParseException parseException)
+        {
+          Assert.fail();
+        }
+
+        final CountDownLatch countDownLatch = new CountDownLatch(1);
+        MultiPartMIMEFullReaderCallback fullReaderCallback = new MultiPartMIMEFullReaderCallback(countDownLatch);
+        final MultiPartMIMEReader reader = MultiPartMIMEReader.createAndAcquireStream(streamResponse);
+        reader.registerReaderCallback(fullReaderCallback);
+        try
+        {
+          countDownLatch.await(3000, TimeUnit.MILLISECONDS);
+        }
+        catch (InterruptedException interruptedException)
+        {
+          Assert.fail();
+        }
+
+        final List<SinglePartMIMEFullReaderCallback> singlePartMIMEReaderCallbacks = fullReaderCallback.getSinglePartMIMEReaderCallbacks();
+        Assert.assertEquals(singlePartMIMEReaderCallbacks.size(), 2);
+
+        //Verify first part is Action response.
+        Assert.assertEquals(singlePartMIMEReaderCallbacks.get(0).getHeaders().get(RestConstants.HEADER_CONTENT_TYPE), RestConstants.HEADER_VALUE_APPLICATION_JSON);
+        Assert.assertEquals(singlePartMIMEReaderCallbacks.get(0).getFinishedData().asAvroString(), "{\"value\":1234}");
+        //Verify the second part matches what the server should have sent back
+        Assert.assertEquals(singlePartMIMEReaderCallbacks.get(1).getHeaders().get(RestConstants.HEADER_CONTENT_ID), "1");
+        Assert.assertEquals(singlePartMIMEReaderCallbacks.get(1).getFinishedData().asString(Charset.defaultCharset()), "one");
+
+        EasyMock.verify(statusResource);
+        EasyMock.reset(statusResource);
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        fail();
+      }
+    };
+
+    _server.handleRequest(streamRequest, new RequestContext(), callback);
+  }
+
+  @Test
+  public void testMultipartRelatedRequestNoUserAttachments() throws Exception
+  {
+    //This test verifies the server's ability to handle a multipart related request that has only one part which is
+    //the rest.li payload; meaning there are no user defined attachments. Technically the client builders shouldn't do
+    //this but we allow this to keep the protocol somewhat flexible.
+
+    final AsyncStatusCollectionResource statusResource = getMockResource(AsyncStatusCollectionResource.class);
+
+    statusResource.streamingAction(EasyMock.<String>anyObject(), EasyMock.<RestLiAttachmentReader>anyObject(),
+                                   EasyMock.<Callback<Long>> anyObject());
+    EasyMock.expectLastCall().andAnswer(new IAnswer<Object>()
+    {
+      @Override
+      public Object answer() throws Throwable {
+        //Verify there are no attachments.
+        final RestLiAttachmentReader attachmentReader = (RestLiAttachmentReader)EasyMock.getCurrentArguments()[1];
+        Assert.assertNull(attachmentReader);
+
+        //Verify the action param.
+        Assert.assertEquals((String)EasyMock.getCurrentArguments()[0], "someMetadata");
+
+        //Now respond back to the request.
+        @SuppressWarnings("unchecked")
+        Callback<Long> callback = (Callback<Long>) EasyMock.getCurrentArguments()[2];
+        callback.onSuccess(1234l);
+        return null;
+      }
+    });
+    replay(statusResource);
+
+    //Now we create a multipart/related payload.
+    final String payload = "{\"metadata\": \"someMetadata\"}";
+    final ByteStringWriter byteStringWriter = new ByteStringWriter(ByteString.copyString(payload, Charset.defaultCharset()));
+    final MultiPartMIMEWriter.Builder builder = new MultiPartMIMEWriter.Builder();
+    final MultiPartMIMEWriter writer = AttachmentUtils.createMultiPartMIMEWriter(byteStringWriter, "application/json", builder);
+
+    final StreamRequest streamRequest =
+        MultiPartMIMEStreamRequestFactory.generateMultiPartMIMEStreamRequest(new URI("/asyncstatuses/?action=streamingAction"),
+                                                                             "related",
+                                                                             writer, Collections.<String, String>emptyMap(),
+                                                                             "POST",
+                                                                             ImmutableMap.of(RestConstants.HEADER_ACCEPT, RestConstants.HEADER_VALUE_MULTIPART_RELATED),
+                                                                             Collections.emptyList());
+
+    final Callback<StreamResponse> callback = new Callback<StreamResponse>()
+    {
+      @Override
+      public void onSuccess(StreamResponse streamResponse)
+      {
+        Messages.toRestResponse(streamResponse, new Callback<RestResponse>()
+        {
+          @Override
+          public void onError(Throwable e)
+          {
+            Assert.fail();
+          }
+
+          @Override
+          public void onSuccess(RestResponse result)
+          {
+            Assert.assertEquals(result.getStatus(), 200);
+
+            try
+            {
+              ContentType contentType = new ContentType(streamResponse.getHeader(RestConstants.HEADER_CONTENT_TYPE));
+              Assert.assertEquals(contentType.getBaseType(), RestConstants.HEADER_VALUE_APPLICATION_JSON);
+            }
+            catch (ParseException parseException)
+            {
+              Assert.fail();
+            }
+
+            //Verify the response body
+            Assert.assertEquals(result.getEntity().asAvroString(), "{\"value\":1234}");
+
+            EasyMock.verify(statusResource);
+            EasyMock.reset(statusResource);
+          }
+        });
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        fail();
+      }
+    };
+
+    _server.handleRequest(streamRequest, new RequestContext(), callback);
+  }
+
+  @Test
+  public void testMultipartRelatedNoAttachmentsAtAll() throws Exception
+  {
+    //This test verifies the server's ability to throw an exception if there are absolutely no attachments at all
+    //in the request. The protocol allows no user attachments to be required, but there must always be at least a rest.li
+    //payload in the first part.
+
+    final MultiPartMIMEWriter.Builder builder = new MultiPartMIMEWriter.Builder();
+
+    final StreamRequest streamRequest =
+        MultiPartMIMEStreamRequestFactory.generateMultiPartMIMEStreamRequest(new URI("/statuses/1"), "related",
+                                                                             builder.build(), Collections.emptyMap(),
+                                                                             "POST",
+                                                                             ImmutableMap.of(RestConstants.HEADER_ACCEPT, RestConstants.HEADER_VALUE_MULTIPART_RELATED),
+                                                                             Collections.emptyList());
+
+    final Callback<StreamResponse> callback = new Callback<StreamResponse>()
+    {
+      @Override
+      public void onSuccess(StreamResponse streamResponse)
+      {
+        Assert.fail();
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        //Verify the exception.
+        assertTrue(e instanceof StreamException);
+        StreamException streamException = (StreamException)e;
+        StreamResponse streamResponse = streamException.getResponse();
+
+        assertEquals(streamResponse.getStatus(), 400);
+        final FullEntityReader fullEntityReader = new FullEntityReader(new Callback<ByteString>()
+        {
+          @Override
+          public void onError(Throwable e)
+          {
+            Assert.fail();
+          }
+
+          @Override
+          public void onSuccess(ByteString result)
+          {
+            //We have the body so assert that the exception made it.
+            assertTrue(result.length() > 0);
+            assertTrue(result.asString(Charset.defaultCharset())
+                           .contains("Did not receive any parts in the multipart mime request"));
+          }
+        });
+        streamResponse.getEntityStream().setReader(fullEntityReader);
+      }
+    };
+
+    _server.handleRequest(streamRequest, new RequestContext(), callback);
+  }
+
+  @Test
+  public void testRequestAttachmentsResponseAttachmentsException() throws Exception
+  {
+    //This test verifies the server's behavior in the face of an exception. In this case the resource method
+    //threw an exception AFTER setting response attachments. Additionally the resource method failed to absorb any
+    //incoming request attachments. We verify in this test that StreamResponseCallbackAdaptor in RestLiServer
+    //drains and absorbs all bytes from the incoming request and that the response attachments set by the resource method
+    //are told to abort.
+
+    //Define the server side resource attachments to be sent back.
+    final RestLiResponseAttachments.Builder responseAttachmentsBuilder = new RestLiResponseAttachments.Builder();
+    final RestLiTestAttachmentDataSource toBeAbortedDataSource = RestLiTestAttachmentDataSource.createWithRandomPayload("1");
+
+    responseAttachmentsBuilder.appendSingleAttachment(toBeAbortedDataSource);
+
+    Capture<ResourceContext> resourceContextCapture = EasyMock.newCapture();
+    final AsyncStatusCollectionResource statusResource = getMockResource(AsyncStatusCollectionResource.class,
+                                                                         capture(resourceContextCapture));
+
+    statusResource.streamingAction(EasyMock.<String>anyObject(), EasyMock.<RestLiAttachmentReader>anyObject(),
+                                   EasyMock.<Callback<Long>> anyObject());
+    EasyMock.expectLastCall().andAnswer(new IAnswer<Object>()
+    {
+      @Override
+      public Object answer() throws Throwable {
+        //Verify there are still attachments to be read.
+        final RestLiAttachmentReader attachmentReader = (RestLiAttachmentReader)EasyMock.getCurrentArguments()[1];
+        Assert.assertFalse(attachmentReader.haveAllAttachmentsFinished());
+
+        //Verify the action param.
+        Assert.assertEquals((String)EasyMock.getCurrentArguments()[0], "someMetadata");
+
+        //Set the response attachments
+        resourceContextCapture.getValue().setResponseAttachments(responseAttachmentsBuilder.build());
+
+        //Now throw an exception.
+        @SuppressWarnings("unchecked")
+        Callback<Long> callback = (Callback<Long>) EasyMock.getCurrentArguments()[2];
+        callback.onError(new RestLiServiceException(HttpStatus.S_409_CONFLICT, "Some conflict"));
+        return null;
+      }
+    });
+    replay(statusResource);
+
+    //Now we create a multipart/related payload.
+    final String payload = "{\"metadata\": \"someMetadata\"}";
+    final ByteStringWriter byteStringWriter = new ByteStringWriter(ByteString.copyString(payload, Charset.defaultCharset()));
+    final MultiPartMIMEWriter.Builder builder = new MultiPartMIMEWriter.Builder();
+    final RestLiTestAttachmentDataSource toBeDrainedDataSource = RestLiTestAttachmentDataSource.createWithRandomPayload("2");
+
+    AttachmentUtils.appendSingleAttachmentToBuilder(builder, toBeDrainedDataSource);
+    final MultiPartMIMEWriter writer = AttachmentUtils.createMultiPartMIMEWriter(byteStringWriter, "application/json", builder);
+
+    final StreamRequest streamRequest =
+        MultiPartMIMEStreamRequestFactory.generateMultiPartMIMEStreamRequest(new URI("/asyncstatuses/?action=streamingAction"),
+                                                                             "related",
+                                                                             writer, Collections.<String, String>emptyMap(),
+                                                                             "POST",
+                                                                             ImmutableMap.of(RestConstants.HEADER_ACCEPT, RestConstants.HEADER_VALUE_MULTIPART_RELATED),
+                                                                             Collections.emptyList());
+
+    final Callback<StreamResponse> callback = new Callback<StreamResponse>()
+    {
+      @Override
+      public void onSuccess(StreamResponse streamResponse)
+      {
+        fail();
+      }
+
+      @Override
+      public void onError(Throwable e)
+      {
+        //Verify the exception.
+        assertTrue(e instanceof StreamException);
+        StreamException streamException = (StreamException)e;
+        StreamResponse streamResponse = streamException.getResponse();
+
+        assertEquals(streamResponse.getStatus(), 409);
+        final FullEntityReader fullEntityReader = new FullEntityReader(new Callback<ByteString>()
+        {
+          @Override
+          public void onError(Throwable e)
+          {
+            Assert.fail();
+          }
+
+          @Override
+          public void onSuccess(ByteString result)
+          {
+            //We have the body so assert exception made it.
+            assertTrue(result.length() > 0);
+            assertTrue(result.asString(Charset.defaultCharset()).contains("Some conflict"));
+          }
+        });
+        streamResponse.getEntityStream().setReader(fullEntityReader);
+
+        EasyMock.verify(statusResource);
+        EasyMock.reset(statusResource);
+      }
+    };
+
+    _server.handleRequest(streamRequest, new RequestContext(), callback);
+
+    //Verify that the request level attachments were drained.
+    Assert.assertTrue(toBeDrainedDataSource.finished());
+
+    //Verify that response attachments were told to abort.
+    Assert.assertTrue(toBeAbortedDataSource.dataSourceAborted());
+  }
+
+  @Test(dataProvider = "requestHandlersData")
+  public void testRequestHandlers(URI uri, String expectedResponse)
+  {
+    RestLiConfig config = new RestLiConfig();
+    config.addResourcePackageNames("com.linkedin.restli.server.twitter");
+    config.setDocumentationRequestHandler(new DefaultDocumentationRequestHandler() {
+      @Override
+      public void initialize(RestLiConfig config, Map<String, ResourceModel> rootResources) {/* no-op */}
+      @Override
+      public void handleRequest(RestRequest req, RequestContext ctx, Callback<RestResponse> cb)
+      {
+        cb.onSuccess(new RestResponseBuilder().setEntity(toByteString(DOCUMENTATION_RESPONSE)).build());
+      }
+    });
+    config.addCustomRequestHandlers(new CustomRequestHandler());
+    config.addDebugRequestHandlers(new DebugRequestHandler("a", DEBUG_HANDLER_RESPONSE_A),
+        new DebugRequestHandler("b", DEBUG_HANDLER_RESPONSE_B));
+
+    RestLiServer server = new RestLiServer(config, new EasyMockResourceFactory(), createMock(Engine.class));
+
+    RestRequest restReq = new RestRequestBuilder(uri).build();
+    server.handleRequest(restReq, createMock(RequestContext.class), new RestResponseAssertionCallback(expectedResponse));
+
+    StreamRequest streamReq = new StreamRequestBuilder(uri).build(EntityStreams.emptyStream());
+    server.handleRequest(streamReq, createMock(RequestContext.class), new StreamResponseAssertionCallback(expectedResponse));
+  }
+
+  @DataProvider
+  public Object[][] requestHandlersData() throws URISyntaxException
+  {
+    return new Object[][] {
+        new Object[] {new URI("profiles/__debug/a/1"), DEBUG_HANDLER_RESPONSE_A},
+        new Object[] {new URI("profiles/__debug/b/1"), DEBUG_HANDLER_RESPONSE_B},
+        new Object[] {new URI("profiles/restli/docs"), DOCUMENTATION_RESPONSE},
+        new Object[] {new URI("profiles/custom/"), CUSTOM_HANDLER_RESPONSE}
+    };
+  }
+
+  private static class RestResponseAssertionCallback implements Callback<RestResponse>
+  {
+    private final String _expectedResponse;
+
+    RestResponseAssertionCallback(String expectedResponse)
+    {
+      _expectedResponse = expectedResponse;
+    }
+
+    @Override
+    public void onError(Throwable e)
+    {
+      fail();
+    }
+
+    @Override
+    public void onSuccess(RestResponse result)
+    {
+      assertEquals(fromByteString(result.getEntity()), _expectedResponse);
+    }
+  }
+
+  private static class StreamResponseAssertionCallback implements Callback<StreamResponse>
+  {
+    private final String _expectedResponse;
+
+    StreamResponseAssertionCallback(String expectedResponse)
+    {
+      _expectedResponse = expectedResponse;
+    }
+
+    @Override
+    public void onError(Throwable e)
+    {
+      fail();
+    }
+
+    @Override
+    public void onSuccess(StreamResponse result)
+    {
+      Messages.toRestResponse(result, new RestResponseAssertionCallback(_expectedResponse));
+    }
+  }
+
+  private static class DebugRequestHandler implements RestLiDebugRequestHandler
+  {
+    private final String _handlerId;
+    private final String _debugHandlerResponse;
+
+    private DebugRequestHandler(String handlerId, String debugHandlerResponse)
+    {
+      _handlerId = handlerId;
+      _debugHandlerResponse = debugHandlerResponse;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void handleRequest(final RestRequest request,
+        final RequestContext context,
+        final ResourceDebugRequestHandler resourceRequestHandler, final Callback<RestResponse> callback)
+    {
+      resourceRequestHandler.handleRequest(request,
+          context,
+          EasyMock.createMock(Callback.class));
+      handleRequestWithCustomResponse(callback, _debugHandlerResponse);
+    }
+
+    @Override
+    public String getHandlerId()
+    {
+      return _handlerId;
+    }
+
+    private void handleRequestWithCustomResponse(final Callback<RestResponse> callback, final String response)
+    {
+      RestResponseBuilder responseBuilder = new RestResponseBuilder();
+      ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+
+      try
+      {
+        IOUtils.write(response, outputStream);
+      }
+      catch (IOException exc)
+      {
+        //Test will fail later.
+      }
+
+      responseBuilder.setEntity(outputStream.toByteArray());
+      callback.onSuccess(responseBuilder.build());
+    }
+  }
+
+  private class CustomRequestHandler implements NonResourceRequestHandler
+  {
+    private static final String CUSTOM_PREFIX = "custom";
+
+    @Override
+    public boolean shouldHandle(Request request) {
+      final String path = request.getURI().getRawPath();
+      final List<UriComponent.PathSegment> pathSegments = UriComponent.decodePath(path, true);
+
+      return (pathSegments.size() > 1 && CUSTOM_PREFIX.equals(pathSegments.get(1).getPath()));
+    }
+
+    @Override
+    public void handleRequest(RestRequest request, RequestContext requestContext, Callback<RestResponse> callback) {
+      callback.onSuccess(new RestResponseBuilder().setEntity(toByteString(CUSTOM_HANDLER_RESPONSE)).build());
+    }
+  }
+
+  private static ByteString toByteString(String s)
+  {
+    return ByteString.copyString(s, Charsets.UTF_8);
+  }
+
+  private static String fromByteString(ByteString bs)
+  {
+    return bs.asString(Charsets.UTF_8);
   }
 
   private <R extends BaseResource> R getMockResource(Class<R> resourceClass)
   {
+    return getMockResource(resourceClass, anyObject());
+  }
+
+  private <R extends BaseResource> R getMockResource(Class<R> resourceClass, ResourceContext resourceContext)
+  {
     R resource = _resourceFactory.getMock(resourceClass);
     EasyMock.reset(resource);
-    resource.setContext((ResourceContext) EasyMock.anyObject());
+    resource.setContext(resourceContext);
     EasyMock.expectLastCall().once();
 
     return resource;
@@ -812,18 +2320,25 @@ public class TestRestLiServer
     return status;
   }
 
-  @DataProvider(name = TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "protocolVersions")
-  private Object[][] protocolVersions1And2DataProvider()
+  private static class TestObserver implements Observer
   {
-    return new Object[][] {
-        {
-            AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
-            RestConstants.HEADER_LINKEDIN_ERROR_RESPONSE
-        },
-        {
-            AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion(),
-            RestConstants.HEADER_RESTLI_ERROR_RESPONSE
-        }
-    };
+    private AtomicBoolean _isDone = new AtomicBoolean(false);
+
+    @Override
+    public void onDataAvailable(ByteString data) {}
+
+    @Override
+    public void onDone()
+    {
+      _isDone.set(true);
+    }
+
+    @Override
+    public void onError(Throwable e) {}
+
+    public boolean isDone()
+    {
+      return _isDone.get();
+    }
   }
 }

@@ -101,8 +101,7 @@ public class LoadBalancerUtil
                                                                   String propertiesString) throws IOException
   {
     Properties fileProperties = new Properties();
-    Map<String, Map<String, String>> utilServicePropertyMap =
-        new HashMap<String, Map<String, String>>();
+    Map<String, Map<String, String>> utilServicePropertyMap = new HashMap<>();
 
     fileProperties.load(new StringReader(propertiesString));
 
@@ -121,7 +120,7 @@ public class LoadBalancerUtil
 
         if (serviceProperties == null)
         {
-          serviceProperties = new HashMap<String, String>();
+          serviceProperties = new HashMap<>();
           utilServicePropertyMap.put(serviceName, serviceProperties);
         }
 
@@ -150,7 +149,7 @@ public class LoadBalancerUtil
   {
     if (list == null)
     {
-      return new ArrayList<C>();
+      return new ArrayList<>();
     }
 
     return list;
@@ -211,10 +210,13 @@ public class LoadBalancerUtil
     }
   }
 
+  /**
+   * @deprecated Use {@link HostOverrideList} instead.
+   */
+  @Deprecated
   public static class TargetHints
   {
     public static final String TARGET_SERVICE_KEY_NAME = "D2-Hint-TargetService";
-
 
     /**
      * Inserts a hint in RequestContext instructing D2 to bypass normal hashing behavior

@@ -262,7 +262,7 @@ public class ObjectIterator implements DataIterator
             schema = (field == null ? null : field.getType());
             break;
           case UNION:
-            schema = ((UnionDataSchema) dereferencedSchema).getType(_currentEntry.getKey());
+            schema = ((UnionDataSchema) dereferencedSchema).getTypeByMemberKey(_currentEntry.getKey());
             break;
           case MAP:
             schema = ((MapDataSchema) dereferencedSchema).getValues();
@@ -311,20 +311,19 @@ public class ObjectIterator implements DataIterator
 
     private DataSchema currentSchema()
     {
-      DataSchema schema;
+      DataSchema schema = null;
+
       DataSchema listSchema = _element.getSchema();
-      if (listSchema == null)
+      if (listSchema != null)
       {
-        schema = null;
+        DataSchema dereferencedListSchema = listSchema.getDereferencedDataSchema();
+
+        if (dereferencedListSchema.getType() == DataSchema.Type.ARRAY)
+        {
+          schema = ((ArrayDataSchema) dereferencedListSchema).getItems();
+        }
       }
-      else if (listSchema.getType() == DataSchema.Type.ARRAY)
-      {
-        schema = ((ArrayDataSchema) listSchema).getItems();
-      }
-      else
-      {
-        schema = null;
-      }
+
       return schema;
     }
 
@@ -335,7 +334,7 @@ public class ObjectIterator implements DataIterator
   }
 
   private final DataElement _startElement;
-  private final Deque<State> _stack = new ArrayDeque<State>();
+  private final Deque<State> _stack = new ArrayDeque<>();
 
   private boolean _first = true;
   private DataElement _current = null;

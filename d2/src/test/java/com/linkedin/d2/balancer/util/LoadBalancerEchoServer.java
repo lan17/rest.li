@@ -20,11 +20,12 @@ package com.linkedin.d2.balancer.util;
 import com.linkedin.common.callback.Callback;
 import com.linkedin.common.callback.FutureCallback;
 import com.linkedin.common.util.None;
-import com.linkedin.d2.balancer.LoadBalancerServer;
 import com.linkedin.d2.balancer.properties.PartitionData;
+import com.linkedin.d2.balancer.properties.PropertyKeys;
 import com.linkedin.d2.balancer.properties.UriProperties;
 import com.linkedin.d2.balancer.properties.UriPropertiesJsonSerializer;
 import com.linkedin.d2.balancer.properties.UriPropertiesMerger;
+import com.linkedin.d2.balancer.servers.ZooKeeperAnnouncer;
 import com.linkedin.d2.balancer.servers.ZooKeeperServer;
 import com.linkedin.d2.balancer.util.partitions.DefaultPartitionAccessor;
 import com.linkedin.d2.discovery.stores.PropertyStoreException;
@@ -80,10 +81,12 @@ public class LoadBalancerEchoServer
   private final Set<String>  _validPaths;
   private final URI          _uri;
   private Server             _server;
-  private final LoadBalancerServer _announcer;
+  private final ZooKeeperAnnouncer _announcer;
+  private final ZooKeeperServer _zooKeeperServer;
   private boolean            _isStopped = false;
   private int                _timeout = 5000;
   private final Map<Integer, Double> _partitionWeight;
+  private final boolean      _disableEchoOutput;
 
   private final static String RESPONSE_POSTFIX = ".FromEchoServerPort:";
 
@@ -172,18 +175,38 @@ public class LoadBalancerEchoServer
       InterruptedException,
       TimeoutException
   {
+    this(zookeeperHost, zookeeperPort, echoServerHost, echoServerPort, timeout, scheme, basePath, cluster,
+        partitionWeight, false, services);
+  }
+
+  public LoadBalancerEchoServer(String zookeeperHost,
+                                int zookeeperPort,
+                                String echoServerHost,
+                                int echoServerPort,
+                                int timeout,
+                                String scheme,
+                                String basePath,
+                                String cluster,
+                                Map<Integer, Double> partitionWeight,
+                                boolean disableEchoOutput,
+                                String... services) throws IOException,
+      PropertyStoreException,
+      InterruptedException,
+      TimeoutException
+  {
     _host = echoServerHost;
     _port = echoServerPort;
     _scheme = scheme;
     _timeout = timeout;
     _cluster = cluster;
     _partitionWeight = partitionWeight;
+    _disableEchoOutput = disableEchoOutput;
     _basePath = basePath;
     _uri = URI.create(_scheme + "://" + echoServerHost + ":" + _port + "/" + _cluster);
 
     _log.info("Server Uri:"+_uri);
 
-    Set<String> validPaths = new HashSet<String>();
+    Set<String> validPaths = new HashSet<>();
 
     for (String service : services)
     {
@@ -198,10 +221,10 @@ public class LoadBalancerEchoServer
     final ZKConnection zkClient = ZKTestUtil.getConnection(zookeeperHost+":"+zookeeperPort, _timeout);
 
     ZooKeeperEphemeralStore<UriProperties> zk =
-        new ZooKeeperEphemeralStore<UriProperties>(zkClient,
-                                                   new UriPropertiesJsonSerializer(),
-                                                   new UriPropertiesMerger(),
-                                                   _basePath+"/uris");
+        new ZooKeeperEphemeralStore<>(zkClient,
+                                      new UriPropertiesJsonSerializer(),
+                                      new UriPropertiesMerger(),
+                                      _basePath + "/uris");
 
     final CountDownLatch wait = new CountDownLatch(1);
 
@@ -222,9 +245,12 @@ public class LoadBalancerEchoServer
 
     wait.await();
 
-    _announcer = new ZooKeeperServer(zk);
+    _zooKeeperServer = new ZooKeeperServer(zk);
+    _announcer = new ZooKeeperAnnouncer(_zooKeeperServer);
+    _announcer.setCluster(cluster);
+    _announcer.setUri(_uri.toString());
 
-    new JmxManager().registerZooKeeperServer("server", (ZooKeeperServer) _announcer);
+    new JmxManager().registerZooKeeperAnnouncer("server:" + _port, _announcer);
     new JmxManager().registerZooKeeperEphemeralStore("uris", zk);
     // announce that the server has started
   }
@@ -305,8 +331,8 @@ public class LoadBalancerEchoServer
 
   public void markUp(Map<Integer, Double> partitionWeight) throws PropertyStoreException
   {
-    FutureCallback<None> callback = new FutureCallback<None>();
-    Map<Integer, PartitionData> partitionDataMap = new HashMap<Integer, PartitionData>();
+    FutureCallback<None> callback = new FutureCallback<>();
+    Map<Integer, PartitionData> partitionDataMap = new HashMap<>();
     if (partitionWeight != null)
     {
       for (int partitionId : partitionWeight.keySet())
@@ -318,11 +344,17 @@ public class LoadBalancerEchoServer
     {
       partitionDataMap.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new PartitionData(1d));
     }
-    _announcer.markUp(_cluster, _uri, partitionDataMap, callback);
+    _announcer.setPartitionData(partitionDataMap);
+    _announcer.markUp(callback);
 
     try
     {
       callback.get(10, TimeUnit.SECONDS);
+      FutureCallback<None> changeWeightCallback = new FutureCallback<>();
+      _zooKeeperServer.addUriSpecificProperty(_cluster, "changeWeight", _uri, partitionDataMap, PropertyKeys.DO_NOT_SLOW_START,
+          true,
+          changeWeightCallback);
+      changeWeightCallback.get(10, TimeUnit.SECONDS);
     }
     catch (Exception e)
     {
@@ -332,8 +364,8 @@ public class LoadBalancerEchoServer
 
   public void markDown() throws PropertyStoreException
   {
-    FutureCallback<None> callback = new FutureCallback<None>();
-    _announcer.markDown(_cluster, _uri, callback);
+    FutureCallback<None> callback = new FutureCallback<>();
+    _announcer.markDown(callback);
     try
     {
       callback.get(10, TimeUnit.SECONDS);
@@ -383,14 +415,12 @@ public class LoadBalancerEchoServer
 
   public long getDelayValueFromRequest(String request)
   {
-    if (request.contains("PORT:"+_port))
+    String patternStr = String.format("PORT=%d,LATENCY=(\\d+)", _port);
+    Pattern pattern = Pattern.compile(patternStr, Pattern.CASE_INSENSITIVE);
+    Matcher matcher = pattern.matcher(request);
+    if (matcher.find())
     {
-      Pattern pattern = Pattern.compile("DELAY=(\\d+)", Pattern.CASE_INSENSITIVE);
-      Matcher matcher = pattern.matcher(request);
-      while (matcher.find())
-      {
-        return Long.parseLong(matcher.group(1));
-      }
+      return Long.parseLong(matcher.group(1));
     }
     return 0;
   }
@@ -408,14 +438,14 @@ public class LoadBalancerEchoServer
   private String printWeights()
   {
     StringBuilder sb = new StringBuilder();
-    Map<Integer, Double> partitionDataMap = new HashMap<Integer, Double>();
+    Map<Integer, Double> partitionDataMap = new HashMap<>();
     if (_partitionWeight != null)
     {
       partitionDataMap = _partitionWeight;
     }
     else
     {
-      partitionDataMap.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, new Double(1d));
+      partitionDataMap.put(DefaultPartitionAccessor.DEFAULT_PARTITION_ID, Double.valueOf(1d));
     }
 
     for (int partitionId : partitionDataMap.keySet())
@@ -435,7 +465,10 @@ public class LoadBalancerEchoServer
     public void handleRequest(RestRequest request, RequestContext requestContext,
                               final Callback<RestResponse> callback)
     {
-      System.out.println("REST server request: " + request.getEntity().asString("UTF-8"));
+      if (!_disableEchoOutput)
+      {
+        System.out.println("REST server request: " + request.getEntity().asString("UTF-8"));
+      }
 
       String requestStr = request.getEntity().asString("UTF-8");
       String response = requestStr + ";WEIGHT=" + printWeights() + getResponsePostfixStringWithPort();

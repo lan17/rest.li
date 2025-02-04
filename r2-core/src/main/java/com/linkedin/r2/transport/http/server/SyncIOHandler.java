@@ -32,6 +32,8 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static com.linkedin.r2.filter.R2Constants.DEFAULT_DATA_CHUNK_SIZE;
 
@@ -42,6 +44,9 @@ import static com.linkedin.r2.filter.R2Constants.DEFAULT_DATA_CHUNK_SIZE;
  */
 public class SyncIOHandler implements Writer, Reader
 {
+  private static final Logger LOG = LoggerFactory.getLogger(SyncIOHandler.class);
+  protected static final String UNKNOWN_REMOTE_ADDRESS = "unknown";
+
   private final ServletInputStream _is;
   private final ServletOutputStream _os;
   private final int _maxBufferedChunks;
@@ -52,17 +57,28 @@ public class SyncIOHandler implements Writer, Reader
   private boolean _requestReadFinished;
   private boolean _responseWriteFinished;
   private final long _timeout;
+  private final String _remoteAddress;
+  private final boolean _logServletExceptions;
 
+  @Deprecated
   public SyncIOHandler(ServletInputStream is, ServletOutputStream os, int maxBufferedChunks, long timeout)
+  {
+    this(is, os, UNKNOWN_REMOTE_ADDRESS, maxBufferedChunks, timeout, false);
+  }
+
+  public SyncIOHandler(ServletInputStream is, ServletOutputStream os, String remoteAddress, int maxBufferedChunks,
+      long timeout, boolean logServletExceptions)
   {
     _is = is;
     _os = os;
+    _remoteAddress = remoteAddress;
     _maxBufferedChunks = maxBufferedChunks;
     _eventQueue = new LinkedBlockingDeque<>();
     _requestReadFinished = false;
     _responseWriteFinished = false;
     _forceExit = false;
     _timeout = timeout;
+    _logServletExceptions = logServletExceptions;
   }
 
   @Override
@@ -106,29 +122,64 @@ public class SyncIOHandler implements Writer, Reader
   public void onError(Throwable e)
   {
     _eventQueue.add(new Event(EventType.ResponseDataError, e));
+    if (!(e instanceof AbortedException))
+    {
+      LOG.error("Error while reading Response EntityStream", e);
+    }
+  }
+
+  public void writeResponseHeaders(Runnable writeResponse) {
+    _eventQueue.add(new Event(EventType.WriteResponseHeaders, writeResponse));
   }
 
   public void loop() throws ServletException, IOException
+  {
+    try
+    {
+      eventLoop();
+    }
+    catch (ServletException | IOException ex)
+    {
+      handleException(ex);
+      throw ex;
+    }
+    catch (Exception ex)
+    {
+      handleException(ex);
+      throw new ServletException(ex);
+    }
+  }
+
+  private void handleException(Exception ex)
+  {
+    if (_logServletExceptions || ex instanceof RuntimeException || ex instanceof TimeoutException)
+    {
+      final String message = String.format("Encountered exception, remote=%s", _remoteAddress);
+      LOG.info(message, ex);
+    }
+    if (_wh != null)
+    {
+      _wh.error(ex);
+    }
+    if (_rh != null)
+    {
+      _rh.cancel();
+    }
+  }
+
+  private void eventLoop() throws ServletException, IOException, InterruptedException, TimeoutException
   {
     final long startTime = System.currentTimeMillis();
     byte[] buf = new byte[DEFAULT_DATA_CHUNK_SIZE];
 
     while(shouldContinue() && !_forceExit)
     {
-      Event event;
-      try
+      long timeSpent = System.currentTimeMillis() - startTime;
+      long maxWaitTime = timeSpent < _timeout ? _timeout - timeSpent : 0;
+      Event event = _eventQueue.poll(maxWaitTime, TimeUnit.MILLISECONDS);
+      if (event == null)
       {
-        long timeSpent = System.currentTimeMillis() - startTime;
-        long maxWaitTime = timeSpent < _timeout ? _timeout - timeSpent : 0;
-        event = _eventQueue.poll(maxWaitTime, TimeUnit.MILLISECONDS);
-        if (event == null)
-        {
-          throw new TimeoutException("Timeout after " + _timeout + " milliseconds.");
-        }
-      }
-      catch (Exception ex)
-      {
-        throw new ServletException(ex);
+        throw new TimeoutException("Timeout after " + _timeout + " milliseconds.");
       }
 
       switch (event.getEventType())
@@ -144,7 +195,7 @@ public class SyncIOHandler implements Writer, Reader
         {
           while (_wh.remaining() > 0)
           {
-            int actualLen = _is.read(buf);
+            final int actualLen = _is.read(buf);
 
             if (actualLen < 0)
             {
@@ -190,7 +241,8 @@ public class SyncIOHandler implements Writer, Reader
         {
           for (int i = 0; i < 10; i++)
           {
-            int actualLen = _is.read(buf);
+            final int actualLen = _is.read(buf);
+
             if (actualLen < 0)
             {
               _requestReadFinished = true;
@@ -204,6 +256,10 @@ public class SyncIOHandler implements Writer, Reader
           }
           break;
         }
+        case WriteResponseHeaders:
+          Runnable writeResponse = (Runnable) event.getData();
+          writeResponse.run();
+          break;
         case ForceExit:
         {
           _forceExit = true;
@@ -240,6 +296,7 @@ public class SyncIOHandler implements Writer, Reader
     WriteRequestPossible,
     WriteRequestAborted,
     DrainRequest,
+    WriteResponseHeaders,
     FullResponseReceived,
     ResponseDataAvailable,
     ResponseDataError,

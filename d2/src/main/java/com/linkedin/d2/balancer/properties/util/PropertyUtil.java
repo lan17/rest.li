@@ -16,9 +16,13 @@
 
 package com.linkedin.d2.balancer.properties.util;
 
-import com.linkedin.data.template.TemplateOutputCastException;
+import com.google.protobuf.Struct;
+import com.google.protobuf.Value;
 import com.linkedin.util.ArgumentUtil;
-
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class PropertyUtil
@@ -55,6 +59,23 @@ public class PropertyUtil
     {
       throw new IllegalArgumentException("In " + scope + ": illegal argument " + key + ": " + obj, e);
     }
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <T> T mapGet(Map<String, Object> map, String key)
+  {
+    return (T) map.get(key);
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <T> T mapGetOrDefault(Map<String, Object> map, String key, T defaultValue)
+  {
+    T value = (T) map.get(key);
+    if (value == null)
+    {
+      value = defaultValue;
+    }
+    return value;
   }
 
   public static Integer parseInt(String key, String intStr)
@@ -124,11 +145,74 @@ public class PropertyUtil
         return (T) Boolean.valueOf(Boolean.parseBoolean(str));
       }
     }
+    else if (value instanceof Double && clazz.equals(Integer.class))
+    {
+      return (T) Integer.valueOf((int) ((Double) value).doubleValue());
+    }
     else
     {
       throw new IllegalArgumentException("Cannot convert value of " + value.getClass() +
           " to class = " + clazz.getName());
     }
     return (T) value;
+  }
+
+  /**
+   * Efficiently translates a proto JSON {@link Struct} into a {@code Map<String, Object>} without additional
+   * serialization or deserialization.
+   */
+  public static Map<String, Object> protoStructToMap(Struct struct)
+  {
+    if (struct.getFieldsCount() == 0) {
+      return Collections.emptyMap();
+    }
+    Map<String, Object> map = new HashMap<>(struct.getFieldsMap().size());
+    for (Map.Entry<String, Value> entry : struct.getFieldsMap().entrySet())
+    {
+      map.put(entry.getKey(), valueToObject(entry.getValue()));
+    }
+    return map;
+  }
+
+  private static Object valueToObject(Value value)
+  {
+    if (value.hasBoolValue())
+    {
+      return value.getBoolValue();
+    }
+    else if (value.hasStringValue())
+    {
+      return value.getStringValue();
+    }
+    else if (value.hasNumberValue())
+    {
+      return value.getNumberValue();
+    }
+    else if (value.hasNullValue())
+    {
+      return null;
+    }
+    else if (value.hasStructValue())
+    {
+      Map<String, Object> map = new HashMap<>(value.getStructValue().getFieldsCount());
+      for (Map.Entry<String, Value> entry : value.getStructValue().getFieldsMap().entrySet())
+      {
+        map.put(entry.getKey(), valueToObject(entry.getValue()));
+      }
+      return map;
+    }
+    else if (value.hasListValue())
+    {
+      List<Object> list = new ArrayList<>(value.getListValue().getValuesCount());
+      for (Value element : value.getListValue().getValuesList())
+      {
+        list.add(valueToObject(element));
+      }
+      return list;
+    }
+    else
+    {
+      throw new RuntimeException("Unexpected proto value of unknown type: " + value);
+    }
   }
 }

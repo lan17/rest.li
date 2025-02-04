@@ -14,52 +14,61 @@
    limitations under the License.
 */
 
-/**
- * $Id: $
- */
-
 package com.linkedin.restli.internal.server.methods.arguments;
 
-
+import com.linkedin.data.ByteString;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.data.schema.DataSchemaUtil;
-import com.linkedin.data.schema.validation.CoercionMode;
-import com.linkedin.data.schema.validation.RequiredMode;
-import com.linkedin.data.schema.validation.ValidateDataAgainstSchema;
-import com.linkedin.data.schema.validation.ValidationOptions;
 import com.linkedin.data.template.AbstractArrayTemplate;
 import com.linkedin.data.template.DataTemplate;
 import com.linkedin.data.template.DataTemplateUtil;
 import com.linkedin.data.template.DynamicRecordTemplate;
+import com.linkedin.data.template.InvalidAlternativeKeyException;
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.data.template.TemplateRuntimeException;
+import com.linkedin.entitystream.EntityStreams;
+import com.linkedin.entitystream.WriteHandle;
+import com.linkedin.entitystream.Writer;
 import com.linkedin.internal.common.util.CollectionUtils;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.restli.common.BatchRequest;
+import com.linkedin.restli.common.ComplexKeySpec;
 import com.linkedin.restli.common.ComplexResourceKey;
+import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.common.ProtocolVersion;
+import com.linkedin.restli.common.ResourceMethod;
+import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.common.TypeSpec;
+import com.linkedin.restli.common.validation.RestLiDataValidator;
+import com.linkedin.restli.internal.common.PathSegment;
 import com.linkedin.restli.internal.common.QueryParamsDataMap;
-import com.linkedin.restli.internal.common.URIParamUtils;
+import com.linkedin.restli.internal.server.RoutingResult;
+import com.linkedin.restli.internal.server.ServerResourceContext;
 import com.linkedin.restli.internal.server.model.Parameter;
 import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
+import com.linkedin.restli.internal.server.model.ResourceModel;
+import com.linkedin.restli.internal.server.util.AlternativeKeyCoercerException;
 import com.linkedin.restli.internal.server.util.ArgumentUtils;
 import com.linkedin.restli.internal.server.util.DataMapUtils;
 import com.linkedin.restli.internal.server.util.RestUtils;
-import com.linkedin.restli.common.validation.RestLiDataValidator;
+import com.linkedin.restli.server.Key;
 import com.linkedin.restli.server.PagingContext;
 import com.linkedin.restli.server.ResourceConfigException;
 import com.linkedin.restli.server.ResourceContext;
 import com.linkedin.restli.server.RestLiServiceException;
 import com.linkedin.restli.server.RoutingException;
+import com.linkedin.restli.server.UnstructuredDataReactiveReader;
+import com.linkedin.restli.server.UnstructuredDataWriter;
 import com.linkedin.restli.server.annotations.HeaderParam;
-
+import com.linkedin.restli.server.config.ResourceMethodConfig;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,10 +79,8 @@ import java.util.Set;
  * @author Josh Walker
  * @version $Revision: $
  */
-
 public class ArgumentBuilder
 {
-
   /**
    * Build arguments for resource method invocation. Combines various types of arguments
    * into a single array.
@@ -86,16 +93,18 @@ public class ArgumentBuilder
    * @return array of method argument for method invocation.
    */
   @SuppressWarnings("deprecation")
-  public static Object[] buildArgs(final Object[] positionalArguments,
+  static Object[] buildArgs(final Object[] positionalArguments,
                                    final ResourceMethodDescriptor resourceMethod,
-                                   final ResourceContext context,
-                                   final DynamicRecordTemplate template)
+                                   final ServerResourceContext context,
+                                   final DynamicRecordTemplate template,
+                                   final ResourceMethodConfig resourceMethodConfig)
   {
     List<Parameter<?>> parameters = resourceMethod.getParameters();
     Object[] arguments = Arrays.copyOf(positionalArguments, parameters.size());
 
     fixUpComplexKeySingletonArraysInArguments(arguments);
 
+    boolean attachmentsDesired = false;
     for (int i = positionalArguments.length; i < parameters.size(); ++i)
     {
       Parameter<?> param = parameters.get(i);
@@ -153,6 +162,15 @@ public class ArgumentBuilder
           arguments[i] = context.getPathKeys();
           continue;
         }
+        else if (param.getParamType() == Parameter.ParamType.PATH_KEY_PARAM) {
+          Object value = context.getPathKeys().get(param.getName());
+
+          if (value != null)
+          {
+            arguments[i] = value;
+            continue;
+          }
+        }
         else if (param.getParamType() == Parameter.ParamType.RESOURCE_CONTEXT || param.getParamType() == Parameter.ParamType.RESOURCE_CONTEXT_PARAM)
         {
           arguments[i] = context;
@@ -163,6 +181,29 @@ public class ArgumentBuilder
           RestLiDataValidator validator = new RestLiDataValidator(resourceMethod.getResourceModel().getResourceClass().getAnnotations(),
                                                                   resourceMethod.getResourceModel().getValueClass(), resourceMethod.getMethodType());
           arguments[i] = validator;
+          continue;
+        }
+        else if (param.getParamType() == Parameter.ParamType.RESTLI_ATTACHMENTS_PARAM)
+        {
+          arguments[i] = context.getRequestAttachmentReader();
+          attachmentsDesired = true;
+          continue;
+        }
+        else if (param.getParamType() == Parameter.ParamType.UNSTRUCTURED_DATA_WRITER_PARAM)
+        {
+          // The OutputStream is passed to the resource implementation in a synchronous call. Upon return of the
+          // resource method, all the bytes would haven't written to the OutputStream. The EntityStream would have
+          // contained all the bytes by the time data is requested. The ownership of the OutputStream is passed to
+          // the ByteArrayOutputStreamWriter, which is responsible of closing the OutputStream if necessary.
+          ByteArrayOutputStream out = new ByteArrayOutputStream();
+          context.setResponseEntityStream(EntityStreams.newEntityStream(new ByteArrayOutputStreamWriter(out)));
+
+          arguments[i] = new UnstructuredDataWriter(out, context);
+          continue;
+        }
+        else if (param.getParamType() == Parameter.ParamType.UNSTRUCTURED_DATA_REACTIVE_READER_PARAM)
+        {
+          arguments[i] = new UnstructuredDataReactiveReader(context.getRequestEntityStream(), context.getRawRequest().getHeader(RestConstants.HEADER_CONTENT_TYPE));
           continue;
         }
         else if (param.getParamType() == Parameter.ParamType.POST)
@@ -183,11 +224,12 @@ public class ArgumentBuilder
           Object value;
           if (DataTemplate.class.isAssignableFrom(param.getType()))
           {
-            value = buildDataTemplateArgument(context, param);
+            value = buildDataTemplateArgument(context.getStructuredParameter(param.getName()), param,
+                resourceMethodConfig.shouldValidateQueryParams());
           }
           else
           {
-            value = buildRegularArgument(context, param);
+            value = buildRegularArgument(context, param, resourceMethodConfig.shouldValidateQueryParams());
           }
 
           if (value != null)
@@ -240,6 +282,16 @@ public class ArgumentBuilder
             "Parameter '" + param.getName() + "' default value is invalid", e);
       }
     }
+
+    //Verify that if the resource method did not expect attachments, and attachments were present, that we drain all
+    //incoming attachments and send back a bad request. We must take precaution here since simply ignoring the request
+    //attachments is not correct behavior here. Ignoring other request level constructs such as headers or query parameters
+    //that were not needed is safe, but not for request attachments.
+    if (!attachmentsDesired && context.getRequestAttachmentReader() != null)
+    {
+      throw new RestLiServiceException(HttpStatus.S_400_BAD_REQUEST,
+                                       "Resource method endpoint invoked does not accept any request attachments.");
+    }
     return arguments;
   }
 
@@ -279,7 +331,8 @@ public class ArgumentBuilder
    * @return argument value in the correct type
    */
   private static Object buildArrayArgument(final ResourceContext context,
-                                           final Parameter<?> param)
+                                           final Parameter<?> param,
+                                           boolean validateParam)
   {
     final Object convertedValue;
     if (DataTemplate.class.isAssignableFrom(param.getItemType()))
@@ -290,19 +343,14 @@ public class ArgumentBuilder
       for (Object paramData: itemsList)
       {
         final DataTemplate<?> itemsElem = DataTemplateUtil.wrap(paramData, param.getItemType().asSubclass(DataTemplate.class));
-
-        ValidateDataAgainstSchema.validate(itemsElem.data(),
-                                           itemsElem.schema(),
-                                           new ValidationOptions(RequiredMode.CAN_BE_ABSENT_IF_HAS_DEFAULT,
-                                                                 CoercionMode.STRING_TO_PRIMITIVE));
-
+        ArgumentUtils.validateDataAgainstSchema(itemsElem.data(), itemsElem.schema(), validateParam);
         Array.set(convertedValue, j++, itemsElem);
       }
     }
     else
     {
       final List<String> itemStringValues = context.getParameterValues(param.getName());
-      ArrayDataSchema parameterSchema = null;
+      ArrayDataSchema parameterSchema;
       if (param.getDataSchema() instanceof ArrayDataSchema)
       {
         parameterSchema = (ArrayDataSchema)param.getDataSchema();
@@ -326,7 +374,7 @@ public class ArgumentBuilder
         {
           Array.set(convertedValue,
                     j++,
-                    ArgumentUtils.convertSimpleValue(itemStringValue, parameterSchema.getItems(), param.getItemType()));
+                    ArgumentUtils.convertSimpleValue(itemStringValue, parameterSchema.getItems(), param.getItemType(), false));
         }
         catch (NumberFormatException e)
         {
@@ -369,28 +417,33 @@ public class ArgumentBuilder
    * @return argument value in the correct type
    */
   private static Object buildRegularArgument(final ResourceContext context,
-                                             final Parameter<?> param)
+                                             final Parameter<?> param,
+                                             boolean validateParam)
   {
-    String value =
-        ArgumentUtils.argumentAsString(context.getParameter(param.getName()),
-                                       param.getName());
-
-    final Object convertedValue;
-    if (value == null)
+    if (!context.hasParameter(param.getName()))
     {
       return null;
     }
+
+    final Object convertedValue;
+    if (param.isArray())
+    {
+      convertedValue = buildArrayArgument(context, param, validateParam);
+    }
     else
     {
-      if (param.isArray())
+      String value = context.getParameter(param.getName());
+
+      if (value == null)
       {
-        convertedValue = buildArrayArgument(context, param);
+        return null;
       }
       else
       {
         try
         {
-          convertedValue = ArgumentUtils.convertSimpleValue(value, param.getDataSchema(), param.getType());
+          convertedValue =
+              ArgumentUtils.convertSimpleValue(value, param.getDataSchema(), param.getType(), validateParam);
         }
         catch (NumberFormatException e)
         {
@@ -424,10 +477,11 @@ public class ArgumentBuilder
     return convertedValue;
   }
 
-  private static DataTemplate<?> buildDataTemplateArgument(final ResourceContext context,
-                                                           final Parameter<?> param)
+  private static DataTemplate<?> buildDataTemplateArgument(final Object paramValue,
+                                                           final Parameter<?> param,
+                                                           final boolean validateParams)
+
   {
-    Object paramValue = context.getStructuredParameter(param.getName());
     DataTemplate<?> paramRecordTemplate;
 
     if (paramValue == null)
@@ -438,7 +492,7 @@ public class ArgumentBuilder
     {
       @SuppressWarnings("unchecked")
       final Class<? extends RecordTemplate> paramType = (Class<? extends RecordTemplate>) param.getType();
-      /**
+      /*
        * It is possible for the paramValue provided by ResourceContext to be coerced to the wrong type.
        * If a query param is a single value param for example www.domain.com/resource?foo=1.
        * Then ResourceContext will parse foo as a String with value = 1.
@@ -450,17 +504,14 @@ public class ArgumentBuilder
        */
       if (AbstractArrayTemplate.class.isAssignableFrom(paramType) && paramValue.getClass() != DataList.class)
       {
-        paramRecordTemplate = DataTemplateUtil.wrap(new DataList(Arrays.asList(paramValue)), paramType);
+        paramRecordTemplate = DataTemplateUtil.wrap(new DataList(Collections.singletonList(paramValue)), paramType);
       }
       else
       {
         paramRecordTemplate = DataTemplateUtil.wrap(paramValue, paramType);
       }
 
-      // Validate against the class schema with FixupMode.STRING_TO_PRIMITIVE to parse the
-      // strings into the corresponding primitive types.
-      ValidateDataAgainstSchema.validate(paramRecordTemplate.data(), paramRecordTemplate.schema(),
-          new ValidationOptions(RequiredMode.CAN_BE_ABSENT_IF_HAS_DEFAULT, CoercionMode.STRING_TO_PRIMITIVE));
+      ArgumentUtils.validateDataAgainstSchema(paramRecordTemplate.data(), paramRecordTemplate.schema(), validateParams);
       return paramRecordTemplate;
     }
   }
@@ -485,60 +536,168 @@ public class ArgumentBuilder
     }
   }
 
+
   /**
    * Convert a DataMap representation of a BatchRequest (string->record) into a Java Map
-   * appropriate for passing into application code.  Note that compound/complex keys are
-   * represented as their string encoding in the DataMap.  Since we have already parsed
-   * these keys, we simply try to match the string representations, rather than re-parsing.
+   * appropriate for passing into application code. Note that compound/complex keys are
+   * represented as their string encoding in the DataMap. This method will parse the string
+   * encoded keys to compare with the passed in keys from query parameters. During mismatch or
+   * duplication of keys in the DataMap, an error will be thrown.
    *
-   *
-   * @param data - the input DataMap to be converted
-   * @param valueClass - the RecordTemplate type of the values
-   * @param ids - the parsed batch ids from the request URI
-   * @return a map using appropriate key and value classes, or null if ids is null
+   * @param routingResult {@link RoutingResult} instance for the current request
+   * @param data The input DataMap to be converted
+   * @param valueClass The RecordTemplate type of the values
+   * @param ids The parsed batch ids from the request URI
+   * @return A map using appropriate key and value classes, or null if ids is null
    */
-  public static <R extends RecordTemplate> Map<Object, R> buildBatchRequestMap(final DataMap data,
-                                                                               final Class<R> valueClass,
-                                                                               final Set<?> ids,
-                                                                               final ProtocolVersion version)
+  static <R extends RecordTemplate> Map<Object, R> buildBatchRequestMap(RoutingResult routingResult,
+      DataMap data,
+      Class<R> valueClass,
+      Set<?> ids)
   {
     if (ids == null)
     {
       return null;
     }
 
-    BatchRequest<R> batchRequest = new BatchRequest<R>(data, new TypeSpec<R>(valueClass));
-
-    Map<String, Object> parsedKeyMap = new HashMap<String, Object>();
-    for (Object o : ids)
-    {
-      parsedKeyMap.put(URIParamUtils.encodeKeyForBody(o, true, version), o);
-    }
+    BatchRequest<R> batchRequest = new BatchRequest<>(data, new TypeSpec<>(valueClass));
 
     Map<Object, R> result =
-      new HashMap<Object, R>(CollectionUtils.getMapInitialCapacity(batchRequest.getEntities().size(), 0.75f), 0.75f);
+        new HashMap<>(CollectionUtils.getMapInitialCapacity(batchRequest.getEntities().size(), 0.75f), 0.75f);
     for (Map.Entry<String, R> entry : batchRequest.getEntities().entrySet())
     {
-      Object key = parsedKeyMap.get(entry.getKey());
-      if (key == null)
+      Object typedKey = parseEntityStringKey(entry.getKey(), routingResult);
+
+      if (result.containsKey(typedKey))
       {
         throw new RoutingException(
-          String.format("Batch request mismatch, URI keys: '%s'  Entity keys: '%s'",
-                        ids.toString(),
-                        batchRequest.getEntities().keySet().toString()),
+            String.format("Duplicate key in batch request body: '%s'", typedKey),
+            HttpStatus.S_400_BAD_REQUEST.getCode());
+      }
+
+      if (!ids.contains(typedKey))
+      {
+        throw new RoutingException(
+          String.format("Batch request mismatch. Entity key '%s' not found in the query parameter.", typedKey),
           HttpStatus.S_400_BAD_REQUEST.getCode());
       }
+
       R value = DataTemplateUtil.wrap(entry.getValue().data(), valueClass);
-      result.put(key, value);
+      result.put(typedKey, value);
     }
+
     if (!ids.equals(result.keySet()))
     {
       throw new RoutingException(
-        String.format("Batch request mismatch, URI keys: '%s'  Entity keys: '%s'",
+        String.format("Batch request mismatch. URI keys: '%s' Entity keys: '%s'",
                       ids.toString(),
                       result.keySet().toString()),
         HttpStatus.S_400_BAD_REQUEST.getCode());
     }
     return result;
+  }
+
+  /**
+   * Parses the provided string key value and returns its corresponding typed key instance. This method should only be
+   * used to parse keys which appear in the request body.
+   *
+   * @param stringKey Key string from the entity body
+   * @param routingResult {@link RoutingResult} instance for the current request
+   * @return An instance of key's corresponding type
+   */
+  private static Object parseEntityStringKey(final String stringKey, final RoutingResult routingResult)
+  {
+    ResourceModel resourceModel = routingResult.getResourceMethod().getResourceModel();
+    ServerResourceContext resourceContext = routingResult.getContext();
+    ProtocolVersion version = resourceContext.getRestliProtocolVersion();
+
+    try
+    {
+      Key primaryKey = resourceModel.getPrimaryKey();
+      String altKeyName = resourceContext.getParameter(RestConstants.ALT_KEY_PARAM);
+
+      if (altKeyName != null)
+      {
+        return ArgumentUtils.translateFromAlternativeKey(
+            ArgumentUtils.parseAlternativeKey(stringKey, altKeyName, resourceModel, version,
+                routingResult.getResourceMethodConfig().shouldValidateResourceKeys()),
+            altKeyName, resourceModel);
+      }
+      else if (ComplexResourceKey.class.equals(primaryKey.getType()))
+      {
+        ComplexResourceKey<RecordTemplate, RecordTemplate> complexKey = ComplexResourceKey.parseString(stringKey,
+            ComplexKeySpec.forClassesMaybeNull(resourceModel.getKeyKeyClass(), resourceModel.getKeyParamsClass()),
+            version);
+        if (routingResult.getResourceMethodConfig().shouldValidateResourceKeys())
+        {
+          complexKey.validate();
+        }
+        return complexKey;
+      }
+      else if (CompoundKey.class.equals(primaryKey.getType()))
+      {
+        return ArgumentUtils.parseCompoundKey(stringKey, resourceModel.getKeys(), version,
+            routingResult.getResourceMethodConfig().shouldValidateResourceKeys());
+      }
+      else
+      {
+        // The conversion of simple keys doesn't include URL decoding as the current version of Rest.li clients don't
+        // encode simple keys which appear in the request body for BATCH UPDATE and BATCH PATCH requests.
+        Key key = resourceModel.getPrimaryKey();
+        return ArgumentUtils.convertSimpleValue(stringKey, key.getDataSchema(), key.getType(),
+            routingResult.getResourceMethodConfig().shouldValidateResourceKeys());
+      }
+    }
+    catch (InvalidAlternativeKeyException | AlternativeKeyCoercerException | PathSegment.PathSegmentSyntaxException | IllegalArgumentException e)
+    {
+      throw new RoutingException(String.format("Invalid key: '%s'", stringKey),
+          HttpStatus.S_400_BAD_REQUEST.getCode());
+    }
+  }
+
+  /**
+   * A reactive Writer that writes out all the bytes written to a ByteArrayOutputStream as one data chunk.
+   */
+  private static class ByteArrayOutputStreamWriter implements Writer<ByteString>
+  {
+    private final ByteArrayOutputStream _out;
+    private WriteHandle<? super ByteString> _wh;
+
+    ByteArrayOutputStreamWriter(ByteArrayOutputStream out)
+    {
+      _out = out;
+    }
+
+    @Override
+    public void onInit(WriteHandle<? super ByteString> wh)
+    {
+      _wh = wh;
+    }
+
+    @Override
+    public void onWritePossible()
+    {
+      if (_wh.remaining() > 0)
+      {
+        _wh.write(ByteString.unsafeWrap(_out.toByteArray()));
+        _wh.done();
+      }
+    }
+
+    @Override
+    public void onAbort(Throwable ex)
+    {
+      // Closing ByteArrayOutputStream is unnecessary because it doesn't hold any internal resource that needs to
+      // be released. However, if the implementation changes to use a different backing OutputStream, this needs to be
+      // re-evaluated. OutputStream may need to be called here, after _wh.done(), and in finalize().
+    }
+  }
+
+  static void checkEntityNotNull(DataMap dataMap, ResourceMethod method) {
+    if (dataMap == null) {
+      throw new RoutingException(
+          String.format("Empty entity body is not allowed for %s method request", method),
+          HttpStatus.S_400_BAD_REQUEST.getCode());
+    }
   }
 }

@@ -20,10 +20,10 @@ package com.linkedin.restli.examples;
 import com.linkedin.common.callback.FutureCallback;
 import com.linkedin.common.util.None;
 import com.linkedin.r2.RemoteInvocationException;
-import com.linkedin.r2.filter.FilterChain;
-import com.linkedin.r2.filter.FilterChains;
 import com.linkedin.r2.filter.CompressionConfig;
 import com.linkedin.r2.filter.CompressionOption;
+import com.linkedin.r2.filter.FilterChain;
+import com.linkedin.r2.filter.FilterChains;
 import com.linkedin.r2.filter.NextFilter;
 import com.linkedin.r2.filter.compression.ServerCompressionFilter;
 import com.linkedin.r2.filter.logging.SimpleLoggingFilter;
@@ -50,21 +50,23 @@ import com.linkedin.restli.examples.greetings.client.GreetingsRequestBuilders;
 import com.linkedin.restli.server.RestLiServiceException;
 import com.linkedin.restli.test.util.RootBuilderWrapper;
 
-import io.netty.channel.nio.NioEventLoopGroup;
+import com.linkedin.test.util.retry.ThreeRetries;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import io.netty.channel.nio.NioEventLoopGroup;
 
 /**
  * Integration tests for request compression.
@@ -89,9 +91,9 @@ public class TestRequestCompression extends RestLiIntegrationTest
     {
       @Override
       public void onRestRequest(RestRequest req,
-                         RequestContext requestContext,
-                         Map<String, String> wireAttrs,
-                         NextFilter<RestRequest, RestResponse> nextFilter)
+                                RequestContext requestContext,
+                                Map<String, String> wireAttrs,
+                                NextFilter<RestRequest, RestResponse> nextFilter)
       {
         Map<String, String> requestHeaders = req.getHeaders();
         if (requestHeaders.containsKey(TEST_HELP_HEADER))
@@ -103,12 +105,12 @@ public class TestRequestCompression extends RestLiIntegrationTest
             {
               throw new RestLiServiceException(HttpStatus.S_400_BAD_REQUEST, "Request is not compressed when it should be.");
             }
-            else if (!contentEncodingHeader.equals("snappy"))
+            else if (!contentEncodingHeader.equals("x-snappy-framed"))
             {
               // Request should be compressed with the first encoding the client can compress with,
               // which is always snappy in this test.
               throw new RestLiServiceException(HttpStatus.S_400_BAD_REQUEST,
-                  "Request is compressed with " + contentEncodingHeader + " instead of snappy.");
+                                               "Request is compressed with " + contentEncodingHeader + " instead of x-snappy-framed.");
             }
           }
           else
@@ -148,7 +150,7 @@ public class TestRequestCompression extends RestLiIntegrationTest
         .addLastRest(new ServerCompressionFilter(RestLiIntTestServer.supportedCompression))
         .addLastRest(new CheckHeadersFilter())
         .addLastRest(new SimpleLoggingFilter());
-    super.init(null, null, fc, false);
+    super.init(null, fc, false);
   }
 
   @AfterClass
@@ -168,7 +170,7 @@ public class TestRequestCompression extends RestLiIntegrationTest
     CompressionConfig tinyThresholdConfig = new CompressionConfig(tiny);
     CompressionConfig hugeThresholdConfig = new CompressionConfig(huge);
 
-    String encodings = "unsupportedEncoding, snappy, gzip";
+    String encodings = "unsupportedEncoding, x-snappy-framed, snappy, gzip";
 
     RestliRequestOptions forceOnOption = new RestliRequestOptionsBuilder().setProtocolVersionOption(ProtocolVersionOption.USE_LATEST_IF_AVAILABLE)
         .setRequestCompressionOverride(CompressionOption.FORCE_ON).build();
@@ -214,38 +216,40 @@ public class TestRequestCompression extends RestLiIntegrationTest
     };
   }
 
-  @Test(dataProvider = "requestData")
+  @Test(dataProvider = "requestData", retryAnalyzer = ThreeRetries.class)
   public void testUpdate(CompressionConfig requestCompressionConfig,
                          String supportedEncodings,
                          RestliRequestOptions restliRequestOptions,
                          int messageLength,
                          String testHelpHeader)
-    throws RemoteInvocationException, CloneNotSupportedException, InterruptedException, ExecutionException,
-           TimeoutException
+      throws RemoteInvocationException, CloneNotSupportedException, InterruptedException, ExecutionException,
+             TimeoutException
   {
     ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("R2 Netty Scheduler"));
-    Map<String, CompressionConfig> requestCompressionConfigs = new HashMap<String, CompressionConfig>();
+    Map<String, CompressionConfig> requestCompressionConfigs = new HashMap<>();
     if (requestCompressionConfig != null)
     {
       requestCompressionConfigs.put(SERVICE_NAME, requestCompressionConfig);
     }
-    HttpClientFactory httpClientFactory = new HttpClientFactory(FilterChains.empty(),
-        new NioEventLoopGroup(),
-        true,
-        executor,
-        true,
-        null,
-        false,
-        AbstractJmxManager.NULL_JMX_MANAGER,
-        500, // The default compression threshold is between small and large.
-        requestCompressionConfigs);
-    Map<String, String> properties = new HashMap<String, String>();
+    HttpClientFactory httpClientFactory = new HttpClientFactory.Builder()
+        .setFilterChain(FilterChains.empty())
+        .setEventLoopGroup(new NioEventLoopGroup())
+        .setShutDownFactory(true)
+        .setScheduleExecutorService(executor)
+        .setShutdownScheduledExecutorService(true)
+        .setCallbackExecutor(null)
+        .setShutdownCallbackExecutor(false)
+        .setJmxManager(AbstractJmxManager.NULL_JMX_MANAGER)
+        .setRequestCompressionThresholdDefault(500)
+        .setRequestCompressionConfigs(requestCompressionConfigs)
+        .build();
+    Map<String, String> properties = new HashMap<>();
 
     properties.put(HttpClientFactory.HTTP_REQUEST_CONTENT_ENCODINGS, supportedEncodings);
     properties.put(HttpClientFactory.HTTP_SERVICE_NAME, SERVICE_NAME);
     TransportClientAdapter clientAdapter1 = new TransportClientAdapter(httpClientFactory.getClient(properties));
     RestClient client = new RestClient(clientAdapter1, FILTERS_URI_PREFIX);
-    RootBuilderWrapper<Long, Greeting> builders = new RootBuilderWrapper<Long, Greeting>(new GreetingsRequestBuilders(restliRequestOptions));
+    RootBuilderWrapper<Long, Greeting> builders = new RootBuilderWrapper<>(new GreetingsRequestBuilders(restliRequestOptions));
 
     // GET
     Request<Greeting> request = builders.get().id(1L).build();
@@ -271,11 +275,11 @@ public class TestRequestCompression extends RestLiIntegrationTest
 
     Assert.assertEquals(response2, message);
 
-    FutureCallback<None> callback1 = new FutureCallback<None>();
+    FutureCallback<None> callback1 = new FutureCallback<>();
     client.shutdown(callback1);
     callback1.get(30, TimeUnit.SECONDS);
 
-    FutureCallback<None> callback2 = new FutureCallback<None>();
+    FutureCallback<None> callback2 = new FutureCallback<>();
     httpClientFactory.shutdown(callback2);
     callback2.get(30, TimeUnit.SECONDS);
   }

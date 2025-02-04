@@ -30,16 +30,17 @@ import com.linkedin.restli.common.ComplexResourceKey;
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.ResourceSpec;
 import com.linkedin.restli.common.RestConstants;
-import com.linkedin.restli.internal.common.CookieUtil;
 import com.linkedin.util.ArgumentUtil;
 
 import java.lang.reflect.Array;
 import java.net.HttpCookie;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -53,16 +54,16 @@ import java.util.TreeMap;
 
 public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends BuilderBase implements RequestBuilder<R>
 {
-  protected static final char HEADER_DELIMITER = ',';
+  protected static final char         HEADER_DELIMITER = ',';
 
   protected final ResourceSpec        _resourceSpec;
 
-  private Map<String, String>       _headers     = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
-  private List<HttpCookie>          _cookies     = new ArrayList<HttpCookie>();
-  private final Map<String, Object> _queryParams = new HashMap<String, Object>();
-  private final Map<String, Class<?>> _queryParamClasses = new HashMap<String, Class<?>>();
-  private final Map<String, Object> _pathKeys    = new HashMap<String, Object>();
-  private final CompoundKey         _assocKey    = new CompoundKey();
+  private Map<String, String>         _headers     = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+  private List<HttpCookie>            _cookies     = new ArrayList<>();
+  private final Map<String, Object>   _queryParams = new HashMap<>();
+  private final Map<String, Class<?>> _queryParamClasses = new HashMap<>();
+  private final Map<String, Object>   _pathKeys    = new HashMap<>();
+  private final CompoundKey           _assocKey    = new CompoundKey();
 
   protected AbstractRequestBuilder(String baseUriTemplate, ResourceSpec resourceSpec, RestliRequestOptions requestOptions)
   {
@@ -122,7 +123,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
    */
   public AbstractRequestBuilder<K, V, R> setHeaders(Map<String, String> headers)
   {
-    _headers = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+    _headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     _headers.putAll(headers);
     return this;
   }
@@ -159,7 +160,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
    */
   public AbstractRequestBuilder<K, V, R> clearCookies()
   {
-    _cookies = new ArrayList<HttpCookie>();
+    _cookies = new ArrayList<>();
     return this;
   }
 
@@ -204,6 +205,13 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     return this;
   }
 
+  public AbstractRequestBuilder<K, V, R> removeParam(String key)
+  {
+    _queryParams.remove(key);
+    _queryParamClasses.remove(key);
+    return this;
+  }
+
   public AbstractRequestBuilder<K, V, R> addReqParam(String key, Object value)
   {
     ArgumentUtil.notNull(value, "value");
@@ -236,7 +244,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     final Object existingData = _queryParams.get(key);
     if (existingData == null)
     {
-      final Collection<Object> newData = new ArrayList<Object>();
+      final Collection<Object> newData = new ArrayList<>();
       newData.add(value);
       setParam(key, newData);
     }
@@ -246,7 +254,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     }
     else if (existingData instanceof Iterable)
     {
-      final Collection<Object> newData = new ArrayList<Object>();
+      final Collection<Object> newData = new ArrayList<>();
       for (Object d : (Iterable) existingData)
       {
         newData.add(d);
@@ -262,6 +270,17 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
 
     return this;
   }
+
+  public void addFields(PathSpec... fieldPaths)
+  {
+    if (_queryParams.containsKey(RestConstants.FIELDS_PARAM))
+    {
+      throw new IllegalStateException("Entity projection fields already set on this request: "
+                                          + _queryParams.get(RestConstants.FIELDS_PARAM));
+    }
+    setParam(RestConstants.FIELDS_PARAM, fieldPaths == null ? null : new HashSet<>(Arrays.asList(fieldPaths)));
+  }
+
 
   public AbstractRequestBuilder<K, V, R> pathKey(String name, Object value)
   {
@@ -279,7 +298,6 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
    * method and setting that as the {@link RestliRequestOptions} for this method.
    *
    * @param options
-   * @return
    */
   public AbstractRequestBuilder<K, V, R> setRequestOptions(RestliRequestOptions options)
   {
@@ -304,7 +322,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     Set<K> existingIds = (Set<K>) _queryParams.get(RestConstants.QUERY_BATCH_IDS_PARAM);
     if (existingIds == null)
     {
-      existingIds = new HashSet<K>();
+      existingIds = new HashSet<>();
       _queryParams.put(RestConstants.QUERY_BATCH_IDS_PARAM, existingIds);
     }
     for (K id: ids)
@@ -315,6 +333,17 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
       }
       existingIds.add(id);
     }
+  }
+
+  /**
+   * To be called from the extending "return entity" request builder classes
+   * that implement returnEntity(boolean).
+   *
+   * @param value boolean indicating whether to return the entity
+   */
+  protected final void setReturnEntityParam(boolean value)
+  {
+    setParam(RestConstants.RETURN_ENTITY_PARAM, value);
   }
 
   protected boolean hasParam(String parameterName)
@@ -341,16 +370,6 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     _assocKey.append(key, value);
   }
 
-  protected void addFields(PathSpec... fieldPaths)
-  {
-    if (_queryParams.containsKey(RestConstants.FIELDS_PARAM))
-    {
-      throw new IllegalStateException("Entity projection fields already set on this request: "
-                                          + _queryParams.get(RestConstants.FIELDS_PARAM));
-    }
-    setParam(RestConstants.FIELDS_PARAM, fieldPaths);
-  }
-
   protected void addMetadataFields(PathSpec... fieldPaths)
   {
     if (_queryParams.containsKey(RestConstants.METADATA_FIELDS_PARAM))
@@ -358,7 +377,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
       throw new IllegalStateException("Metadata projection fields already set on this request: "
           + _queryParams.get(RestConstants.METADATA_FIELDS_PARAM));
     }
-    setParam(RestConstants.METADATA_FIELDS_PARAM, fieldPaths);
+    setParam(RestConstants.METADATA_FIELDS_PARAM, fieldPaths == null ? null : new HashSet<>(Arrays.asList(fieldPaths)));
   }
 
   protected void addPagingFields(PathSpec... fieldPaths)
@@ -368,7 +387,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
       throw new IllegalStateException("Paging projection fields already set on this request: "
           + _queryParams.get(RestConstants.PAGING_FIELDS_PARAM));
     }
-    setParam(RestConstants.PAGING_FIELDS_PARAM, fieldPaths);
+    setParam(RestConstants.PAGING_FIELDS_PARAM, fieldPaths == null ? null : new HashSet<>(Arrays.asList(fieldPaths)));
   }
 
   /**
@@ -384,7 +403,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
   {
     try
     {
-      Map<String, Object> readOnlyCopy = new HashMap<String, Object>
+      Map<String, Object> readOnlyCopy = new HashMap<>
           (CollectionUtils.getMapInitialCapacity(queryParams.size(), 0.75f), 0.75f);
       for (Map.Entry<String, Object> entry: queryParams.entrySet())
       {
@@ -415,11 +434,11 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     return getReadOnlyPathKeys(_pathKeys);
   }
 
-  static protected Map<String, Object> getReadOnlyPathKeys(Map<String, Object> pathKeys)
+  static public Map<String, Object> getReadOnlyPathKeys(Map<String, Object> pathKeys)
   {
     try
     {
-      Map<String, Object> readOnlyCopy = new HashMap<String, Object>(
+      Map<String, Object> readOnlyCopy = new HashMap<>(
           CollectionUtils.getMapInitialCapacity(pathKeys.size(), 0.75f), 0.75f);
       for (Map.Entry<String, Object> entry: pathKeys.entrySet())
       {
@@ -436,7 +455,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     }
   }
 
-  protected <T extends DataTemplate<?>> T getReadOnlyOrCopyDataTemplate(T value) throws CloneNotSupportedException
+  protected static <T extends DataTemplate<?>> T getReadOnlyOrCopyDataTemplate(T value) throws CloneNotSupportedException
   {
     return getReadOnlyOrCopyDataTemplateObject(value);
   }
@@ -469,7 +488,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
   }
 
   @SuppressWarnings("unchecked")
-  static private <Key> Key getReadOnlyOrCopyKeyObject(Key key) throws CloneNotSupportedException
+  private static <Key> Key getReadOnlyOrCopyKeyObject(Key key) throws CloneNotSupportedException
   {
     if (key instanceof ComplexResourceKey)
     {
@@ -514,7 +533,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     {
       // array of non-primitives
       Object[] arr = (Object[]) value;
-      List<Object> list = new ArrayList<Object>(arr.length);
+      List<Object> list = new ArrayList<>(arr.length);
       for (Object o: arr)
       {
         list.add(getReadOnlyJavaObject(o));
@@ -525,7 +544,7 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     {
       // array of primitives
       int length = Array.getLength(value);
-      List<Object> list = new ArrayList<Object>();
+      List<Object> list = new ArrayList<>();
       for (int i = 0; i < length; i++)
       {
         list.add(Array.get(value, i));
@@ -540,9 +559,19 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
     {
       return getReadOnlyOrCopyDataTemplateObject((DataTemplate) value);
     }
+    else if (value instanceof Set)
+    {
+      // SI-7963: preserves order of the input set
+      Set<Object> set = new LinkedHashSet<>();
+      for (Object o: (Set)value)
+      {
+        set.add(getReadOnlyJavaObject(o));
+      }
+      return Collections.unmodifiableSet(set);
+    }
     else if (value instanceof Iterable)
     {
-      List<Object> list = new ArrayList<Object>();
+      List<Object> list = new ArrayList<>();
       for (Object o: (Iterable)value)
       {
         list.add(getReadOnlyJavaObject(o));
@@ -577,9 +606,9 @@ public abstract class AbstractRequestBuilder<K, V, R extends Request<?>> extends
 
   static protected Map<String, String> getReadOnlyHeaders(Map<String, String> headers)
   {
-    Map<String, String> copyHeaders = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
+    TreeMap<String, String> copyHeaders = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     copyHeaders.putAll(headers);
-    return Collections.unmodifiableMap(copyHeaders);
+    return Collections.unmodifiableSortedMap(copyHeaders);
   }
 
   static protected List<HttpCookie> getReadOnlyCookies(List<HttpCookie> cookies)

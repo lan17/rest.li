@@ -27,6 +27,7 @@ import com.linkedin.data.codec.JacksonDataCodec;
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.DataSchemaResolver;
 import com.linkedin.data.schema.PathSpec;
+import com.linkedin.data.schema.SchemaFormatType;
 import com.linkedin.data.template.DataTemplateUtil;
 import com.linkedin.data.template.JacksonDataTemplateCodec;
 import com.linkedin.restli.common.RestConstants;
@@ -100,12 +101,12 @@ public class RestSpecCodec
 
   /**
    * Generate a DataSchema from a JSON representation and a DataSchemaResolver.
-   * 
+   *
    * @param typeText a String JSON representation of a DataSchema
    * @param schemaResolver the schemaResolver to use to resolve the typeText
    * @return a DataSchema
    */
-  public static DataSchema textToSchema(String typeText, DataSchemaResolver schemaResolver)
+  public static DataSchema textToSchema(String typeText, DataSchemaResolver schemaResolver, SchemaFormatType type)
   {
     typeText = typeText.trim();
     if (!typeText.startsWith("{") && !typeText.startsWith("\""))
@@ -114,8 +115,15 @@ public class RestSpecCodec
       typeText = "\"" + typeText + "\"";
     }
 
-    return DataTemplateUtil.parseSchema(typeText, schemaResolver);
+    return DataTemplateUtil.parseSchema(typeText, schemaResolver, type);
   }
+
+  public static DataSchema textToSchema(String typeText, DataSchemaResolver schemaResolver)
+  {
+    // Should check and use SchemaFormatType.PDL everywhere for this repo
+    return textToSchema(typeText, schemaResolver, SchemaFormatType.PDSC);
+  }
+
 
   private void fixupLegacyRestspec(DataMap data) throws IOException
   {

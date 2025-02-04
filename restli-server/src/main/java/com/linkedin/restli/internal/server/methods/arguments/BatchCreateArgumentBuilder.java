@@ -14,22 +14,21 @@
    limitations under the License.
  */
 
-/**
- * $Id: $
- */
-
 package com.linkedin.restli.internal.server.methods.arguments;
 
 import com.linkedin.data.DataMap;
 import com.linkedin.data.template.RecordTemplate;
-import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.restli.common.CollectionRequest;
+import com.linkedin.restli.common.ResourceMethod;
 import com.linkedin.restli.internal.server.RoutingResult;
 import com.linkedin.restli.internal.server.util.ArgumentUtils;
-import com.linkedin.restli.internal.server.util.DataMapUtils;
 import com.linkedin.restli.server.BatchCreateRequest;
 import com.linkedin.restli.server.RestLiRequestData;
 import com.linkedin.restli.server.RestLiRequestDataImpl;
+import com.linkedin.restli.server.util.UnstructuredDataUtil;
+
+import static com.linkedin.restli.internal.server.methods.arguments.ArgumentBuilder.checkEntityNotNull;
+
 
 /**
  * @author Josh Walker
@@ -47,16 +46,25 @@ public class BatchCreateArgumentBuilder implements RestLiArgumentBuilder
     return ArgumentBuilder.buildArgs(positionalArguments,
                                      routingResult.getResourceMethod(),
                                      routingResult.getContext(),
-                                     null);
+                                     null,
+                                     routingResult.getResourceMethodConfig());
   }
 
   @Override
-  public RestLiRequestData extractRequestData(RoutingResult routingResult, RestRequest request)
+  public RestLiRequestData extractRequestData(RoutingResult routingResult, DataMap dataMap)
   {
-    Class<? extends RecordTemplate> valueClass = ArgumentUtils.getValueClass(routingResult);
-    DataMap dataMap = DataMapUtils.readMap(request);
-    @SuppressWarnings({ "unchecked", "rawtypes" })
-    CollectionRequest<RecordTemplate> collectionRequest = new CollectionRequest(dataMap, valueClass);
-    return new RestLiRequestDataImpl.Builder().batchEntities(collectionRequest.getElements()).build();
+    // No entity for unstructured data requests
+    if (UnstructuredDataUtil.isUnstructuredDataRouting(routingResult))
+    {
+      return new RestLiRequestDataImpl.Builder().build();
+    }
+    else
+    {
+      checkEntityNotNull(dataMap, ResourceMethod.BATCH_CREATE);
+      Class<? extends RecordTemplate> valueClass = ArgumentUtils.getValueClass(routingResult);
+      @SuppressWarnings({"unchecked", "rawtypes"})
+      CollectionRequest<RecordTemplate> collectionRequest = new CollectionRequest(dataMap, valueClass);
+      return new RestLiRequestDataImpl.Builder().batchEntities(collectionRequest.getElements()).build();
+    }
   }
 }

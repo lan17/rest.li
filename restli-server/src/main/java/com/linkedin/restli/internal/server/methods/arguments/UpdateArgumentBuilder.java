@@ -14,19 +14,21 @@
    limitations under the License.
  */
 
-/**
- * $Id: $
- */
-
 package com.linkedin.restli.internal.server.methods.arguments;
 
-
+import com.linkedin.data.DataMap;
+import com.linkedin.data.template.DataTemplateUtil;
 import com.linkedin.data.template.RecordTemplate;
-import com.linkedin.r2.message.rest.RestRequest;
+import com.linkedin.restli.common.ResourceMethod;
 import com.linkedin.restli.internal.server.RoutingResult;
 import com.linkedin.restli.internal.server.util.ArgumentUtils;
 import com.linkedin.restli.server.RestLiRequestData;
 import com.linkedin.restli.server.RestLiRequestDataImpl;
+import com.linkedin.restli.server.util.UnstructuredDataUtil;
+import java.util.ArrayList;
+import java.util.List;
+
+import static com.linkedin.restli.internal.server.methods.arguments.ArgumentBuilder.checkEntityNotNull;
 
 
 /**
@@ -38,30 +40,38 @@ public class UpdateArgumentBuilder implements RestLiArgumentBuilder
   @Override
   public Object[] buildArguments(RestLiRequestData requestData, RoutingResult routingResult)
   {
-    final Object[] positionalArgs;
+    List<Object> positionalArgs = new ArrayList<>();
     if (requestData.hasKey())
     {
-      positionalArgs = new Object[] { requestData.getKey(), requestData.getEntity() };
+      positionalArgs.add(requestData.getKey());
     }
-    else
+
+    if (requestData.getEntity() != null)
     {
-      positionalArgs = new Object[] { requestData.getEntity() };
+      positionalArgs.add(requestData.getEntity());
     }
-    return ArgumentBuilder.buildArgs(positionalArgs,
+    return ArgumentBuilder.buildArgs(positionalArgs.toArray(),
                                      routingResult.getResourceMethod(),
                                      routingResult.getContext(),
-                                     null);
+                                     null,
+                                     routingResult.getResourceMethodConfig());
   }
 
   @Override
-  public RestLiRequestData extractRequestData(RoutingResult routingResult, RestRequest request)
+  public RestLiRequestData extractRequestData(RoutingResult routingResult, DataMap dataMap)
   {
-    RecordTemplate record = ArgumentBuilder.extractEntity(request, ArgumentUtils.getValueClass(routingResult));
-    RestLiRequestDataImpl.Builder builder = new RestLiRequestDataImpl.Builder().entity(record);
+    RestLiRequestDataImpl.Builder builder = new RestLiRequestDataImpl.Builder();
     if (ArgumentUtils.hasResourceKey(routingResult))
     {
       Object keyValue = ArgumentUtils.getResourceKey(routingResult);
       builder.key(keyValue);
+    }
+    // Unstructured data is not available in the Rest.Li filters
+    if (!UnstructuredDataUtil.isUnstructuredDataRouting(routingResult))
+    {
+      checkEntityNotNull(dataMap, ResourceMethod.UPDATE);
+      RecordTemplate record = DataTemplateUtil.wrap(dataMap, ArgumentUtils.getValueClass(routingResult));
+      builder.entity(record);
     }
     return builder.build();
   }

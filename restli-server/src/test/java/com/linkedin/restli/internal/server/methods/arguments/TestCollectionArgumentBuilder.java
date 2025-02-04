@@ -26,30 +26,31 @@ import com.linkedin.data.template.IntegerArray;
 import com.linkedin.data.transform.filter.request.MaskTree;
 import com.linkedin.r2.message.rest.RestRequest;
 import com.linkedin.restli.common.test.MyComplexKey;
+import com.linkedin.restli.internal.server.MutablePathKeys;
 import com.linkedin.restli.internal.server.PathKeysImpl;
 import com.linkedin.restli.internal.server.RoutingResult;
+import com.linkedin.restli.internal.server.ServerResourceContext;
 import com.linkedin.restli.internal.server.model.AnnotationSet;
 import com.linkedin.restli.internal.server.model.Parameter;
 import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
 import com.linkedin.restli.server.PagingContext;
-import com.linkedin.restli.server.PathKeys;
-import com.linkedin.restli.server.ResourceContext;
 import com.linkedin.restli.server.RestLiRequestData;
 import com.linkedin.restli.server.RoutingException;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
-
+import java.io.IOException;
 import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.testng.annotations.DataProvider;
+import org.testng.annotations.Test;
+import org.testng.internal.junit.ArrayAsserts;
 
-import static org.easymock.EasyMock.verify;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
+import static org.easymock.EasyMock.*;
+import static org.testng.Assert.*;
+
 
 /**
  * @author Soojung Ha
@@ -58,7 +59,7 @@ public class TestCollectionArgumentBuilder
 {
   private Parameter<?> getPagingContextParam()
   {
-    return new Parameter<PagingContext>(
+    return new Parameter<>(
         "",
         PagingContext.class,
         null,
@@ -71,9 +72,9 @@ public class TestCollectionArgumentBuilder
 
   private List<Parameter<?>> getFinderParams()
   {
-    List<Parameter<?>> finderParams = new ArrayList<Parameter<?>>();
+    List<Parameter<?>> finderParams = new ArrayList<>();
     finderParams.add(getPagingContextParam());
-    Parameter<Integer> requiredIntParam = new Parameter<Integer>(
+    Parameter<Integer> requiredIntParam = new Parameter<>(
         "required",
         Integer.class,
         new IntegerDataSchema(),
@@ -83,7 +84,7 @@ public class TestCollectionArgumentBuilder
         true,
         new AnnotationSet(new Annotation[]{}));
     finderParams.add(requiredIntParam);
-    Parameter<String> optionalStringParam = new Parameter<String>(
+    Parameter<String> optionalStringParam = new Parameter<>(
         "optional",
         String.class,
         new StringDataSchema(),
@@ -99,23 +100,23 @@ public class TestCollectionArgumentBuilder
   @DataProvider(name = "argumentData")
   private Object[][] argumentData()
   {
-    List<Parameter<?>> getAllParams = new ArrayList<Parameter<?>>();
+    List<Parameter<?>> getAllParams = new ArrayList<>();
     getAllParams.add(getPagingContextParam());
-    Map<String, String> getAllContextParams = new HashMap<String, String>();
+    Map<String, String> getAllContextParams = new HashMap<>();
     getAllContextParams.put("start", "33");
     getAllContextParams.put("count", "444");
 
-    Map<String, String> finderContextParams = new HashMap<String, String>();
+    Map<String, String> finderContextParams = new HashMap<>();
     finderContextParams.put("start", "33");
     finderContextParams.put("count", "444");
     finderContextParams.put("required", "777");
     finderContextParams.put("optional", null);
 
-    Map<String, String> finderContextParamsWithOptionalString = new HashMap<String, String>(finderContextParams);
+    Map<String, String> finderContextParamsWithOptionalString = new HashMap<>(finderContextParams);
     finderContextParamsWithOptionalString.put("optional", "someString");
 
-    List<Parameter<?>> finderWithAssocKeyParams = new ArrayList<Parameter<?>>();
-    finderWithAssocKeyParams.add(new Parameter<String>(
+    List<Parameter<?>> finderWithAssocKeyParams = new ArrayList<>();
+    finderWithAssocKeyParams.add(new Parameter<>(
         "string1",
         String.class,
         new StringDataSchema(),
@@ -137,13 +138,13 @@ public class TestCollectionArgumentBuilder
                 getFinderParams(),
                 finderContextParams,
                 null,
-                new Object[]{new PagingContext(33, 444), new Integer(777), null}
+                new Object[]{new PagingContext(33, 444), Integer.valueOf(777), null}
             },
             {
                 getFinderParams(),
                 finderContextParamsWithOptionalString,
                 null,
-                new Object[]{new PagingContext(33, 444), new Integer(777), "someString"}
+                new Object[]{new PagingContext(33, 444), Integer.valueOf(777), "someString"}
             },
             {
                 finderWithAssocKeyParams,
@@ -155,23 +156,25 @@ public class TestCollectionArgumentBuilder
   }
 
   @Test(dataProvider = "argumentData")
-  public void testArgumentBuilderSuccess(List<Parameter<?>> params, Map<String, String> contextParams, PathKeys pathKeys, Object[] expectedArgs)
+  public void testArgumentBuilderSuccess(List<Parameter<?>> params, Map<String, String> contextParams,
+                                         MutablePathKeys pathKeys, Object[] expectedArgs)
+      throws IOException
   {
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, 1, params);
-    ResourceContext context;
+    ServerResourceContext context;
     if (contextParams != null)
     {
-      context = RestLiArgumentBuilderTestHelper.getMockResourceContext(contextParams);
+      context = RestLiArgumentBuilderTestHelper.getMockResourceContext(contextParams, true);
     }
     else
     {
-      context = RestLiArgumentBuilderTestHelper.getMockResourceContext(pathKeys, false);
+      context = RestLiArgumentBuilderTestHelper.getMockResourceContext(pathKeys, false, true);
     }
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 1, context, 1);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new CollectionArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
     assertEquals(args, expectedArgs);
 
@@ -181,14 +184,14 @@ public class TestCollectionArgumentBuilder
   @DataProvider
   private Object[][] failureData()
   {
-    Map<String, String> finderContextParams = new HashMap<String, String>();
+    Map<String, String> finderContextParams = new HashMap<>();
     finderContextParams.put("start", "33");
     finderContextParams.put("count", "444");
 
-    Map<String, String> wrongFormatParams = new HashMap<String, String>(finderContextParams);
+    Map<String, String> wrongFormatParams = new HashMap<>(finderContextParams);
     wrongFormatParams.put("required", "3.14");
 
-    Map<String, String> missingParams = new HashMap<String, String>(finderContextParams);
+    Map<String, String> missingParams = new HashMap<>(finderContextParams);
     missingParams.put("required", null);
 
     return new Object[][]
@@ -208,13 +211,24 @@ public class TestCollectionArgumentBuilder
 
   @Test(dataProvider = "failureData")
   public void testFailure(List<Parameter<?>> params, Map<String, String> contextParams, String errorMessage)
+      throws IOException
   {
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, 1, params);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(contextParams);
+
+    //We cannot use RestLiArgumentBuilderTestHelper's getMockResourceContext since this is a failure scenario and
+    //getRequestAttachmentReader() will not be called.
+    ServerResourceContext context = createMock(ServerResourceContext.class);
+    for (String key : contextParams.keySet())
+    {
+      expect(context.hasParameter(key)).andReturn(true).anyTimes();
+      expect(context.getParameter(key)).andReturn(contextParams.get(key));
+    }
+    replay(context);
+
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 1, context, 1);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
     RestLiArgumentBuilder argumentBuilder = new CollectionArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     try
     {
       argumentBuilder.buildArguments(requestData, routingResult);
@@ -229,9 +243,10 @@ public class TestCollectionArgumentBuilder
 
   @Test
   public void testProjectionParams()
+      throws IOException
   {
-    List<Parameter<?>> finderWithProjectionParams = new ArrayList<Parameter<?>>();
-    finderWithProjectionParams.add(new Parameter<String>(
+    List<Parameter<?>> finderWithProjectionParams = new ArrayList<>();
+    finderWithProjectionParams.add(new Parameter<>(
         "key",
         String.class,
         new StringDataSchema(),
@@ -240,7 +255,7 @@ public class TestCollectionArgumentBuilder
         Parameter.ParamType.QUERY,
         true,
         new AnnotationSet(new Annotation[]{})));
-    finderWithProjectionParams.add(new Parameter<PagingContext>(
+    finderWithProjectionParams.add(new Parameter<>(
         "",
         PagingContext.class,
         null,
@@ -249,7 +264,7 @@ public class TestCollectionArgumentBuilder
         Parameter.ParamType.PAGING_CONTEXT_PARAM,
         false,
         new AnnotationSet(new Annotation[]{})));
-    finderWithProjectionParams.add(new Parameter<MaskTree>(
+    finderWithProjectionParams.add(new Parameter<>(
         "",
         MaskTree.class,
         null,
@@ -258,7 +273,7 @@ public class TestCollectionArgumentBuilder
         Parameter.ParamType.PROJECTION_PARAM,
         false,
         new AnnotationSet(new Annotation[]{})));
-    finderWithProjectionParams.add(new Parameter<MaskTree>(
+    finderWithProjectionParams.add(new Parameter<>(
         "",
         MaskTree.class,
         null,
@@ -267,7 +282,7 @@ public class TestCollectionArgumentBuilder
         Parameter.ParamType.METADATA_PROJECTION_PARAM,
         false,
         new AnnotationSet(new Annotation[]{})));
-    finderWithProjectionParams.add(new Parameter<MaskTree>(
+    finderWithProjectionParams.add(new Parameter<>(
         "",
         MaskTree.class,
         null,
@@ -276,16 +291,16 @@ public class TestCollectionArgumentBuilder
         Parameter.ParamType.PAGING_PROJECTION_PARAM,
         false,
         new AnnotationSet(new Annotation[]{})));
-    Map<String, String> finderWithProjectionContextParams = new HashMap<String, String>();
+    Map<String, String> finderWithProjectionContextParams = new HashMap<>();
     finderWithProjectionContextParams.put("start", "100");
     finderWithProjectionContextParams.put("count", "15");
     finderWithProjectionContextParams.put("key", "keyString");
-    Map<String, Integer> projectionMap = new HashMap<String, Integer>();
+    Map<String, Integer> projectionMap = new HashMap<>();
     projectionMap.put("a", 1);
-    Map<String, Integer> metadataMap = new HashMap<String, Integer>();
+    Map<String, Integer> metadataMap = new HashMap<>();
     metadataMap.put("intField", 1);
     metadataMap.put("booleanField", 1);
-    Map<String, Integer> pagingMap = new HashMap<String, Integer>();
+    Map<String, Integer> pagingMap = new HashMap<>();
     pagingMap.put("total", 1);
 
     MaskTree projectionMask = new MaskTree(new DataMap(projectionMap));
@@ -295,12 +310,13 @@ public class TestCollectionArgumentBuilder
     Object[] expectedArgs = new Object[]{"keyString", new PagingContext(100, 15), projectionMask, metadataMask, pagingMask};
 
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, 1, finderWithProjectionParams);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(finderWithProjectionContextParams, projectionMask, metadataMask, pagingMask);
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(finderWithProjectionContextParams, projectionMask, metadataMask, pagingMask,
+                                                                                     true);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 1, context, 1);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new CollectionArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
     assertEquals(args, expectedArgs);
 
@@ -309,7 +325,7 @@ public class TestCollectionArgumentBuilder
 
   private Parameter<?> getIntArrayParam()
   {
-    return new Parameter<int[]>(
+    return new Parameter<>(
         "ints",
         int[].class,
         DataTemplateUtil.getSchema(IntegerArray.class),
@@ -330,22 +346,30 @@ public class TestCollectionArgumentBuilder
                 "ints",
                 Arrays.asList("101", "102", "103"),
                 new Object[]{new int[]{101, 102, 103}}
+            },
+            {
+                getIntArrayParam(),
+                "ints",
+                Collections.EMPTY_LIST,
+                new Object[]{new int[]{}}
             }
         };
   }
 
   @Test(dataProvider = "arrayArgument")
   public void testArrayArgument(Parameter<?> param, String parameterKey, List<String> parameterValues, Object[] expectedArgs)
+      throws IOException
   {
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, param);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(parameterKey, parameterValues);
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(parameterKey, parameterValues,
+                                                                                     true);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 1, context, 1);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new CollectionArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
-    assertEquals(args, expectedArgs);
+    ArrayAsserts.assertArrayEquals(args, expectedArgs);
 
     verify(descriptor, context, routingResult, request);
   }
@@ -353,13 +377,13 @@ public class TestCollectionArgumentBuilder
   @DataProvider(name = "complexArrayArgument")
   private Object[][] complexArrayArgument()
   {
-    Map<String, String> map1 = new HashMap<String, String>();
+    Map<String, String> map1 = new HashMap<>();
     map1.put("a", "A1");
     map1.put("b", "111");
-    Map<String, String> map2 = new HashMap<String, String>();
+    Map<String, String> map2 = new HashMap<>();
     map2.put("a", "A2");
     map2.put("b", "222");
-    Map<String, String> map3 = new HashMap<String, String>();
+    Map<String, String> map3 = new HashMap<>();
     map3.put("a", "A3");
     map3.put("b", "333");
     DataList data = new DataList();
@@ -370,7 +394,7 @@ public class TestCollectionArgumentBuilder
     return new Object[][]
         {
             {
-                new Parameter<MyComplexKey[]>(
+                new Parameter<>(
                     "myComplexKeys",
                     MyComplexKey[].class,
                     new ArrayDataSchema(DataTemplateUtil.getSchema(MyComplexKey.class)),
@@ -395,16 +419,18 @@ public class TestCollectionArgumentBuilder
 
   @Test(dataProvider = "complexArrayArgument")
   public void testComplexArrayArgument(Parameter<?> param, String parameterKey, String parameterValue, Object structuredParameter, Object[] expectedArgs)
+      throws IOException
   {
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, param);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContextWithStructuredParameter(parameterKey, parameterValue, structuredParameter);
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContextWithStructuredParameter(parameterKey, parameterValue, structuredParameter,
+                                                                                                            true);
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 1, context, 1);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new CollectionArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
-    assertEquals(args, expectedArgs);
+    ArrayAsserts.assertArrayEquals(args, expectedArgs);
 
     verify(descriptor, context, routingResult, request);
   }
@@ -434,7 +460,7 @@ public class TestCollectionArgumentBuilder
             },
             {
                 // test for wrong data schema
-                new Parameter<int[]>(
+                new Parameter<>(
                     "ints",
                     int[].class,
                     new IntegerDataSchema(),
@@ -452,14 +478,22 @@ public class TestCollectionArgumentBuilder
 
   @Test(dataProvider = "arrayArgumentFailure")
   public void testArrayArgumentFailure(Parameter<?> param, String parameterKey, List<String> parameterValues, String errorMessage)
+      throws IOException
   {
     ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(null, param);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(parameterKey, parameterValues);
+
+    //We cannot use RestLiArgumentBuilderTestHelper's getMockResourceContext since this is a failure scenario and
+    //getRequestAttachmentReader() will not be called.
+    ServerResourceContext context = createMock(ServerResourceContext.class);
+    expect(context.hasParameter(parameterKey)).andReturn(true);
+    expect(context.getParameterValues(parameterKey)).andReturn(parameterValues);
+    replay(context);
+
     RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 1, context, 1);
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null, 0);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, null);
 
     RestLiArgumentBuilder argumentBuilder = new CollectionArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, null);
     try
     {
       argumentBuilder.buildArguments(requestData, routingResult);

@@ -22,36 +22,41 @@ package com.linkedin.d2.balancer.zkfs;
 
 import com.linkedin.common.callback.Callback;
 import com.linkedin.common.util.None;
+import com.linkedin.d2.DarkClusterConfigMap;
 import com.linkedin.d2.balancer.Directory;
 import com.linkedin.d2.balancer.Facilities;
 import com.linkedin.d2.balancer.KeyMapper;
 import com.linkedin.d2.balancer.LoadBalancer;
+import com.linkedin.d2.balancer.LoadBalancerClusterListener;
 import com.linkedin.d2.balancer.LoadBalancerWithFacilities;
 import com.linkedin.d2.balancer.ServiceUnavailableException;
+import com.linkedin.d2.balancer.WarmUpService;
+import com.linkedin.d2.balancer.clusterfailout.FailoutConfig;
+import com.linkedin.d2.balancer.properties.ClusterProperties;
 import com.linkedin.d2.balancer.properties.ServiceProperties;
+import com.linkedin.d2.balancer.properties.UriProperties;
 import com.linkedin.d2.balancer.util.ClientFactoryProvider;
+import com.linkedin.d2.balancer.util.ClusterInfoProvider;
 import com.linkedin.d2.balancer.util.DirectoryProvider;
 import com.linkedin.d2.balancer.util.HostToKeyMapper;
 import com.linkedin.d2.balancer.util.KeyMapperProvider;
 import com.linkedin.d2.balancer.util.MapKeyResult;
 import com.linkedin.d2.balancer.util.TogglingLoadBalancer;
 import com.linkedin.d2.balancer.util.hashing.ConsistentHashKeyMapper;
+import com.linkedin.d2.balancer.util.hashing.HashFunction;
 import com.linkedin.d2.balancer.util.hashing.HashRingProvider;
 import com.linkedin.d2.balancer.util.hashing.Ring;
 import com.linkedin.d2.balancer.util.partitions.PartitionAccessor;
 import com.linkedin.d2.balancer.util.partitions.PartitionInfoProvider;
 import com.linkedin.d2.discovery.event.PropertyEventThread;
 import com.linkedin.d2.discovery.stores.zk.ZKConnection;
+import com.linkedin.d2.discovery.stores.zk.ZKConnectionBuilder;
+import com.linkedin.d2.discovery.stores.zk.ZooKeeper;
 import com.linkedin.r2.message.Request;
 import com.linkedin.r2.message.RequestContext;
 import com.linkedin.r2.transport.common.TransportClientFactory;
 import com.linkedin.r2.transport.common.bridge.client.TransportClient;
 import com.linkedin.r2.util.NamedThreadFactory;
-import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.Watcher;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.File;
 import java.net.URI;
 import java.util.Collection;
@@ -60,6 +65,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.Watcher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * LoadBalancer which manages the total lifecycle of a ZooKeeper connection.  It connects to
@@ -72,19 +83,18 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public class ZKFSLoadBalancer
         implements LoadBalancerWithFacilities, DirectoryProvider, KeyMapperProvider, HashRingProvider, PartitionInfoProvider,
-        ClientFactoryProvider
+                   ClientFactoryProvider, WarmUpService, ClusterInfoProvider
 {
   private static final Logger LOG = LoggerFactory.getLogger(ZKFSLoadBalancer.class);
 
   private final String _connectString;
   private final int _sessionTimeout;
   private final int _initialZKTimeout;
-  private final boolean _shutdownAsynchronously;
-  private final boolean _isSymlinkAware;
-  private final AtomicReference<Callback<None>> _startupCallback = new AtomicReference<Callback<None>>();
+  private final AtomicReference<Callback<None>> _startupCallback = new AtomicReference<>();
   private final TogglingLoadBalancerFactory _loadBalancerFactory;
   private final File _zkFlagFile;
   private final ZKFSDirectory _directory;
+  private final ZKConnectionBuilder _zkConnectionBuilder;
   private volatile long _delayedExecution;
   private final ScheduledExecutorService _executor;
   private final KeyMapper _keyMapper;
@@ -95,12 +105,48 @@ public class ZKFSLoadBalancer
   private volatile ZKConnection _zkConnection;
 
   /**
-   * The currently active LoadBalancer.  LoadBalancer will not be assigned to this field until
-   * it has been sucessfully started, except the first time.
+   * The currently active LoadBalancer. LoadBalancer will not be assigned to this field until
+   * it has been successfully started, except the first time.
    */
-  private volatile LoadBalancer _currentLoadBalancer;
+  private volatile TogglingLoadBalancer _currentLoadBalancer;
 
-  public static interface TogglingLoadBalancerFactory
+  @Override
+  public int getClusterCount(String clusterName, String scheme, int partitionId) throws ServiceUnavailableException
+  {
+    return _currentLoadBalancer.getClusterCount(clusterName, scheme, partitionId);
+  }
+
+  @Override
+  public DarkClusterConfigMap getDarkClusterConfigMap(String clusterName) throws ServiceUnavailableException
+  {
+    return _currentLoadBalancer.getDarkClusterConfigMap(clusterName);
+  }
+
+  @Override
+  public void getDarkClusterConfigMap(String clusterName, Callback<DarkClusterConfigMap> callback)
+  {
+    _currentLoadBalancer.getDarkClusterConfigMap(clusterName, callback);
+  }
+
+  @Override
+  public void registerClusterListener(LoadBalancerClusterListener clusterListener)
+  {
+    _currentLoadBalancer.registerClusterListener(clusterListener);
+  }
+
+  @Override
+  public void unregisterClusterListener(LoadBalancerClusterListener clusterListener)
+  {
+    _currentLoadBalancer.unregisterClusterListener(clusterListener);
+  }
+
+  @Override
+  public FailoutConfig getFailoutConfig(String clusterName)
+  {
+    return _currentLoadBalancer.getFailoutConfig(clusterName);
+  }
+
+  public interface TogglingLoadBalancerFactory
   {
     TogglingLoadBalancer createLoadBalancer(ZKConnection connection, ScheduledExecutorService executorService);
   }
@@ -125,36 +171,12 @@ public class ZKFSLoadBalancer
                           String zkFlagFile,
                           String basePath)
   {
-    this(zkConnectString, sessionTimeout, initialZKTimeout, factory, zkFlagFile, basePath, false);
+    this(zkConnectString, sessionTimeout, initialZKTimeout, factory, zkFlagFile, basePath, false,
+      false, Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("D2 PropertyEventExecutor for Tests")),
+      null);
   }
 
   /**
-   *
-   * @param zkConnectString Connect string listing ZK ensemble hosts in ZK format
-   * @param sessionTimeout timeout (in milliseconds) of ZK session.  This controls how long
-   * the session will last while connectivity between client and server is interrupted; if an
-   * interruption lasts longer, the session must be recreated and state may have been lost
-   * @param initialZKTimeout initial timeout for connecting to ZK; if no connection is established
-   * within this time, falls back to backup stores
-   * @param factory Factory configured to create appropriate ZooKeeper session-specific
-   * @param zkFlagFile if non-null, the path to a File whose existence is used as a flag
-   * to suppress the use of ZooKeeper stores.
-   * @param shutdownAsynchronously if true, shutdown the zookeeper connection asynchronously.
-   * LoadBalancer instances
-   */
-  public ZKFSLoadBalancer(String zkConnectString,
-                          int sessionTimeout,
-                          int initialZKTimeout,
-                          TogglingLoadBalancerFactory factory,
-                          String zkFlagFile,
-                          String basePath,
-                          boolean shutdownAsynchronously)
-  {
-    this(zkConnectString, sessionTimeout, initialZKTimeout, factory, zkFlagFile, basePath, shutdownAsynchronously, false);
-  }
-
-  /**
-   *
    * @param zkConnectString Connect string listing ZK ensemble hosts in ZK format
    * @param sessionTimeout timeout (in milliseconds) of ZK session.  This controls how long
    * the session will last while connectivity between client and server is interrupted; if an
@@ -167,7 +189,8 @@ public class ZKFSLoadBalancer
    * @param shutdownAsynchronously if true, shutdown the zookeeper connection asynchronously.
    * @param isSymlinkAware if true, ZKConnection will be aware of and resolve the symbolic link for
    * any read operation.
-   * LoadBalancer instances
+   * @param executor the scheduledExecutorService that is shared across the project
+   * @param zooKeeperDecorator the callback will be invoked when the a new ZKConnection is created
    */
   public ZKFSLoadBalancer(String zkConnectString,
                           int sessionTimeout,
@@ -176,7 +199,9 @@ public class ZKFSLoadBalancer
                           String zkFlagFile,
                           String basePath,
                           boolean shutdownAsynchronously,
-                          boolean isSymlinkAware)
+                          boolean isSymlinkAware,
+                          ScheduledExecutorService executor,
+                          Function<ZooKeeper, ZooKeeper> zooKeeperDecorator)
   {
     _connectString = zkConnectString;
     _sessionTimeout = sessionTimeout;
@@ -191,13 +216,15 @@ public class ZKFSLoadBalancer
       _zkFlagFile = new File(zkFlagFile);
     }
     _directory = new ZKFSDirectory(basePath);
-
-    _shutdownAsynchronously = shutdownAsynchronously;
-    _isSymlinkAware = isSymlinkAware;
-
-    _executor = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("D2 PropertyEventExecutor"));
+    _executor = executor;
     _keyMapper = new ConsistentHashKeyMapper(this, this);
     _delayedExecution = 1000;
+
+    _zkConnectionBuilder = new ZKConnectionBuilder(zkConnectString)
+      .setTimeout(sessionTimeout)
+      .setShutdownAsynchronously(shutdownAsynchronously)
+      .setIsSymlinkAware(isSymlinkAware)
+      .setZooKeeperDecorator(zooKeeperDecorator);
   }
 
   public long getDelayedExecution()
@@ -211,9 +238,9 @@ public class ZKFSLoadBalancer
   }
 
   @Override
-  public TransportClient getClient(Request request, RequestContext requestContext) throws ServiceUnavailableException
+  public void getClient(Request request, RequestContext requestContext, Callback<TransportClient> clientCallback)
   {
-    return _currentLoadBalancer.getClient(request, requestContext);
+    _currentLoadBalancer.getClient(request, requestContext, clientCallback);
   }
 
   @Override
@@ -246,14 +273,26 @@ public class ZKFSLoadBalancer
   }
 
   @Override
-  public ServiceProperties getLoadBalancedServiceProperties(String serviceName)
-      throws ServiceUnavailableException
+  public void getLoadBalancedServiceProperties(String serviceName, Callback<ServiceProperties> clientCallback)
   {
     if (_currentLoadBalancer == null)
     {
-      return null;
+      clientCallback.onSuccess(null);
+      return;
     }
-    return _currentLoadBalancer.getLoadBalancedServiceProperties(serviceName);
+    _currentLoadBalancer.getLoadBalancedServiceProperties(serviceName, clientCallback);
+  }
+
+  @Override
+  public void getLoadBalancedClusterAndUriProperties(String clusterName,
+      Callback<Pair<ClusterProperties, UriProperties>> callback)
+  {
+    if (_currentLoadBalancer == null)
+    {
+      callback.onSuccess(null);
+      return;
+    }
+    _currentLoadBalancer.getLoadBalancedClusterAndUriProperties(clusterName, callback);
   }
 
   @Override
@@ -263,6 +302,11 @@ public class ZKFSLoadBalancer
     LOG.info("ZK connect string: {}", _connectString);
     LOG.info("ZK session timeout: {}ms", _sessionTimeout);
     LOG.info("ZK initial connect timeout: {}ms", _initialZKTimeout);
+    if (_connectString == null || _connectString.isEmpty())
+    {
+      callback.onError(new IllegalArgumentException("ZooKeeper connection string is null or empty"));
+      return;
+    }
     if (_zkFlagFile == null)
     {
       LOG.info("ZK flag file not specified");
@@ -273,7 +317,7 @@ public class ZKFSLoadBalancer
       LOG.info("ZK currently suppressed by flag file: {}", suppressZK());
     }
 
-    _zkConnection = new ZKConnection(_connectString, _sessionTimeout, _shutdownAsynchronously, _isSymlinkAware);
+    _zkConnection = _zkConnectionBuilder.build();
     final TogglingLoadBalancer balancer = _loadBalancerFactory.createLoadBalancer(_zkConnection, _executor);
 
     // _currentLoadBalancer will never be null except the first time this method is called.
@@ -305,7 +349,6 @@ public class ZKFSLoadBalancer
     }
     _executor.execute(new PropertyEventThread.PropertyEvent("startup")
     {
-
       @Override
       public void innerRun()
       {
@@ -360,6 +403,12 @@ public class ZKFSLoadBalancer
     return this;
   }
 
+  @Override
+  public HashRingProvider getHashRingProvider()
+  {
+    return this;
+  }
+
   /**
    * Get a {@link KeyMapper} associated with this load balancer's strategies.  The
    * KeyMapper will not operate until the load balancer is started.  The KeyMapper is
@@ -387,6 +436,11 @@ public class ZKFSLoadBalancer
   }
 
   @Override
+  public HashFunction<Request> getRequestHashFunction(String serviceName) throws ServiceUnavailableException {
+    return ((HashRingProvider)_currentLoadBalancer).getRequestHashFunction(serviceName);
+  }
+
+  @Override
   public <K> HostToKeyMapper<K> getPartitionInformation(URI serviceUri, Collection<K> keys, int limitHostPerPartition, int hash) throws ServiceUnavailableException
   {
     checkPartitionInfoProvider();
@@ -394,10 +448,10 @@ public class ZKFSLoadBalancer
   }
 
   @Override
-  public PartitionAccessor getPartitionAccessor(URI serviceUri) throws ServiceUnavailableException
+  public PartitionAccessor getPartitionAccessor(String serviceName) throws ServiceUnavailableException
   {
     checkPartitionInfoProvider();
-    return ((PartitionInfoProvider)_currentLoadBalancer).getPartitionAccessor(serviceUri);
+    return ((PartitionInfoProvider)_currentLoadBalancer).getPartitionAccessor(serviceName);
   }
 
   public void checkLoadBalancer()
@@ -421,6 +475,14 @@ public class ZKFSLoadBalancer
     }
   }
 
+  private void checkClusterInfoProvider()
+  {
+    if (_currentLoadBalancer == null || !(_currentLoadBalancer instanceof ClusterInfoProvider))
+    {
+      throw new IllegalStateException("No ClusterInfoProvider available to TogglingLoadBalancer - this could be because the load balancer " +
+                                          "is not yet initialized or the underlying load balancer doesn't support providing this info.");
+    }
+  }
   @Override
   public TransportClientFactory getClientFactory(String scheme)
   {
@@ -434,6 +496,18 @@ public class ZKFSLoadBalancer
                                               "support obtaining client factories");
     }
     return ((ClientFactoryProvider)_currentLoadBalancer).getClientFactory(scheme);
+  }
+
+  @Override
+  public ClusterInfoProvider getClusterInfoProvider() {
+    checkClusterInfoProvider();
+    return (ClusterInfoProvider)_currentLoadBalancer;
+  }
+
+  @Override
+  public void warmUpService(String serviceName, Callback<None> callback)
+  {
+    _currentLoadBalancer.warmUpService(serviceName, callback);
   }
 
   /**

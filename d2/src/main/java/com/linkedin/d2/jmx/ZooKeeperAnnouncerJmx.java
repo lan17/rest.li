@@ -20,6 +20,7 @@
 
 package com.linkedin.d2.jmx;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.linkedin.common.callback.FutureCallback;
 import com.linkedin.common.util.None;
 import com.linkedin.d2.balancer.properties.PartitionData;
@@ -36,8 +37,7 @@ import java.util.concurrent.TimeUnit;
  * @author Steven Ihde
  * @version $Revision: $
  */
-
-public class ZooKeeperAnnouncerJmx implements ZooKeeperAnnouncerJmxMBean
+public class ZooKeeperAnnouncerJmx implements ZooKeeperAnnouncerJmxMXBean
 {
   private final ZooKeeperAnnouncer _announcer;
 
@@ -49,7 +49,7 @@ public class ZooKeeperAnnouncerJmx implements ZooKeeperAnnouncerJmxMBean
   @Override
   public void reset() throws PropertyStoreException
   {
-    FutureCallback<None> callback = new FutureCallback<None>();
+    FutureCallback<None> callback = new FutureCallback<>();
     _announcer.reset(callback);
     try
     {
@@ -64,7 +64,7 @@ public class ZooKeeperAnnouncerJmx implements ZooKeeperAnnouncerJmxMBean
   @Override
   public void markUp() throws PropertyStoreException
   {
-    FutureCallback<None> callback = new FutureCallback<None>();
+    FutureCallback<None> callback = new FutureCallback<>();
     _announcer.markUp(callback);
     try
     {
@@ -79,8 +79,39 @@ public class ZooKeeperAnnouncerJmx implements ZooKeeperAnnouncerJmxMBean
   @Override
   public void markDown() throws PropertyStoreException
   {
-    FutureCallback<None> callback = new FutureCallback<None>();
+    FutureCallback<None> callback = new FutureCallback<>();
     _announcer.markDown(callback);
+    try
+    {
+      callback.get(10, TimeUnit.SECONDS);
+    }
+    catch (Exception e)
+    {
+      throw new PropertyStoreException(e);
+    }
+  }
+
+  @Override
+  public void changeWeight(boolean doNotSlowStart) throws PropertyStoreException
+  {
+    FutureCallback<None> callback = new FutureCallback<>();
+    _announcer.changeWeight(callback, doNotSlowStart);
+    try
+    {
+      callback.get(10, TimeUnit.SECONDS);
+    }
+    catch (Exception e)
+    {
+      throw new PropertyStoreException(e);
+    }
+  }
+
+  @Override
+  public void setDoNotLoadBalance(boolean doNotLoadBalance)
+    throws PropertyStoreException
+  {
+    FutureCallback<None> callback = new FutureCallback<>();
+    _announcer.setDoNotLoadBalance(callback, doNotLoadBalance);
     try
     {
       callback.get(10, TimeUnit.SECONDS);
@@ -125,10 +156,9 @@ public class ZooKeeperAnnouncerJmx implements ZooKeeperAnnouncerJmxMBean
   public void setPartitionDataUsingJson(String partitionDataJson)
       throws IOException
   {
-    @SuppressWarnings("unchecked")
     Map<Integer, Double> rawObject =
-        JacksonUtil.getObjectMapper().readValue(partitionDataJson, HashMap.class);
-    Map<Integer, PartitionData> partitionDataMap = new HashMap<Integer, PartitionData>();
+        JacksonUtil.getObjectMapper().readValue(partitionDataJson, new TypeReference<HashMap<Integer, Double>>(){});
+    Map<Integer, PartitionData> partitionDataMap = new HashMap<>();
     for (Map.Entry<Integer, Double> entry : rawObject.entrySet())
     {
       PartitionData data = new PartitionData(entry.getValue());
@@ -147,5 +177,38 @@ public class ZooKeeperAnnouncerJmx implements ZooKeeperAnnouncerJmxMBean
   public Map<Integer, PartitionData> getPartitionData()
   {
     return _announcer.getPartitionData();
+  }
+
+  @Override
+  public boolean isMarkUpFailed() {
+    return _announcer.isMarkUpFailed();
+  }
+
+  @Override
+  public boolean isMarkUpIntentSent()
+  {
+    return _announcer.isMarkUpIntentSent();
+  }
+
+  @Override
+  public boolean isDarkWarmupMarkUpIntentSent() {
+    return _announcer.isDarkWarmupMarkUpIntentSent();
+  }
+
+  @Override
+  public int getMaxWeightBreachedCount()
+  {
+    return _announcer.getMaxWeightBreachedCount();
+  }
+
+  @Override
+  public int getWeightDecimalPlacesBreachedCount()
+  {
+    return _announcer.getWeightDecimalPlacesBreachedCount();
+  }
+
+  @Override
+  public int getServerAnnounceMode() {
+    return _announcer.getServerAnnounceMode().ordinal();
   }
 }

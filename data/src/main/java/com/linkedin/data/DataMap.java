@@ -17,10 +17,8 @@
 package com.linkedin.data;
 
 import com.linkedin.data.collections.CheckedMap;
-import com.linkedin.data.collections.CommonMap;
 import com.linkedin.data.collections.MapChecker;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.Map;
 
 
@@ -119,6 +117,9 @@ public final class DataMap extends CheckedMap<String,Object> implements DataComp
     o._madeReadOnly = false;
     o._instrumented = false;
     o._accessMap = null;
+    o._dataComplexHashCode = 0;
+    o._isTraversing = null;
+
     return o;
   }
 
@@ -139,11 +140,16 @@ public final class DataMap extends CheckedMap<String,Object> implements DataComp
   @Override
   public DataMap copy() throws CloneNotSupportedException
   {
-    return Data.copy(this, new IdentityHashMap<DataComplex, DataComplex>());
+    return Data.copy(this, new DataComplexTable());
   }
 
-  @Override
-  public void copyReferencedObjects(IdentityHashMap<DataComplex, DataComplex> alreadyCopied) throws CloneNotSupportedException
+  /**
+   * Deep copy this object and the complex Data objects referenced by this object.
+   *
+   * @param alreadyCopied provides the objects already copied, and their copies.
+   * @throws CloneNotSupportedException if the referenced object cannot be copied.
+   */
+  public void copyReferencedObjects(DataComplexTable alreadyCopied) throws CloneNotSupportedException
   {
     for (Map.Entry<String,?> e : entrySet())
     {
@@ -339,7 +345,7 @@ public final class DataMap extends CheckedMap<String,Object> implements DataComp
     _instrumented = true;
     if (_accessMap == null)
     {
-      _accessMap = new HashMap<String, Integer>();
+      _accessMap = new HashMap<>();
     }
   }
 
@@ -385,6 +391,19 @@ public final class DataMap extends CheckedMap<String,Object> implements DataComp
   @Override
   public int dataComplexHashCode()
   {
+    if (_dataComplexHashCode != 0)
+    {
+      return _dataComplexHashCode;
+    }
+
+    synchronized (this)
+    {
+      if (_dataComplexHashCode == 0)
+      {
+        _dataComplexHashCode = DataComplexHashCode.nextHashCode();
+      }
+    }
+
     return _dataComplexHashCode;
   }
 
@@ -409,21 +428,42 @@ public final class DataMap extends CheckedMap<String,Object> implements DataComp
     }
   }
 
-  private final static MapChecker<String,Object> _checker = new MapChecker<String,Object>()
-  {
-    @Override
-    public void checkKeyValue(CommonMap<String, Object> map, String key, Object value)
+  private final static MapChecker<String, Object> _checker = (map, key, value) -> {
+    if (key.getClass() != String.class)
     {
-      if (key.getClass() != String.class)
-      {
-        throw new IllegalArgumentException("Key must be a string");
-      }
-      Data.checkAllowed((DataComplex) map, value);
+      throw new IllegalArgumentException("Key must be a string");
     }
+    Data.checkAllowed((DataComplex) map, value);
   };
+
+  ThreadLocal<Object> isTraversing()
+  {
+    if (_isTraversing == null)
+    {
+      synchronized (this)
+      {
+        if (_isTraversing == null)
+        {
+          _isTraversing = new ThreadLocal<>();
+        }
+      }
+    }
+
+    return _isTraversing;
+  }
+
+  /**
+   * Indicates if this {@link DataMap} is currently being traversed by a {@link Data.TraverseCallback} if this value is
+   * not null, or not if this value is null. This is internally marked package private, used for cycle detection and
+   * not meant for use by external callers. This is maintained as a {@link ThreadLocal} to allow for concurrent
+   * traversals of the same {@link DataMap} from multiple threads.
+   *
+   * <p>This variable is lazy instantiated since ThreadLocal instantiation can be expensive under thread contention.</p>
+   */
+  private volatile ThreadLocal<Object> _isTraversing = null;
 
   private boolean _madeReadOnly = false;
   private boolean _instrumented = false;
   private Map<String, Integer> _accessMap;
-  private int _dataComplexHashCode = DataComplexHashCode.nextHashCode();
+  int _dataComplexHashCode = 0;
 }

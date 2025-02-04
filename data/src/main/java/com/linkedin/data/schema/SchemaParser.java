@@ -16,33 +16,28 @@
 
 package com.linkedin.data.schema;
 
-
 import com.linkedin.data.DataComplex;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.codec.DataLocation;
-import com.linkedin.data.message.MessageUtil;
-import com.linkedin.data.schema.resolver.DefaultDataSchemaResolver;
-import com.linkedin.data.schema.validation.CoercionMode;
-import com.linkedin.data.schema.validation.RequiredMode;
-import com.linkedin.data.schema.validation.ValidateDataAgainstSchema;
-import com.linkedin.data.schema.validation.ValidationOptions;
-import com.linkedin.data.schema.validation.ValidationResult;
+import com.linkedin.data.schema.UnionDataSchema.Member;
 import java.io.InputStream;
 import java.io.Reader;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static com.linkedin.data.schema.DataSchemaConstants.*;
 
 
 /**
- * Schema Parser.
+ * Schema Parser for the Pegasus data schema format (.pdsc).
  * <p>
  *
  * Inspired by Avro 1.4.1 specification.
@@ -56,6 +51,9 @@ import static com.linkedin.data.schema.DataSchemaConstants.*;
  */
 public class SchemaParser extends AbstractSchemaParser
 {
+  public static final String FILETYPE = "pdsc";
+  public static final String FILE_EXTENSION = '.' + FILETYPE;
+
   /**
    * Constructor.
    */
@@ -71,27 +69,7 @@ public class SchemaParser extends AbstractSchemaParser
    */
   public SchemaParser(DataSchemaResolver resolver)
   {
-    super(resolver == null ? new DefaultDataSchemaResolver() : resolver);
-  }
-
-  /**
-   * Set the {@link ValidationOptions} used to validate default values.
-   *
-   * @param validationOptions used to validate default values.
-   */
-  public void setValidationOptions(ValidationOptions validationOptions)
-  {
-    _validationOptions = validationOptions;
-  }
-
-  /**
-   * Return the {@link ValidationOptions} used to validate default values.
-   *
-   * @return the {@link ValidationOptions} used to validate default values.
-   */
-  public ValidationOptions getValidationOptions()
-  {
-    return _validationOptions;
+    super(resolver);
   }
 
   /**
@@ -220,7 +198,7 @@ public class SchemaParser extends AbstractSchemaParser
    */
   public List<RecordDataSchema.Field> parseFields(RecordDataSchema recordSchema, DataList list)
   {
-    List<RecordDataSchema.Field> fields = new ArrayList<RecordDataSchema.Field>();
+    List<RecordDataSchema.Field> fields = new ArrayList<>();
     for (Object o : list)
     {
       boolean ok = true;
@@ -249,6 +227,7 @@ public class SchemaParser extends AbstractSchemaParser
         if (name != null && type != null)
         {
           RecordDataSchema.Field field = new RecordDataSchema.Field(type);
+          field.setDeclaredInline(isDeclaredInline(fieldMap.get(TYPE_KEY)));
           field.setDefault(fieldMap.get(DEFAULT_KEY));
           if (doc != null)
           {
@@ -313,17 +292,9 @@ public class SchemaParser extends AbstractSchemaParser
   protected UnionDataSchema dataListToDataSchema(DataList list)
   {
     // Union
-    List<DataSchema> types = new ArrayList<DataSchema>();
-    for (Object o : list)
-    {
-      DataSchema type = parseObject(o);
-      if (type != null)
-      {
-        types.add(type);
-      }
-    }
     UnionDataSchema schema = new UnionDataSchema();
-    schema.setTypes(types, startCalleeMessageBuilder());
+    List<Member> members = parseUnionMembers(schema, list);
+    schema.setMembers(members, startCalleeMessageBuilder());
     appendCalleeMessage(list);
     return schema;
   }
@@ -353,13 +324,17 @@ public class SchemaParser extends AbstractSchemaParser
     ComplexDataSchema schema = null;
     NamedDataSchema namedSchema = null;
     String saveCurrentNamespace = getCurrentNamespace();
+    String saveCurrentPackage = getCurrentPackage();
 
     Name name = null;
+    String packageName = null;
     List<Name> aliasNames = null;
     if (NAMED_DATA_SCHEMA_TYPE_SET.contains(type))
     {
       name = getNameFromDataMap(map, NAME_KEY, saveCurrentNamespace);
+      packageName = getPackageFromDataMap(map, PACKAGE_KEY, saveCurrentPackage, saveCurrentNamespace, name);
       setCurrentNamespace(name.getNamespace());
+      setCurrentPackage(packageName);
       aliasNames = getAliases(map);
     }
     else
@@ -386,6 +361,7 @@ public class SchemaParser extends AbstractSchemaParser
       case ARRAY:
         DataSchema itemsSchema = getSchemaData(map, ITEMS_KEY);
         ArrayDataSchema arraySchema = new ArrayDataSchema(itemsSchema);
+        arraySchema.setItemsDeclaredInline(isDeclaredInline(map.get(ITEMS_KEY)));
         schema = arraySchema;
         break;
       case ENUM:
@@ -416,6 +392,7 @@ public class SchemaParser extends AbstractSchemaParser
       case MAP:
         DataSchema valuesSchema = getSchemaData(map, VALUES_KEY);
         MapDataSchema mapSchema = new MapDataSchema(valuesSchema);
+        mapSchema.setValuesDeclaredInline(isDeclaredInline(map.get(VALUES_KEY)));
         schema = mapSchema;
         break;
       case RECORD:
@@ -423,44 +400,60 @@ public class SchemaParser extends AbstractSchemaParser
         RecordDataSchema.RecordType recordType = RecordDataSchema.RecordType.valueOf(typeUpper);
         RecordDataSchema recordSchema = new RecordDataSchema(name, recordType);
         schema = namedSchema = recordSchema;
-        bindNameToSchema(name, aliasNames, recordSchema);
-        List<RecordDataSchema.Field> fields = new ArrayList<RecordDataSchema.Field>();
-
-        DataList includeList = getDataList(map, INCLUDE_KEY, false);
-        DataList fieldsList = getDataList(map, FIELDS_KEY, true);
-
-        // the parser must parse fields and include in the same order that they appear in the input.
-        // determine whether to process fields first or include first
-        boolean fieldsBeforeInclude = fieldsBeforeIncludes(includeList, fieldsList);
-
-        if (fieldsBeforeInclude)
+        getResolver().addPendingSchema(recordSchema.getFullName());
+        try
         {
-          // fields is before include
-          fields.addAll(parseFields(recordSchema, fieldsList));
-          fields.addAll(parseInclude(recordSchema, includeList));
+          bindNameToSchema(name, aliasNames, recordSchema);
+          List<RecordDataSchema.Field> fields = new ArrayList<>();
+
+          DataList includeList = getDataList(map, INCLUDE_KEY, false);
+          DataList fieldsList = getDataList(map, FIELDS_KEY, true);
+
+          // the parser must parse fields and include in the same order that they appear in the input.
+          // determine whether to process fields first or include first
+          boolean fieldsBeforeInclude = fieldsBeforeIncludes(includeList, fieldsList);
+
+          if (fieldsBeforeInclude)
+          {
+            // fields is before include
+            fields.addAll(parseFields(recordSchema, fieldsList));
+            fields.addAll(parseInclude(recordSchema, includeList));
+            recordSchema.setFieldsBeforeIncludes(true);
+          }
+          else
+          {
+            // include is before fields
+            fields.addAll(parseInclude(recordSchema, includeList));
+            fields.addAll(parseFields(recordSchema, fieldsList));
+          }
+
+          recordSchema.setFields(fields, startCalleeMessageBuilder());
+          appendCalleeMessage(fieldsList);
+
+          // does this need to be after setAliases? not for now since aliases don't affect validation.
+          validateDefaults(recordSchema);
         }
-        else
+        finally
         {
-          // include is before fields
-          fields.addAll(parseInclude(recordSchema, includeList));
-          fields.addAll(parseFields(recordSchema, fieldsList));
+          getResolver().removePendingSchema(recordSchema.getFullName());
         }
-
-        recordSchema.setFields(fields, startCalleeMessageBuilder());
-        appendCalleeMessage(fieldsList);
-
-        // does this need to be after setAliases? not for now since aliases don't affect validation.
-        validateDefaults(recordSchema);
         break;
       case TYPEREF:
         TyperefDataSchema typerefSchema = new TyperefDataSchema(name);
         schema = namedSchema = typerefSchema;
-        DataSchema referencedTypeSchema = getSchemaData(map, REF_KEY);
-        typerefSchema.setReferencedType(referencedTypeSchema);
-        // bind name after getSchemaData to prevent circular typeref
-        // circular typeref is not possible because this typeref name cannot be resolved until
-        // after the referenced type has been defined.
-        bindNameToSchema(name, aliasNames, typerefSchema);
+        getResolver().addPendingSchema(typerefSchema.getFullName());
+        try
+        {
+          bindNameToSchema(name, aliasNames, typerefSchema);
+          DataSchema referencedTypeSchema = getSchemaData(map, REF_KEY);
+          checkTyperefCycle(typerefSchema, referencedTypeSchema);
+          typerefSchema.setReferencedType(referencedTypeSchema);
+          typerefSchema.setRefDeclaredInline(isDeclaredInline(map.get(REF_KEY)));
+        }
+        finally
+        {
+          getResolver().removePendingSchema(typerefSchema.getFullName());
+        }
         break;
       default:
         startErrorMessage(map).append(type).append(" is not expected within ").append(map).append(".\n");
@@ -472,6 +465,10 @@ public class SchemaParser extends AbstractSchemaParser
       if (doc != null)
       {
         namedSchema.setDoc(doc);
+      }
+      if (packageName != null)
+      {
+        namedSchema.setPackage(packageName);
       }
       if (aliasNames != null)
       {
@@ -486,7 +483,103 @@ public class SchemaParser extends AbstractSchemaParser
     }
 
     setCurrentNamespace(saveCurrentNamespace);
+    setCurrentPackage(saveCurrentPackage);
     return schema;
+  }
+
+  /**
+   * Parse a {@link DataList} to obtain the a list of {@link Member}.
+   *
+   * The {@link DataList} should contain a list of member definitions.
+   *
+   * @param unionSchema Schema of the Union that contains these members
+   * @param memberList {@link DataList} with the member definitions
+   * @return A {@link List} of {@link Member}
+   */
+  private List<Member> parseUnionMembers(UnionDataSchema unionSchema, DataList memberList)
+  {
+    List<Member> members = new LinkedList<>();
+
+    for (Object o: memberList)
+    {
+      Optional<Member> member = Optional.empty();
+
+      if (o instanceof DataMap)
+      {
+        DataMap memberMap = (DataMap) o;
+
+        String alias = getString(memberMap, ALIAS_KEY, false);
+        if (alias != null)
+        {
+          // Member definition with alias specified
+          member = parseUnionMemberWithAlias(memberMap, alias, unionSchema);
+        }
+        else
+        {
+          // Member definition (maps and arrays) without alias specified
+          member = parseUnionMemberWithoutAlias(o, unionSchema);
+        }
+      }
+      else
+      {
+        // Member definition without alias specified
+        member = parseUnionMemberWithoutAlias(o, unionSchema);
+      }
+
+      member.ifPresent(members::add);
+    }
+
+    return members;
+  }
+
+  private Optional<Member> parseUnionMemberWithAlias(
+      DataMap memberMap, String alias, UnionDataSchema unionSchema)
+  {
+    Member member = null;
+
+    DataSchema type = getSchemaData(memberMap, TYPE_KEY);
+    if (type != null)
+    {
+      member = new Member(type);
+      boolean isAliasValid = member.setAlias(alias, startCalleeMessageBuilder());
+      if (!isAliasValid)
+      {
+        appendCalleeMessage(memberMap);
+      }
+      member.setDeclaredInline(isDeclaredInline(memberMap.get(TYPE_KEY)));
+
+      String doc = getString(memberMap, DOC_KEY, false);
+      if (doc != null)
+      {
+        member.setDoc(doc);
+      }
+
+      Map<String, Object> properties = extractProperties(memberMap, MEMBER_KEYS);
+      if (properties != null && !properties.isEmpty())
+      {
+        member.setProperties(properties);
+      }
+    }
+    else
+    {
+      startErrorMessage(unionSchema).append(memberMap).append(" is missing type of the Union member.\n");
+    }
+
+    return Optional.ofNullable(member);
+  }
+
+  private Optional<Member> parseUnionMemberWithoutAlias(
+      Object memberObject, UnionDataSchema unionSchema)
+  {
+    Member member = null;
+
+    DataSchema type = parseObject(memberObject);
+    if (type != null) {
+      member = new Member(type);
+      member.setDeclaredInline(isDeclaredInline(memberObject));
+    }
+
+    return Optional.ofNullable(member);
   }
 
   /**
@@ -500,13 +593,14 @@ public class SchemaParser extends AbstractSchemaParser
   {
     List<RecordDataSchema.Field> fields = Collections.emptyList();
 
+    getResolver().updatePendingSchema(recordSchema.getFullName(), true);
     // handle include
     // only includes fields, does not include any attributes of the included record
     // should consider whether mechanisms for including other attributes.
     if (includeList != null && includeList.isEmpty() == false)
     {
-      fields = new ArrayList<RecordDataSchema.Field>();
-      List<NamedDataSchema> include = new ArrayList<NamedDataSchema>(includeList.size());
+      fields = new ArrayList<>();
+      List<NamedDataSchema> include = new ArrayList<>(includeList.size());
       for (Object anInclude : includeList)
       {
         DataSchema includedSchema = parseObject(anInclude);
@@ -532,6 +626,7 @@ public class SchemaParser extends AbstractSchemaParser
       }
       recordSchema.setInclude(include);
     }
+    getResolver().updatePendingSchema(recordSchema.getFullName(), false);
     return fields;
   }
 
@@ -630,8 +725,8 @@ public class SchemaParser extends AbstractSchemaParser
   private class DefinedAndReferencedNames
   {
     private final StringBuilder _stringBuilder = new StringBuilder();
-    private final Set<Name> _defines = new HashSet<Name>();
-    private final Set<Name> _references = new HashSet<Name>();
+    private final Set<Name> _defines = new HashSet<>();
+    private final Set<Name> _references = new HashSet<>();
 
     /**
      * Parse list of schemas for defined and referenced names.
@@ -815,39 +910,6 @@ public class SchemaParser extends AbstractSchemaParser
   }
 
   /**
-   * Validate that the default value complies with the {@link DataSchema} of the record.
-   *
-   * @param recordSchema of the record.
-   */
-  protected void validateDefaults(RecordDataSchema recordSchema)
-  {
-    for (RecordDataSchema.Field field : recordSchema.getFields())
-    {
-      Object value = field.getDefault();
-      if (value != null)
-      {
-        DataSchema valueSchema = field.getType();
-        ValidationResult result = ValidateDataAgainstSchema.validate(value, valueSchema, _validationOptions);
-        if (result.isValid() == false)
-        {
-          startErrorMessage(value).
-            append("Default value ").append(value).
-            append(" of field \"").append(field.getName()).
-            append("\" declared in record \"").append(recordSchema.getFullName()).
-            append("\" failed validation.\n");
-          MessageUtil.appendMessages(errorMessageBuilder(), result.getMessages());
-        }
-        Object fixed = result.getFixed();
-        field.setDefault(fixed);
-      }
-      if (field.getDefault() instanceof DataComplex)
-      {
-        ((DataComplex) field.getDefault()).setReadOnly();
-      }
-    }
-  }
-
-  /**
    * Parse a {@link DataMap} to obtain aliases.
    *
    * @param map to parse.
@@ -859,7 +921,7 @@ public class SchemaParser extends AbstractSchemaParser
     List<Name> aliasNames = null;
     if (aliases != null)
     {
-      aliasNames = new ArrayList<Name>(aliases.size());
+      aliasNames = new ArrayList<>(aliases.size());
       for (String alias : aliases)
       {
         Name name = null;
@@ -951,17 +1013,16 @@ public class SchemaParser extends AbstractSchemaParser
     return type;
   }
 
+  private static boolean isDeclaredInline(Object type)
+  {
+    return type instanceof DataComplex;
+  }
+
   @Override
   public StringBuilder errorMessageBuilder()
   {
     return _errorMessageBuilder;
   }
 
-  public static final ValidationOptions getDefaultSchemaParserValidationOptions()
-  {
-    return new ValidationOptions(RequiredMode.CAN_BE_ABSENT_IF_HAS_DEFAULT, CoercionMode.NORMAL);
-  }
-
-  private ValidationOptions _validationOptions = getDefaultSchemaParserValidationOptions();
   private StringBuilder _errorMessageBuilder = new StringBuilder();
 }

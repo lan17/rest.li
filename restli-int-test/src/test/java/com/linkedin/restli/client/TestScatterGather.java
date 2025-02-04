@@ -73,6 +73,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 
+import java.util.stream.Collectors;
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
@@ -87,7 +88,7 @@ import org.testng.annotations.Test;
 
 public class TestScatterGather extends RestLiIntegrationTest
 {
-  private static final Client CLIENT = new TransportClientAdapter(new HttpClientFactory().getClient(
+  private static final Client CLIENT = new TransportClientAdapter(new HttpClientFactory.Builder().build().getClient(
     Collections.<String, String>emptyMap()));
   private static final String URI_PREFIX = "http://localhost:1338/";
   private static final RestClient REST_CLIENT = new RestClient(CLIENT, URI_PREFIX);
@@ -105,7 +106,7 @@ public class TestScatterGather extends RestLiIntegrationTest
     }
 
     @Override
-    public PartitionAccessor getPartitionAccessor(URI serviceUri) throws ServiceUnavailableException
+    public PartitionAccessor getPartitionAccessor(String serviceName) throws ServiceUnavailableException
     {
       throw new UnsupportedOperationException();
     }
@@ -180,7 +181,7 @@ public class TestScatterGather extends RestLiIntegrationTest
     {
       mapper = getKeyToHostMapper(endPointsNum);
     }
-    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<Greeting>(mapper);
+    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<>(mapper);
 
     final int NUM_IDS = 100;
     Long[] ids = generateIds(NUM_IDS);
@@ -205,7 +206,7 @@ public class TestScatterGather extends RestLiIntegrationTest
     {
       mapper = getKeyToHostMapper(endPointsNum);
     }
-    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<Greeting>(mapper);
+    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<>(mapper);
 
     final int NUM_IDS = 100;
     Long[] ids = generateIds(NUM_IDS);
@@ -230,7 +231,7 @@ public class TestScatterGather extends RestLiIntegrationTest
     {
       mapper = getKeyToHostMapper(endPointsNum);
     }
-    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<Greeting>(mapper);
+    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<>(mapper);
 
     final int NUM_IDS = 100;
     Long[] ids = generateIds(NUM_IDS);
@@ -249,12 +250,12 @@ public class TestScatterGather extends RestLiIntegrationTest
     Collection<ScatterGatherBuilder.KVRequestInfo<Long, UpdateStatus>> requests = buildScatterGatherDeleteRequests(sg, ids, builders);
     Assert.assertEquals(requests.size(), numEndpoints);
 
-    Set<Set<String>> requestIdSets = new HashSet<Set<String>>();
-    Set<Long> requestIds = new HashSet<Long>();
+    Set<Set<String>> requestIdSets = new HashSet<>();
+    Set<Long> requestIds = new HashSet<>();
     for (ScatterGatherBuilder.KVRequestInfo<Long, UpdateStatus> requestInfo : requests)
     {
       BatchRequest<BatchKVResponse<Long, UpdateStatus>> request = requestInfo.getRequest();
-      Set<String> expectedParams = new HashSet<String>();
+      Set<String> expectedParams = new HashSet<>();
       expectedParams.add(RestConstants.QUERY_BATCH_IDS_PARAM);
       expectedParams.add("foo");
 
@@ -273,12 +274,12 @@ public class TestScatterGather extends RestLiIntegrationTest
     Collection<ScatterGatherBuilder.KVRequestInfo<Long, UpdateStatus>> requests = buildScatterGatherUpdateRequests(sg, greetingMap, builders);
     Assert.assertEquals(requests.size(), numEndpoints);
 
-    Set<Set<String>> requestIdSets = new HashSet<Set<String>>();
-    Set<Long> requestIds = new HashSet<Long>();
+    Set<Set<String>> requestIdSets = new HashSet<>();
+    Set<Long> requestIds = new HashSet<>();
     for (ScatterGatherBuilder.KVRequestInfo<Long, UpdateStatus> requestInfo : requests)
     {
       BatchRequest<BatchKVResponse<Long,UpdateStatus>> request = requestInfo.getRequest();
-      Set<String> expectedParams = new HashSet<String>();
+      Set<String> expectedParams = new HashSet<>();
       expectedParams.add(RestConstants.QUERY_BATCH_IDS_PARAM);
       expectedParams.add("foo");
 
@@ -297,13 +298,13 @@ public class TestScatterGather extends RestLiIntegrationTest
     Collection<ScatterGatherBuilder.RequestInfo<Greeting>> requests = buildScatterGatherGetRequests(sg, ids);
     Assert.assertEquals(requests.size(), numEndpoints);
 
-    Set<Set<String>> requestIdSets = new HashSet<Set<String>>();
-    Set<Long> requestIds = new HashSet<Long>();
+    Set<Set<String>> requestIdSets = new HashSet<>();
+    Set<Long> requestIds = new HashSet<>();
     for (ScatterGatherBuilder.RequestInfo<Greeting> requestInfo : requests)
     {
       //URI will be something like "greetings/?ids=21&ids=4&ids=53&ids=60&ids=66&ids=88&ids=93&foo=bar"
       BatchRequest<BatchResponse<Greeting>> request = requestInfo.getBatchRequest();
-      Set<String> expectedParams = new HashSet<String>();
+      Set<String> expectedParams = new HashSet<>();
       expectedParams.add(RestConstants.QUERY_BATCH_IDS_PARAM);
       expectedParams.add("foo");
       expectedParams.add(RestConstants.FIELDS_PARAM);
@@ -323,19 +324,19 @@ public class TestScatterGather extends RestLiIntegrationTest
     Collection<ScatterGatherBuilder.KVRequestInfo<Long, EntityResponse<Greeting>>> requests = buildScatterGatherGetEntityRequests(sg, ids);
     Assert.assertEquals(requests.size(), numEndpoints);
 
-    Set<Set<String>> requestIdSets = new HashSet<Set<String>>();
-    Set<Long> requestIds = new HashSet<Long>();
+    Set<Set<String>> requestIdSets = new HashSet<>();
+    Set<Long> requestIds = new HashSet<>();
     for (ScatterGatherBuilder.KVRequestInfo<Long, EntityResponse<Greeting>> requestInfo : requests)
     {
       //URI will be something like "greetings/?ids=21&ids=4&ids=53&ids=60&ids=66&ids=88&ids=93&foo=bar"
       BatchRequest<BatchKVResponse<Long, EntityResponse<Greeting>>> request = requestInfo.getRequest();
-      Set<String> expectedParams = new HashSet<String>();
+      Set<String> expectedParams = new HashSet<>();
       expectedParams.add(RestConstants.QUERY_BATCH_IDS_PARAM);
       expectedParams.add("foo");
       expectedParams.add(RestConstants.FIELDS_PARAM);
       Set<PathSpec> expectedFields = Collections.singleton(new PathSpec("message"));
 
-      testGetEntityRequest(request, expectedParams, expectedFields, null, requestIdSets, requestIds);
+      testRequest(request, expectedParams, expectedFields, null, requestIdSets, requestIds);
     }
     Assert.assertTrue(requestIds.containsAll(Arrays.asList(ids)));
     Assert.assertEquals(requestIds.size(), ids.length);
@@ -349,13 +350,13 @@ public class TestScatterGather extends RestLiIntegrationTest
     Collection<ScatterGatherBuilder.KVRequestInfo<Long, Greeting>> requests = buildScatterGatherGetKVRequests(sg, ids);
     Assert.assertEquals(requests.size(), numEndpoints);
 
-    Set<Set<String>> requestIdSets = new HashSet<Set<String>>();
-    Set<Long> requestIds = new HashSet<Long>();
+    Set<Set<String>> requestIdSets = new HashSet<>();
+    Set<Long> requestIds = new HashSet<>();
     for (ScatterGatherBuilder.KVRequestInfo<Long, Greeting> requestInfo : requests)
     {
       //URI will be something like "greetings/?ids=21&ids=4&ids=53&ids=60&ids=66&ids=88&ids=93&foo=bar"
       BatchRequest<BatchKVResponse<Long, Greeting>> request = requestInfo.getRequest();
-      Set<String> expectedParams = new HashSet<String>();
+      Set<String> expectedParams = new HashSet<>();
       expectedParams.add(RestConstants.QUERY_BATCH_IDS_PARAM);
       expectedParams.add("foo");
       expectedParams.add(RestConstants.FIELDS_PARAM);
@@ -379,18 +380,11 @@ public class TestScatterGather extends RestLiIntegrationTest
 
     if (expectedFields != null)
     {
-      Collection<PathSpec> actualFields = (Collection<PathSpec>) request.getQueryParamsObjects().get(RestConstants.FIELDS_PARAM);
-      for (PathSpec field : actualFields)
-      {
-        Assert.assertTrue(expectedFields.contains(field));
-      }
+      Set<PathSpec> actualFields = request.getFields();
+      Assert.assertTrue(expectedFields.equals(actualFields));
     }
 
-    Set<String> uriIds = new HashSet<String>();
-    for (Long id : (Collection<Long>) request.getQueryParamsObjects().get(RestConstants.QUERY_BATCH_IDS_PARAM))
-    {
-      uriIds.add(id.toString());
-    }
+    Set<String> uriIds = request.getObjectIds().stream().map(Object::toString).collect(Collectors.toSet());
 
     if (expectedInput != null)
     {
@@ -416,79 +410,7 @@ public class TestScatterGather extends RestLiIntegrationTest
                  uriIds);
     }
 
-    Set<Object> idObjects = request.getObjectIds();
-    Set<String> theseIds = new HashSet<String>(idObjects.size());
-    for (Object o : idObjects)
-    {
-      theseIds.add(o.toString());
-    }
-
-    Assert.assertEquals(uriIds, theseIds);
-
-    Assert.assertFalse(requestIdSets.contains(theseIds)); //no duplicate requests
-    for (String id : theseIds)
-    {
-      Assert.assertFalse(requestIds.contains(Long.parseLong(id))); //no duplicate ids
-      requestIds.add(Long.parseLong(id));
-    }
-    requestIdSets.add(theseIds);
-  }
-
-  @SuppressWarnings({"unchecked", "rawtypes"})
-  private static void testGetEntityRequest(BatchRequest<BatchKVResponse<Long, EntityResponse<Greeting>>> request,
-                                           Set<String> expectedParams,
-                                           Set<PathSpec> expectedFields,
-                                           Map<Long, Greeting> expectedInput,
-                                           Set<Set<String>> requestIdSets,
-                                           Set<Long> requestIds)
-  {
-    Assert.assertEquals(request.getQueryParamsObjects().keySet(), expectedParams);
-
-    if (expectedFields != null)
-    {
-      Collection<PathSpec> actualFields = (Collection<PathSpec>) request.getQueryParamsObjects().get(RestConstants.FIELDS_PARAM);
-      for (PathSpec field : actualFields)
-      {
-        Assert.assertTrue(expectedFields.contains(field));
-      }
-    }
-
-    Set<String> uriIds = new HashSet<String>();
-    for (Long id : (Collection<Long>) request.getQueryParamsObjects().get(RestConstants.QUERY_BATCH_IDS_PARAM))
-    {
-      uriIds.add(id.toString());
-    }
-
-    if (expectedInput != null)
-    {
-      RecordTemplate inputRecordTemplate;
-      if (request instanceof BatchUpdateRequest)
-      {
-        ResourceProperties resourceProperties = request.getResourceProperties();
-
-        CollectionRequest inputRecord = (CollectionRequest)request.getInputRecord();
-
-        inputRecordTemplate = CollectionRequestUtil.convertToBatchRequest(inputRecord,
-                                                                          resourceProperties.getKeyType(),
-                                                                          resourceProperties.getComplexKeyType(),
-                                                                          resourceProperties.getKeyParts(),
-                                                                          resourceProperties.getValueType());
-      }
-      else
-      {
-        inputRecordTemplate = request.getInputRecord();
-      }
-      checkInput(inputRecordTemplate.data().getDataMap(com.linkedin.restli.common.BatchRequest.ENTITIES),
-                 expectedInput,
-                 uriIds);
-    }
-
-    Set<Object> idObjects = request.getObjectIds();
-    Set<String> theseIds = new HashSet<String>(idObjects.size());
-    for (Object o : idObjects)
-    {
-      theseIds.add(o.toString());
-    }
+    Set<String> theseIds = request.getObjectIds().stream().map(Object::toString).collect(Collectors.toSet());
 
     Assert.assertEquals(uriIds, theseIds);
 
@@ -540,7 +462,7 @@ public class TestScatterGather extends RestLiIntegrationTest
   {
     final int NUM_ENDPOINTS = 4;
     ConsistentHashKeyMapper mapper = getKeyToHostMapper(NUM_ENDPOINTS);
-    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<Greeting>(mapper);
+    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<>(mapper);
 
     final int NUM_IDS = 20;
 
@@ -579,11 +501,11 @@ public class TestScatterGather extends RestLiIntegrationTest
     Collection<ScatterGatherBuilder.RequestInfo<Greeting>> scatterGatherRequests =
       buildScatterGatherGetRequests(sg, requestIds);
 
-    final Map<String, Greeting> results = new ConcurrentHashMap<String, Greeting>();
+    final Map<String, Greeting> results = new ConcurrentHashMap<>();
     final CountDownLatch latch = new CountDownLatch(scatterGatherRequests.size());
-    final List<Throwable> errors = new ArrayList<Throwable>();
+    final List<Throwable> errors = new ArrayList<>();
 
-    final List<BatchResponse<Greeting>> responses = new ArrayList<BatchResponse<Greeting>>();
+    final List<BatchResponse<Greeting>> responses = new ArrayList<>();
     for (ScatterGatherBuilder.RequestInfo<Greeting> requestInfo : scatterGatherRequests)
     {
       Callback<Response<BatchResponse<Greeting>>> cb = new Callback<Response<BatchResponse<Greeting>>>()
@@ -621,8 +543,8 @@ public class TestScatterGather extends RestLiIntegrationTest
 
     Assert.assertEquals(results.values().size(), requestIds.length);
 
-    Set<Set<String>> responseIdSets = new HashSet<Set<String>>();
-    Set<Long> responseIds = new HashSet<Long>();
+    Set<Set<String>> responseIdSets = new HashSet<>();
+    Set<Long> responseIds = new HashSet<>();
     for (BatchResponse<Greeting> response : responses)
     {
       Set<String> theseIds = response.getResults().keySet();
@@ -645,11 +567,11 @@ public class TestScatterGather extends RestLiIntegrationTest
     Collection<ScatterGatherBuilder.KVRequestInfo<Long, Greeting>> scatterGatherRequests =
         buildScatterGatherGetKVRequests(sg, requestIds);
 
-    final Map<Long, Greeting> results = new ConcurrentHashMap<Long, Greeting>();
+    final Map<Long, Greeting> results = new ConcurrentHashMap<>();
     final CountDownLatch latch = new CountDownLatch(scatterGatherRequests.size());
-    final List<Throwable> errors = new ArrayList<Throwable>();
+    final List<Throwable> errors = new ArrayList<>();
 
-    final List<BatchKVResponse<Long, Greeting>> responses = new ArrayList<BatchKVResponse<Long, Greeting>>();
+    final List<BatchKVResponse<Long, Greeting>> responses = new ArrayList<>();
     for (ScatterGatherBuilder.KVRequestInfo<Long, Greeting> requestInfo : scatterGatherRequests)
     {
       Callback<Response<BatchKVResponse<Long, Greeting>>> cb = new Callback<Response<BatchKVResponse<Long, Greeting>>>()
@@ -687,8 +609,8 @@ public class TestScatterGather extends RestLiIntegrationTest
 
     Assert.assertEquals(results.values().size(), requestIds.length);
 
-    Set<Set<Long>> responseIdSets = new HashSet<Set<Long>>();
-    Set<Long> responseIds = new HashSet<Long>();
+    Set<Set<Long>> responseIdSets = new HashSet<>();
+    Set<Long> responseIds = new HashSet<>();
     for (BatchKVResponse<Long, Greeting> response : responses)
     {
       Set<Long> theseIds = response.getResults().keySet();
@@ -729,11 +651,11 @@ public class TestScatterGather extends RestLiIntegrationTest
   private static void testSendSGKVRequests(Collection<ScatterGatherBuilder.KVRequestInfo<Long, UpdateStatus>> scatterGatherRequests,
                                            Long[] requestIds) throws InterruptedException
   {
-    final Map<Long, UpdateStatus> results = new ConcurrentHashMap<Long, UpdateStatus>();
+    final Map<Long, UpdateStatus> results = new ConcurrentHashMap<>();
     final CountDownLatch latch = new CountDownLatch(scatterGatherRequests.size());
-    final List<Throwable> errors = new ArrayList<Throwable>();
+    final List<Throwable> errors = new ArrayList<>();
 
-    final List<BatchKVResponse<Long, UpdateStatus>> responses = new ArrayList<BatchKVResponse<Long, UpdateStatus>>();
+    final List<BatchKVResponse<Long, UpdateStatus>> responses = new ArrayList<>();
     for (ScatterGatherBuilder.KVRequestInfo<Long, UpdateStatus> requestInfo : scatterGatherRequests)
     {
       Callback<Response<BatchKVResponse<Long, UpdateStatus>>> cb = new Callback<Response<BatchKVResponse<Long, UpdateStatus>>>()
@@ -773,8 +695,8 @@ public class TestScatterGather extends RestLiIntegrationTest
 
     Assert.assertEquals(results.values().size(), requestIds.length);
 
-    Set<Set<Long>> responseIdSets = new HashSet<Set<Long>>();
-    Set<Long> responseIds = new HashSet<Long>();
+    Set<Set<Long>> responseIdSets = new HashSet<>();
+    Set<Long> responseIds = new HashSet<>();
     for (BatchKVResponse<Long, UpdateStatus> response : responses)
     {
       Set<Long> theseIds = response.getResults().keySet();
@@ -807,7 +729,7 @@ public class TestScatterGather extends RestLiIntegrationTest
       //expected
     }
 
-    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<Greeting>(keyMapper);
+    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<>(keyMapper);
 
     final int NUM_IDS = 20;
     Long[] requestIds = generateIds(NUM_IDS);
@@ -832,7 +754,7 @@ public class TestScatterGather extends RestLiIntegrationTest
       //expected
     }
 
-    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<Greeting>(keyMapper);
+    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<>(keyMapper);
 
     final int NUM_IDS = 20;
     Long[] requestIds = generateIds(NUM_IDS);
@@ -857,7 +779,7 @@ public class TestScatterGather extends RestLiIntegrationTest
       //expected
     }
 
-    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<Greeting>(keyMapper);
+    ScatterGatherBuilder<Greeting> sg = new ScatterGatherBuilder<>(keyMapper);
 
     final int NUM_IDS = 20;
     Long[] requestIds = generateIds(NUM_IDS);
@@ -932,7 +854,7 @@ public class TestScatterGather extends RestLiIntegrationTest
 
   private static List<Greeting> generateCreate(int num)
   {
-    List<Greeting> creates = new ArrayList<Greeting>();
+    List<Greeting> creates = new ArrayList<>();
     for (int i = 0; i < num; ++i)
     {
       Greeting greeting = new Greeting();
@@ -944,7 +866,7 @@ public class TestScatterGather extends RestLiIntegrationTest
 
   private static Map<Long, Greeting> generateUpdates(Long[] ids)
   {
-    Map<Long, Greeting> updates = new HashMap<Long, Greeting>();
+    Map<Long, Greeting> updates = new HashMap<>();
     for (long l : ids)
     {
       Greeting greeting = new Greeting();
@@ -956,13 +878,13 @@ public class TestScatterGather extends RestLiIntegrationTest
 
   private static ConsistentHashKeyMapper getKeyToHostMapper(int n) throws URISyntaxException
   {
-    Map<URI, Integer> endpoints = new HashMap<URI, Integer>();
+    Map<URI, Integer> endpoints = new HashMap<>();
     for (int ii=0; ii<n; ++ii)
     {
       endpoints.put(new URI("test" + String.valueOf(ii)), 100);
     }
 
-    ConsistentHashRing<URI> testRing = new ConsistentHashRing<URI>(endpoints);
+    ConsistentHashRing<URI> testRing = new ConsistentHashRing<>(endpoints);
     ConsistentHashKeyMapper mapper = new ConsistentHashKeyMapper(new StaticRingProvider(testRing),
                                                                  new TestPartitionInfoProvider());
 
@@ -971,31 +893,31 @@ public class TestScatterGather extends RestLiIntegrationTest
 
   private static ConsistentHashKeyMapper getKeyToHostMapper(int n, int partitionNum) throws  URISyntaxException
   {
-    Map<URI, Integer> endpoints = new HashMap<URI, Integer>();
+    Map<URI, Integer> endpoints = new HashMap<>();
     for (int ii=0; ii<n; ++ii)
     {
       endpoints.put(new URI("test" + String.valueOf(ii)), 100);
     }
 
     final int partitionSize = endpoints.size() / partitionNum;
-    List<Map<URI, Integer>> mapList = new ArrayList<Map<URI, Integer>>();
+    List<Map<URI, Integer>> mapList = new ArrayList<>();
     int count = 0;
     for(final URI uri : endpoints.keySet())
     {
       final int index = count / partitionSize;
       if (index == mapList.size())
       {
-        mapList.add(new HashMap<URI, Integer>());
+        mapList.add(new HashMap<>());
       }
       Map<URI, Integer> map = mapList.get(index);
       map.put(uri, endpoints.get(uri));
       count++;
     }
 
-    List<Ring<URI>> rings = new ArrayList<Ring<URI>>();
+    List<Ring<URI>> rings = new ArrayList<>();
     for (final Map<URI, Integer> map : mapList)
     {
-      final ConsistentHashRing<URI> ring = new ConsistentHashRing<URI>(map);
+      final ConsistentHashRing<URI> ring = new ConsistentHashRing<>(map);
       rings.add(ring);
     }
 

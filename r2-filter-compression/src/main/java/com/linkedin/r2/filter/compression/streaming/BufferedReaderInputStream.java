@@ -36,7 +36,7 @@ class BufferedReaderInputStream extends InputStream implements Reader
   private static final int CAPACITY = 3;
   private static final ByteString EOS = ByteString.copy(new byte[1]);
 
-  private final BlockingQueue<ByteString> _buffers = new ArrayBlockingQueue<ByteString>(CAPACITY+1);
+  private final BlockingQueue<ByteString> _buffers = new ArrayBlockingQueue<>(CAPACITY + 1);
 
   private boolean _closed = false;
   private volatile boolean _readFinished = false;
@@ -54,7 +54,9 @@ class BufferedReaderInputStream extends InputStream implements Reader
 
     if (_throwable != null)
     {
-      throw new IOException(_throwable);
+      // Underlying network layer might throw an exception here and in certain frameworks, the exception class might not be classloaded (e.g. J2EE servlet containers separate server classes from application classes)
+      // however logging framework might try to load the class when logging this exception, creating performance problems.
+      throw new IOException(_throwable.getMessage());
     }
     else if (done())
     {

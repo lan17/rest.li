@@ -16,7 +16,6 @@
 
 package com.linkedin.d2.balancer.util;
 
-
 import com.linkedin.common.callback.FutureCallback;
 import com.linkedin.common.util.None;
 import com.linkedin.d2.balancer.clients.DynamicClient;
@@ -32,10 +31,9 @@ import com.linkedin.d2.balancer.simple.SimpleLoadBalancer;
 import com.linkedin.d2.balancer.simple.SimpleLoadBalancerState;
 import com.linkedin.d2.balancer.strategies.LoadBalancerStrategy;
 import com.linkedin.d2.balancer.strategies.LoadBalancerStrategyFactory;
-import com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategyFactoryV2;
-import com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategyFactoryV2_1;
 import com.linkedin.d2.balancer.strategies.degrader.DegraderLoadBalancerStrategyFactoryV3;
 import com.linkedin.d2.balancer.strategies.random.RandomLoadBalancerStrategyFactory;
+import com.linkedin.d2.balancer.strategies.relative.RelativeLoadBalancerStrategyFactory;
 import com.linkedin.d2.balancer.zkfs.ZKFSComponentFactory;
 import com.linkedin.d2.balancer.zkfs.ZKFSLoadBalancer;
 import com.linkedin.d2.balancer.zkfs.ZKFSTogglingLoadBalancerFactoryImpl;
@@ -62,13 +60,7 @@ import com.linkedin.r2.message.rest.RestResponse;
 import com.linkedin.r2.transport.common.TransportClientFactory;
 import com.linkedin.r2.transport.http.client.HttpClientFactory;
 import com.linkedin.r2.util.NamedThreadFactory;
-
-import javax.management.MBeanServerConnection;
-import javax.management.ObjectInstance;
-import javax.management.ObjectName;
-import javax.management.remote.JMXConnector;
-import javax.management.remote.JMXConnectorFactory;
-import javax.management.remote.JMXServiceURL;
+import com.linkedin.util.clock.SystemClock;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -86,7 +78,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.GnuParser;
@@ -97,8 +88,6 @@ import org.apache.commons.io.FileUtils;
 import org.apache.zookeeper.Watcher.Event.KeeperState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import sun.jvmstat.monitor.HostIdentifier;
-import sun.jvmstat.monitor.MonitoredHost;
 
 
 public class LoadBalancerClientCli
@@ -139,8 +128,6 @@ public class LoadBalancerClientCli
     OPTIONS.addOption("h", "help", false, "Show help.");
     OPTIONS.addOption("z", "zkserver", true, "Zookeeper server string (example:zk://localhost:2121).");
     OPTIONS.addOption("p", "path", true, "Discovery path (example: /d2).");
-    OPTIONS.addOption("h", "host", true, "Host name.");
-    OPTIONS.addOption("b", "enabled", true, "Enabled toggling store (value either 'true' or 'false'.");
     OPTIONS.addOption("f", "file", true, "D2 clusters/services configuration file.");
     OPTIONS.addOption("c", "cluster", true, "Cluster name.");
     OPTIONS.addOption("s", "service", true, "Service name.");
@@ -155,7 +142,6 @@ public class LoadBalancerClientCli
     OPTIONS.addOption("H", "printschema", false, "Print service schema.");
     OPTIONS.addOption("R", "sendrequest", false, "Send request to service.");
     OPTIONS.addOption("e", "endpoints", false, "Print service endpoints.");
-    OPTIONS.addOption("T", "toggle", false, "Reset toggling store.");
 
     CommandLine cl = null;
     try
@@ -189,13 +175,6 @@ public class LoadBalancerClientCli
       else if (cl.hasOption("S"))
       {
         System.err.println(printStores(clobj.getZKClient(), cl.getOptionValue("z"), cl.getOptionValue("p")));
-      }
-      else if (cl.hasOption("T") && cl.hasOption("h") && cl.hasOption("b"))
-      {
-        String host = cl.getOptionValue("h");
-        boolean toggled = !"false".equals(cl.getOptionValue("b"));
-
-        resetTogglingStores((host == null) ? "localhost" : host, toggled);
       }
       else if (cl.hasOption("c") && cl.hasOption("s"))
       {
@@ -298,8 +277,6 @@ public class LoadBalancerClientCli
     sb.append("\nExample Send request to service: lb-client.sh --zkserver zk://localhost:2181 --path /d2 --cluster 'cluster-1' --service service-1_1 --request 'test' --sendrequest");
     sb.append("\nExample Send request to service: lb-client.sh -z zk://localhost:2181 -p /d2 -c 'history-write-1' -s HistoryService -m getCube -r 'test' -R");
     sb.append("\nExample Send request to service: lb-client.sh --zkserver zk://localhost:2181 --path /d2 --cluster 'history-write-1' --service HistoryService --method getCube --request 'test' --sendrequest");
-    sb.append("\nExample Reset toggling stores: lb-client.sh -z zk://localhost:2121 -p /d2 -h localhost -b false -T");
-    sb.append("\nExample Reset toggling stores: lb-client.sh --zkserver zk://localhost:2121 --path /d2 --host localhost --enabled false --toggle");
     sb.append("\n");
 
     final HelpFormatter formatter = new HelpFormatter();
@@ -442,7 +419,7 @@ public class LoadBalancerClientCli
   Exception
   {
     _zkfsLoadBalancer = getZKFSLoadBalancer(zkHostsPortsConnectionString, d2path, servicePath);
-    FutureCallback<None> startupCallback = new FutureCallback<None>();
+    FutureCallback<None> startupCallback = new FutureCallback<>();
     _zkfsLoadBalancer.start(startupCallback);
     startupCallback.get(5000, TimeUnit.MILLISECONDS);
 
@@ -591,7 +568,7 @@ public class LoadBalancerClientCli
       if (storeUri.getScheme().equals("zk"))
       {
 
-        ZooKeeperPermanentStore<T> zkStore = new ZooKeeperPermanentStore<T>(
+        ZooKeeperPermanentStore<T> zkStore = new ZooKeeperPermanentStore<>(
                 zkclient, serializer, storeUri.getPath());
         startStore(zkStore);
         return zkStore;
@@ -604,14 +581,14 @@ public class LoadBalancerClientCli
     else
     {
       // assume it's a local file
-      return new FileStore<T>(storeUri.getPath(), ".json", serializer);
+      return new FileStore<>(storeUri.getPath(), ".json", serializer);
     }
 
   }
 
   public static List<String> getServicesGroups (ZKConnection zkclient, String basePath) throws Exception
   {
-    List<String> servicesGroups = new ArrayList<String>();
+    List<String> servicesGroups = new ArrayList<>();
     ZooKeeper zook = zkclient.getZooKeeper();
 
     List<String> children = zook.getChildren(basePath,false);
@@ -641,7 +618,7 @@ public class LoadBalancerClientCli
       if (storeUri.getScheme().equals("zk"))
       {
 
-        ZooKeeperEphemeralStore<T> zkStore = new ZooKeeperEphemeralStore<T>( zkclient, serializer, merger, storeUri.getPath());
+        ZooKeeperEphemeralStore<T> zkStore = new ZooKeeperEphemeralStore<>( zkclient, serializer, merger, storeUri.getPath());
         startStore(zkStore);
         return zkStore;
       }
@@ -653,7 +630,7 @@ public class LoadBalancerClientCli
     else
     {
       // assume it's a local file
-      return new FileStore<T>(storeUri.getPath(), ".json", serializer);
+      return new FileStore<>(storeUri.getPath(), ".json", serializer);
     }
 
   }
@@ -662,7 +639,7 @@ public class LoadBalancerClientCli
   {
     try
     {
-      FutureCallback<None> callback = new FutureCallback<None>();
+      FutureCallback<None> callback = new FutureCallback<>();
       store.start(callback);
       callback.get(30, TimeUnit.SECONDS);
     }
@@ -683,6 +660,22 @@ public class LoadBalancerClientCli
                                                                           TimeoutException,
                                                                           InterruptedException
   {
+    ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, new NamedThreadFactory("D2 PropertyEventExecutor"));
+    SimpleLoadBalancerState state = createSimpleLoadBalancerState(zkclient, zkserver, d2path, executor);
+
+    SimpleLoadBalancer balancer = new SimpleLoadBalancer(state, 5, TimeUnit.SECONDS, executor);
+    FutureCallback<None> callback = new FutureCallback<>();
+    balancer.start(callback);
+    callback.get(5, TimeUnit.SECONDS);
+
+    new JmxManager().registerLoadBalancer("balancer", balancer);
+
+    return balancer;
+  }
+
+  public static SimpleLoadBalancerState createSimpleLoadBalancerState(ZKConnection zkclient, String zkserver, String d2path,
+      ScheduledThreadPoolExecutor executor) throws PropertyStoreException, URISyntaxException, IOException
+  {
     // zk stores
     String clstoreString = zkserver + ZKFSUtil.clusterPath(d2path);
     String scstoreString = zkserver + ZKFSUtil.servicePath(d2path);
@@ -690,65 +683,56 @@ public class LoadBalancerClientCli
 
     ZooKeeperPermanentStore<ClusterProperties> zkClusterRegistry =
         (ZooKeeperPermanentStore<ClusterProperties>) getStore(zkclient,
-                                                              clstoreString,
-                                                              new ClusterPropertiesJsonSerializer());
+            clstoreString,
+            new ClusterPropertiesJsonSerializer());
     ZooKeeperPermanentStore<ServiceProperties> zkServiceRegistry =
         (ZooKeeperPermanentStore<ServiceProperties>) getStore(zkclient,
-                                                              scstoreString,
-                                                              new ServicePropertiesJsonSerializer());
+            scstoreString,
+            new ServicePropertiesJsonSerializer());
     ZooKeeperEphemeralStore<UriProperties> zkUriRegistry =
         (ZooKeeperEphemeralStore<UriProperties>) getEphemeralStore(zkclient,
-                                                                   uristoreString,
-                                                                   new UriPropertiesJsonSerializer(),
-                                                                   new UriPropertiesMerger());
-
-    ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, new NamedThreadFactory("D2 PropertyEventExecutor"));
+            uristoreString,
+            new UriPropertiesJsonSerializer(),
+            new UriPropertiesMerger());
 
     PropertyEventBus<ServiceProperties> serviceBus =
-        new PropertyEventBusImpl<ServiceProperties>(executor, zkServiceRegistry);
+        new PropertyEventBusImpl<>(executor, zkServiceRegistry);
     PropertyEventBus<UriProperties> uriBus =
-        new PropertyEventBusImpl<UriProperties>(executor, zkUriRegistry);
+        new PropertyEventBusImpl<>(executor, zkUriRegistry);
     PropertyEventBus<ClusterProperties> clusterBus =
-        new PropertyEventBusImpl<ClusterProperties>(executor, zkClusterRegistry);
+        new PropertyEventBusImpl<>(executor, zkClusterRegistry);
 
     Map<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>> loadBalancerStrategyFactories =
-        new HashMap<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>>();
+        new HashMap<>();
 
     loadBalancerStrategyFactories.put("random", new RandomLoadBalancerStrategyFactory());
-    loadBalancerStrategyFactories.put("degrader", new DegraderLoadBalancerStrategyFactoryV2());
-    loadBalancerStrategyFactories.put("degraderV2", new DegraderLoadBalancerStrategyFactoryV2());
+    loadBalancerStrategyFactories.put("degrader", new DegraderLoadBalancerStrategyFactoryV3());
+    loadBalancerStrategyFactories.put("degraderV2", new DegraderLoadBalancerStrategyFactoryV3());
     loadBalancerStrategyFactories.put("degraderV3", new DegraderLoadBalancerStrategyFactoryV3());
-    loadBalancerStrategyFactories.put("degraderV2_1", new DegraderLoadBalancerStrategyFactoryV2_1());
+    loadBalancerStrategyFactories.put("degraderV2_1", new DegraderLoadBalancerStrategyFactoryV3());
+    loadBalancerStrategyFactories.put("relative", new RelativeLoadBalancerStrategyFactory(executor,
+        null, null, null, SystemClock.instance()));
 
-    Map<String, TransportClientFactory> clientFactories =
-        new HashMap<String, TransportClientFactory>();
+    Map<String, TransportClientFactory> clientFactories = new HashMap<>();
 
-    clientFactories.put("http", new HttpClientFactory());
+    clientFactories.put("http", new HttpClientFactory.Builder().build());
 
-    // create the state
-    SimpleLoadBalancerState state =
-        new SimpleLoadBalancerState(executor,
-                                    uriBus,
-                                    clusterBus,
-                                    serviceBus,
-                                    clientFactories,
-                                    loadBalancerStrategyFactories,
-                                    null, null, false);
+    SimpleLoadBalancerState state = new SimpleLoadBalancerState(executor,
+        uriBus,
+        clusterBus,
+        serviceBus,
+        clientFactories,
+        loadBalancerStrategyFactories,
+        null, null, false);
 
-    SimpleLoadBalancer balancer = new SimpleLoadBalancer(state, 5, TimeUnit.SECONDS);
-    FutureCallback<None> callback = new FutureCallback<None>();
-    balancer.start(callback);
-    callback.get(5, TimeUnit.SECONDS);
+    new JmxManager().registerLoadBalancerState("state", state)
+        .registerScheduledThreadPoolExecutor("executorService", executor)
+        .registerZooKeeperPermanentStore("zkClusterRegistry", zkClusterRegistry)
+        .registerZooKeeperPermanentStore("zkServiceRegistry",
+            zkServiceRegistry)
+        .registerZooKeeperEphemeralStore("zkUriRegistry", zkUriRegistry);
 
-    new JmxManager().registerLoadBalancer("balancer", balancer)
-                    .registerLoadBalancerState("state", state)
-                    .registerScheduledThreadPoolExecutor("executorService", executor)
-                    .registerZooKeeperPermanentStore("zkClusterRegistry", zkClusterRegistry)
-                    .registerZooKeeperPermanentStore("zkServiceRegistry",
-                                                     zkServiceRegistry)
-                    .registerZooKeeperEphemeralStore("zkUriRegistry", zkUriRegistry);
-
-    return balancer;
+    return state;
   }
 
   public ZKFSLoadBalancer getZKFSLoadBalancer(String zkConnectString, String d2path, String d2ServicePath) throws Exception
@@ -761,17 +745,17 @@ public class LoadBalancerClientCli
       d2ServicePath = "services";
     }
 
-    Map<String, TransportClientFactory> clientFactories = new HashMap<String, TransportClientFactory>();
-    clientFactories.put("http", new HttpClientFactory());
+    Map<String, TransportClientFactory> clientFactories = new HashMap<>();
+    clientFactories.put("http", new HttpClientFactory.Builder().build());
 
     Map<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>> loadBalancerStrategyFactories =
-    new HashMap<String, LoadBalancerStrategyFactory<? extends LoadBalancerStrategy>>();
+        new HashMap<>();
 
     loadBalancerStrategyFactories.put("random", new RandomLoadBalancerStrategyFactory());
-    loadBalancerStrategyFactories.put("degrader", new DegraderLoadBalancerStrategyFactoryV2());
-    loadBalancerStrategyFactories.put("degraderV2", new DegraderLoadBalancerStrategyFactoryV2());
+    loadBalancerStrategyFactories.put("degrader", new DegraderLoadBalancerStrategyFactoryV3());
+    loadBalancerStrategyFactories.put("degraderV2", new DegraderLoadBalancerStrategyFactoryV3());
     loadBalancerStrategyFactories.put("degraderV3", new DegraderLoadBalancerStrategyFactoryV3());
-    loadBalancerStrategyFactories.put("degraderV2_1", new DegraderLoadBalancerStrategyFactoryV2_1());
+    loadBalancerStrategyFactories.put("degraderV2_1", new DegraderLoadBalancerStrategyFactoryV3());
 
 	ZKFSTogglingLoadBalancerFactoryImpl factory = new ZKFSTogglingLoadBalancerFactoryImpl(componentFactory,
                                         TIMEOUT, TimeUnit.MILLISECONDS,
@@ -788,7 +772,7 @@ public class LoadBalancerClientCli
   URISyntaxException,
   PropertyStoreException
   {
-    Set<UriProperties> uriprops = new HashSet<UriProperties>();
+    Set<UriProperties> uriprops = new HashSet<>();
     // zk stores
     String scstoreString = zkserver + ZKFSUtil.servicePath(d2path);
     String uristoreString = zkserver + ZKFSUtil.uriPath(d2path);
@@ -814,7 +798,7 @@ public class LoadBalancerClientCli
   URISyntaxException,
   PropertyStoreException
   {
-    Map<String,UriProperties> map = new HashMap<String,UriProperties>();
+    Map<String, UriProperties> map = new HashMap<>();
     // zk stores
     String scstoreString = zkserver + ZKFSUtil.servicePath(d2path);
     String uristoreString = zkserver + ZKFSUtil.uriPath(d2path);
@@ -987,9 +971,9 @@ public class LoadBalancerClientCli
     int serviceCount = 0;
     String zkstr = "\nZKServer:" + zkserver;
     StringBuilder sb = new StringBuilder();
-    Set<String> currentservices = new HashSet<String>();
-    Map<String,ZooKeeperPermanentStore<ServiceProperties>> zkServiceRegistryMap = new HashMap<String,ZooKeeperPermanentStore<ServiceProperties>>();
-    Map<String,List<String>> servicesGroupMap = new HashMap<String,List<String>>();
+    Set<String> currentservices = new HashSet<>();
+    Map<String, ZooKeeperPermanentStore<ServiceProperties>> zkServiceRegistryMap = new HashMap<>();
+    Map<String, List<String>> servicesGroupMap = new HashMap<>();
 
     // zk stores
     String clstoreString = zkserver + ZKFSUtil.clusterPath(d2path);
@@ -1079,74 +1063,6 @@ public class LoadBalancerClientCli
     }
 
     return sb.toString();
-  }
-
-  public static void resetTogglingStores(String host, boolean enabled) throws Exception
-  {
-
-    MonitoredHost _host = MonitoredHost.getMonitoredHost(new HostIdentifier(host));
-
-    for (Object pidObj : _host.activeVms())
-    {
-      int pid = (Integer) pidObj;
-
-      System.out.println("checking pid: " + pid);
-
-      JMXServiceURL jmxUrl = null;
-      com.sun.tools.attach.VirtualMachine vm =
-          com.sun.tools.attach.VirtualMachine.attach(pid + "");
-
-      try
-      {
-        // get the connector address
-        String connectorAddress = vm.getAgentProperties().getProperty(CONNECTOR_ADDRESS);
-        // establish connection to connector server
-        if (connectorAddress != null)
-        {
-          jmxUrl = new JMXServiceURL(connectorAddress);
-        }
-      }
-      finally
-      {
-        vm.detach();
-      }
-
-      if (jmxUrl != null)
-      {
-        System.out.println("got jmx url: " + jmxUrl);
-
-        // connect to jmx
-        JMXConnector connector = JMXConnectorFactory.connect(jmxUrl);
-
-        connector.connect();
-
-        MBeanServerConnection mbeanServer = connector.getMBeanServerConnection();
-
-        // look for all beans in the d2 name space
-        Set<ObjectInstance> objectInstances =
-            mbeanServer.queryMBeans(new ObjectName("com.linkedin.d2:*"), null);
-
-        for (ObjectInstance objectInstance : objectInstances)
-        {
-          System.err.println("checking object: " + objectInstance.getObjectName());
-
-          // if we've found a toggling store, then toggle it
-          if (objectInstance.getObjectName().toString().endsWith("TogglingStore"))
-          {
-            System.out.println("found toggling zk store, so toggling to: " + enabled);
-
-            mbeanServer.invoke(objectInstance.getObjectName(),
-                               "setEnabled",
-                               new Object[] { enabled },
-                               new String[] { "boolean" });
-          }
-        }
-      }
-      else
-      {
-        System.out.println("pid is not a jmx process: " + pid);
-      }
-    }
   }
 
   private void deleteTempDir() throws IOException
@@ -1287,7 +1203,7 @@ public class LoadBalancerClientCli
   {
     if (zkregistry != null)
     {
-      FutureCallback<None> shutdownCallback = new FutureCallback<None>();
+      FutureCallback<None> shutdownCallback = new FutureCallback<>();
       zkregistry.shutdown(shutdownCallback);
       shutdownCallback.get(5000, TimeUnit.MILLISECONDS);
     }
@@ -1295,22 +1211,13 @@ public class LoadBalancerClientCli
 
   private void shutdownPropertyStore(PropertyStore<?> store, long timeout, TimeUnit unit) throws Exception
   {
-    final CountDownLatch registryLatch = new CountDownLatch(1);
-
-    store.shutdown(new PropertyEventShutdownCallback()
-    {
-      @Override
-      public void done()
-      {
-        registryLatch.countDown();
-      }
-    });
-
+    final FutureCallback<None> callback = new FutureCallback<>();
+    store.shutdown(callback);
     try
     {
-      registryLatch.await(timeout, unit);
+      callback.get(timeout, unit);
     }
-    catch (InterruptedException e)
+    catch (InterruptedException | ExecutionException | TimeoutException e)
     {
       System.err.println("unable to shutdown store: " + store);
     }

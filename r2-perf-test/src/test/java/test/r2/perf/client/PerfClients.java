@@ -46,7 +46,7 @@ import test.r2.perf.PerfConfig;
 public class PerfClients
 {
   private static final TransportClientFactory FACTORY = new HttpClientFactory.Builder()
-      .setNioEventLoopGroup(new NioEventLoopGroup(0 /* use default settings */, new NamedThreadFactory("R2 Nio Event Loop")))
+      .setEventLoopGroup(new NioEventLoopGroup(0 /* use default settings */, new NamedThreadFactory("R2 Nio Event Loop")))
       .setShutDownFactory(true)
       .setScheduleExecutorService(Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("R2 Netty Scheduler")))
       .setShutdownScheduledExecutorService(true)
@@ -56,21 +56,21 @@ public class PerfClients
 
   private static int NUM_CLIENTS = 0;
 
-  public static PerfClient httpRest(URI uri, int numThreads, int numMsgs, int msgSize)
+  public static PerfClient httpRest(URI uri, int numThreads, int numMsgs, int msgSize, int numHeaders, int headerSize)
   {
     final TransportClient transportClient = FACTORY.getClient(Collections.<String, String>emptyMap());
     final Client client = new TransportClientAdapter(transportClient, PerfConfig.clientRestOverStream());
-    final Generator<RestRequest> reqGen = new RestRequestGenerator(uri, numMsgs, msgSize);
+    final Generator<RestRequest> reqGen = new RestRequestGenerator(uri, numMsgs, msgSize, numHeaders, headerSize);
     final ClientRunnableFactory crf = new RestClientRunnableFactory(client, reqGen);
 
     return new FactoryClient(crf, numThreads);
   }
 
-  public static PerfClient httpPureStream(URI uri, int numThreads, int numMsgs, int msgSize)
+  public static PerfClient httpPureStream(URI uri, int numThreads, int numMsgs, int msgSize, int numHeaders, int headerSize)
   {
     final TransportClient transportClient = FACTORY.getClient(Collections.<String, String>emptyMap());
     final Client client = new TransportClientAdapter(transportClient, true);
-    final Generator<StreamRequest> reqGen = new StreamRequestGenerator(uri, numMsgs, msgSize);
+    final Generator<StreamRequest> reqGen = new StreamRequestGenerator(uri, numMsgs, msgSize, numHeaders, headerSize);
     final ClientRunnableFactory crf = new StreamClientRunnableFactory(client, reqGen);
 
     return new FactoryClient(crf, numThreads);

@@ -16,25 +16,32 @@
 
 package com.linkedin.restli.client;
 
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.linkedin.data.DataMap;
 import com.linkedin.data.schema.PathSpec;
 import com.linkedin.data.template.RecordTemplate;
+import com.linkedin.data.transform.filter.request.MaskTree;
 import com.linkedin.jersey.api.uri.UriTemplate;
 import com.linkedin.restli.common.HttpMethod;
 import com.linkedin.restli.common.ResourceMethod;
+import com.linkedin.restli.common.ResourceMethodIdentifierGenerator;
 import com.linkedin.restli.common.ResourceProperties;
 import com.linkedin.restli.common.ResourceSpec;
 import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.internal.client.RestResponseDecoder;
+import com.linkedin.restli.internal.common.IllegalMaskException;
 import com.linkedin.restli.internal.common.ResourcePropertiesImpl;
+import com.linkedin.restli.internal.common.URIMaskUtil;
 import com.linkedin.restli.internal.common.URIParamUtils;
-
 import java.net.HttpCookie;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import org.apache.commons.lang.StringUtils;
 
 
 /**
@@ -47,20 +54,28 @@ import java.util.regex.Pattern;
 public class Request<T>
 {
   private static final Pattern SLASH_PATTERN = Pattern.compile("/");
+  private static final Cache<String, String> URI_TEMPLATE_TO_SERVICE_NAME_CACHE = Caffeine.newBuilder()
+      .maximumSize(1000)
+      .build();
+  private static final Cache<String, UriTemplate> URI_TEMPLATE_STRING_TO_URI_TEMPLATE_CACHE = Caffeine.newBuilder()
+      .maximumSize(1000)
+      .build();
 
-  private final ResourceMethod         _method;
-  private final RecordTemplate         _inputRecord;
-  private final RestResponseDecoder<T> _decoder;
-  private final Map<String, String>    _headers;
-  private final List<HttpCookie>       _cookies;
-  private final ResourceSpec           _resourceSpec;
-  private final ResourceProperties     _resourceProperties;
-  private final Map<String, Object>    _queryParams;
-  private final Map<String, Class<?>>  _queryParamClasses; // Used for coercing query params. In case of collection or iterable, contains the type parameter class.
-  private final String                 _methodName; // needed to identify finders and actions. null for everything else
-  private final String                 _baseUriTemplate;
-  private final Map<String, Object>    _pathKeys;
-  private final RestliRequestOptions   _requestOptions;
+  private final ResourceMethod              _method;
+  private final RecordTemplate              _inputRecord;
+  private final RestResponseDecoder<T>      _decoder;
+  private final Map<String, String>         _headers;
+  private final List<HttpCookie>            _cookies;
+  private final ResourceSpec                _resourceSpec;
+  private final ResourceProperties          _resourceProperties;
+  private final Map<String, Object>         _queryParams;
+  private final Map<String, Class<?>>       _queryParamClasses; // Used for coercing query params. In case of collection or iterable, contains the type parameter class.
+  private final String                      _methodName; // needed to identify finders and actions. null for everything else
+  private final String                      _baseUriTemplate;
+  private final String                      _resourceMethodIdentifier;
+  private final Map<String, Object>         _pathKeys;
+  private final List<Object>                _streamingAttachments; //Usually null since streaming is rare. Creating an empty List is wasteful.
+  private RestliRequestOptions              _requestOptions;
 
   Request(ResourceMethod method,
           RecordTemplate inputRecord,
@@ -73,7 +88,8 @@ public class Request<T>
           String methodName,
           String baseUriTemplate,
           Map<String, Object> pathKeys,
-          RestliRequestOptions requestOptions)
+          RestliRequestOptions requestOptions,
+          List<Object> streamingAttachments)
   {
     _method = method;
     _inputRecord = inputRecord;
@@ -99,6 +115,7 @@ public class Request<T>
     _queryParamClasses = queryParamClasses;
     _methodName = methodName;
     _baseUriTemplate = baseUriTemplate;
+    _resourceMethodIdentifier = ResourceMethodIdentifierGenerator.generate(baseUriTemplate, method, methodName);
     _pathKeys = pathKeys;
 
     if (_baseUriTemplate != null && _pathKeys != null)
@@ -107,6 +124,7 @@ public class Request<T>
     }
 
     _requestOptions = (requestOptions == null) ? RestliRequestOptions.DEFAULT_OPTIONS : requestOptions;
+    _streamingAttachments = streamingAttachments;
   }
 
   /**
@@ -136,7 +154,7 @@ public class Request<T>
    */
   private void validatePathKeys()
   {
-    UriTemplate template = new UriTemplate(getBaseUriTemplate());
+    UriTemplate template = getUriTemplate();
     for (String key: template.getTemplateVariables())
     {
       Object value = getPathKeys().get(key);
@@ -202,6 +220,10 @@ public class Request<T>
     return _baseUriTemplate;
   }
 
+  public String getResourceMethodIdentifier() {
+    return _resourceMethodIdentifier;
+  }
+
   public Map<String, Object> getPathKeys()
   {
     return _pathKeys;
@@ -238,18 +260,85 @@ public class Request<T>
     return _requestOptions;
   }
 
+  public void setProjectionDataMapSerializer(ProjectionDataMapSerializer projectionDataMapSerializer)
+  {
+    RestliRequestOptions existingRequestOptions =
+        (_requestOptions == null) ? RestliRequestOptions.DEFAULT_OPTIONS : _requestOptions;
+
+    // If the desired value is same as existing, this is a no-op.
+    if (existingRequestOptions.getProjectionDataMapSerializer().equals(projectionDataMapSerializer))
+    {
+      return;
+    }
+
+    _requestOptions = new RestliRequestOptionsBuilder(existingRequestOptions)
+        .setProjectionDataMapSerializer(projectionDataMapSerializer)
+        .build();
+  }
+
+  /**
+   * @return True if the request is streaming, false otherwise.
+   */
+  public boolean isStreaming()
+  {
+    return _streamingAttachments != null || _requestOptions.getAcceptResponseAttachments();
+  }
+
+  /**
+   * Get UriTemplate for this request.
+   * @return An UriTemplate instance corresponding to the base Uri template string.
+   * @throws IllegalArgumentException if the template is null or an empty string.
+   */
+  public UriTemplate getUriTemplate()
+  {
+    if (StringUtils.isNotEmpty(getBaseUriTemplate()))
+    {
+      return URI_TEMPLATE_STRING_TO_URI_TEMPLATE_CACHE.get(getBaseUriTemplate(),
+          template -> new UriTemplate(getBaseUriTemplate()));
+    }
+    // if the template is 'null' or an empty string throw an exception.
+    throw new IllegalArgumentException("Invalid base uri template. Template can not be null or an empty string.");
+  }
+
+  List<Object> getStreamingAttachments()
+  {
+    return _streamingAttachments;
+  }
+
   /**
    * This method is to be exposed in the extending classes when appropriate
    */
+  @SuppressWarnings("unchecked")
   protected Set<PathSpec> getFields()
   {
-    @SuppressWarnings("unchecked")
-    List<PathSpec> fieldsList = (List<PathSpec>) _queryParams.get(RestConstants.FIELDS_PARAM);
-    if (fieldsList == null)
-    {
+    Object fields = _queryParams.get(RestConstants.FIELDS_PARAM);
+    if (fields == null) {
       return Collections.emptySet();
     }
-    return Collections.unmodifiableSet(new HashSet<PathSpec>(fieldsList));
+
+    if (fields instanceof Set)
+    {
+      return (Set<PathSpec>) fields;
+    }
+    else if (fields instanceof String)
+    {
+      try
+      {
+        MaskTree tree = URIMaskUtil.decodeMaskUriFormat((String) fields);
+        return tree.getOperations().keySet();
+      }
+      catch (IllegalMaskException e)
+      {
+        throw new IllegalArgumentException("Field param was a string and it did not represent a serialized mask tree", e);
+      }
+    }
+    else if (fields instanceof DataMap)
+    {
+      MaskTree tree = new MaskTree((DataMap) fields);
+      return tree.getOperations().keySet();
+    }
+
+    throw new IllegalArgumentException("Fields param is of unrecognized type: " + fields.getClass());
   }
 
   /**
@@ -260,7 +349,8 @@ public class Request<T>
   {
     if (_baseUriTemplate != null)
     {
-      return URIParamUtils.extractPathComponentsFromUriTemplate(_baseUriTemplate)[0];
+      return URI_TEMPLATE_TO_SERVICE_NAME_CACHE.get(_baseUriTemplate,
+          template -> URIParamUtils.extractPathComponentsFromUriTemplate(template)[0]);
     }
     return "";
   }
@@ -285,15 +375,14 @@ public class Request<T>
    * Checks if the old fields are equal
    *
    * @param other
-   * @return
    */
   private boolean areOldFieldsEqual(Request<?> other)
   {
-    if (_headers != null? !_headers.equals(other._headers) : other._headers != null)
+    if (_headers != null ? !_headers.equals(other._headers) : other._headers != null)
     {
       return false;
     }
-    if (_inputRecord != null? !_inputRecord.equals(other._inputRecord) : other._inputRecord != null)
+    if (_inputRecord != null ? !_inputRecord.equals(other._inputRecord) : other._inputRecord != null)
     {
       return false;
     }
@@ -308,7 +397,6 @@ public class Request<T>
    * Checks if the new fields are equal
    *
    * @param other
-   * @return
    */
   private boolean areNewFieldsEqual(Request<?> other)
   {
@@ -316,27 +404,35 @@ public class Request<T>
     {
       return false;
     }
-    if (_baseUriTemplate != null? !_baseUriTemplate.equals(other._baseUriTemplate) : other._baseUriTemplate != null)
+    if (_baseUriTemplate != null ? !_baseUriTemplate.equals(other._baseUriTemplate) : other._baseUriTemplate != null)
     {
       return false;
     }
-    if (_pathKeys != null? !_pathKeys.equals(other._pathKeys) : other._pathKeys != null)
+    if (_pathKeys != null ? !_pathKeys.equals(other._pathKeys) : other._pathKeys != null)
     {
       return false;
     }
-    if (_resourceSpec != null? !_resourceSpec.equals(other._resourceSpec) : other._resourceSpec != null)
+    if (_resourceSpec != null ? !_resourceSpec.equals(other._resourceSpec) : other._resourceSpec != null)
     {
       return false;
     }
-    if (_queryParams != null? !_queryParams.equals(other._queryParams) : other._queryParams != null)
+    if (_queryParams != null ? !_queryParams.equals(other._queryParams) : other._queryParams != null)
     {
       return false;
     }
-    if (_methodName != null? !_methodName.equals(other._methodName) : other._methodName != null)
+    if (_methodName != null ? !_methodName.equals(other._methodName) : other._methodName != null)
     {
       return false;
     }
-    if (_requestOptions != null? !_requestOptions.equals(other._requestOptions) : other._requestOptions != null)
+    if (_requestOptions != null ? !_requestOptions.equals(other._requestOptions) : other._requestOptions != null)
+    {
+      return false;
+    }
+    if (_streamingAttachments != null ? !_streamingAttachments.equals(other._streamingAttachments) : other._streamingAttachments != null)
+    {
+      return false;
+    }
+    if (_cookies != null ? !_cookies.equals(other._cookies) : other._cookies != null)
     {
       return false;
     }
@@ -346,20 +442,21 @@ public class Request<T>
 
   /**
    * Computes the hashCode using the new fields
-   * @return
    */
   @Override
   public int hashCode()
   {
     int hashCode = _method.hashCode();
-    hashCode = 31 * hashCode + (_inputRecord != null? _inputRecord.hashCode() : 0);
-    hashCode = 31 * hashCode + (_headers != null? _headers.hashCode() : 0);
-    hashCode = 31 * hashCode + (_baseUriTemplate != null? _baseUriTemplate.hashCode() : 0);
-    hashCode = 31 * hashCode + (_pathKeys != null? _pathKeys.hashCode() : 0);
+    hashCode = 31 * hashCode + (_inputRecord != null ? _inputRecord.hashCode() : 0);
+    hashCode = 31 * hashCode + (_headers != null ? _headers.hashCode() : 0);
+    hashCode = 31 * hashCode + (_baseUriTemplate != null ? _baseUriTemplate.hashCode() : 0);
+    hashCode = 31 * hashCode + (_pathKeys != null ? _pathKeys.hashCode() : 0);
     hashCode = 31 * hashCode + (_resourceSpec != null ? _resourceSpec.hashCode() : 0);
     hashCode = 31 * hashCode + (_queryParams != null ? _queryParams.hashCode() : 0);
     hashCode = 31 * hashCode + (_methodName != null ? _methodName.hashCode() : 0);
     hashCode = 31 * hashCode + (_requestOptions != null ? _requestOptions.hashCode() : 0);
+    hashCode = 31 * hashCode + (_streamingAttachments != null ? _streamingAttachments.hashCode() : 0);
+    hashCode = 31 * hashCode + (_cookies != null ? _cookies.hashCode() : 0);
     return hashCode;
   }
 
@@ -376,6 +473,12 @@ public class Request<T>
     sb.append(", _pathKeys=").append(_pathKeys);
     sb.append(", _queryParams=").append(_queryParams);
     sb.append(", _requestOptions=").append(_requestOptions);
+    sb.append(", _cookies=").append(_cookies);
+    if (_streamingAttachments != null)
+    {
+      sb.append(", _streamingDataSources=");
+      sb.append("(size=").append(_streamingAttachments.size()).append(")");
+    }
     sb.append('}');
     return sb.toString();
   }

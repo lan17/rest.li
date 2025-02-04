@@ -16,16 +16,6 @@
 
 package com.linkedin.restli.example.impl;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-
-import javax.inject.Inject;
-import javax.inject.Named;
-
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.HttpStatus;
 import com.linkedin.restli.example.AlbumEntry;
@@ -37,9 +27,24 @@ import com.linkedin.restli.server.annotations.ActionParam;
 import com.linkedin.restli.server.annotations.Finder;
 import com.linkedin.restli.server.annotations.Key;
 import com.linkedin.restli.server.annotations.Optional;
+import com.linkedin.restli.server.annotations.ParamError;
 import com.linkedin.restli.server.annotations.QueryParam;
 import com.linkedin.restli.server.annotations.RestLiAssociation;
+import com.linkedin.restli.server.annotations.ServiceErrorDef;
+import com.linkedin.restli.server.annotations.ServiceErrors;
+import com.linkedin.restli.server.annotations.SuccessResponse;
 import com.linkedin.restli.server.resources.AssociationResourceTemplate;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import javax.inject.Inject;
+import javax.inject.Named;
+
+import static com.linkedin.restli.example.impl.AlbumServiceError.Codes.*;
+
 
 /**
  * Many-many association between photos and albums.
@@ -57,23 +62,28 @@ import com.linkedin.restli.server.resources.AssociationResourceTemplate;
   name = "albumEntry",
   namespace = "com.linkedin.restli.example.photos",
   assocKeys = {
+    // The type of the association key should usually be the same as the type of the
+    // collection key which is being referenced.For example, if albumId was declared as an
+    // Integer in the collection, we would use the following:
+    // assocKeys = {
+    //   @Key(name = "photoId", type = Long.class),
+    //   @Key(name = "albumId", type = Integer.class)
+    // }
     @Key(name = "photoId", type = Long.class),
     @Key(name = "albumId", type = Long.class)
   }
 )
-// The type of the association key should usually be the same as the type of the
-// collection key which is being referenced.For example, if albumId was declared as an
-// Integer in the collection, we would use the following:
-// assocKeys = {
-//   @Key(name = "photoId", type = Long.class),
-//   @Key(name = "albumId", type = Integer.class)
-// }
+@ServiceErrorDef(AlbumServiceError.class)
+@ServiceErrors(BAD_REQUEST)
 public class AlbumEntryResource extends AssociationResourceTemplate<AlbumEntry>
 {
   /**
    * Retrieve the photo's album entry
    */
   @Override
+  @SuccessResponse(statuses = { HttpStatus.S_200_OK })
+  @ServiceErrors(ILLEGAL_ALBUM)
+  @ParamError(code = INVALID_ID, parameterNames = { "albumEntryId" })
   public AlbumEntry get(CompoundKey key)
   {
     return _db.getData().get(key);
@@ -82,7 +92,7 @@ public class AlbumEntryResource extends AssociationResourceTemplate<AlbumEntry>
   @Override
   public Map<CompoundKey, AlbumEntry> batchGet(Set<CompoundKey> ids)
   {
-    Map<CompoundKey, AlbumEntry> result = new HashMap<CompoundKey, AlbumEntry>();
+    Map<CompoundKey, AlbumEntry> result = new HashMap<>();
     for (CompoundKey key : ids)
       result.put(key, get(key));
     return result;
@@ -93,6 +103,9 @@ public class AlbumEntryResource extends AssociationResourceTemplate<AlbumEntry>
    * If a matching pair of IDs already exists, this changes the add date.
    */
   @Override
+  @SuccessResponse(statuses = { HttpStatus.S_204_NO_CONTENT })
+  @ServiceErrors(INVALID_PERMISSIONS)
+  @ParamError(code = INVALID_ID, parameterNames = { "albumEntryId" })
   public UpdateResponse update(CompoundKey key, AlbumEntry entity)
   {
     long photoId = (Long) key.getPart("photoId");
@@ -122,6 +135,9 @@ public class AlbumEntryResource extends AssociationResourceTemplate<AlbumEntry>
    * Remove the specified photo from the specified album
    */
   @Override
+  @SuccessResponse(statuses = { HttpStatus.S_204_NO_CONTENT, HttpStatus.S_200_OK })
+  @ServiceErrors(INVALID_PERMISSIONS)
+  @ParamError(code = INVALID_ID, parameterNames = { "albumEntryId" })
   public UpdateResponse delete(CompoundKey key)
   {
     final boolean isRemoved = (_db.getData().remove(key) != null);
@@ -188,10 +204,12 @@ public class AlbumEntryResource extends AssociationResourceTemplate<AlbumEntry>
   // if called on wrong resource level, HTTP 400 is responded
   /**
    * Delete all entries in the db with matching album/photo IDs. If either albumId or photoId
-   * params are not supplied they are treated as a wildcard. 
-   * 
+   * params are not supplied they are treated as a wildcard.
+   *
    */
   @Action(name = "purge", resourceLevel = ResourceLevel.COLLECTION)
+  @ServiceErrors(INVALID_PERMISSIONS)
+  @ParamError(code = INVALID_ID, parameterNames = { "albumId", "photoId" })
   public int purge(@Optional @ActionParam("albumId") Long albumId,
                    @Optional @ActionParam("photoId") Long photoId)
   {
@@ -201,16 +219,19 @@ public class AlbumEntryResource extends AssociationResourceTemplate<AlbumEntry>
   /**
    * Find all entries matching the given album and photo IDs. <code>null</code> is treated
    * as a wildcard.
-   * 
-   * @param albumId provides the id to match for albums to match,  if not provided, it is treated as a wildcard
-   * @param photoId provides the id to match for photos to match,  if not provided, it is treated as a wildcard
+   *
+   * @param albumId provides the id to match for albums to match, if not provided, it is treated as a wildcard
+   * @param photoId provides the id to match for photos to match, if not provided, it is treated as a wildcard
    * @return a list of {@link AlbumEntry} matching the  given parameters
    */
   @Finder("search")
+  @SuccessResponse(statuses = { HttpStatus.S_200_OK })
+  @ParamError(code = INVALID_ID, parameterNames = { "albumId", "photoId" })
+  @ParamError(code = UNSEARCHABLE_ALBUM_ID, parameterNames = { "albumId" })
   public List<AlbumEntry> search(@Optional @QueryParam("albumId") Long albumId,
                                  @Optional @QueryParam("photoId") Long photoId)
   {
-    List<AlbumEntry> result = new ArrayList<AlbumEntry>();
+    List<AlbumEntry> result = new ArrayList<>();
     for (Map.Entry<CompoundKey, AlbumEntry> entry : _db.getData().entrySet())
     {
       CompoundKey key = entry.getKey();

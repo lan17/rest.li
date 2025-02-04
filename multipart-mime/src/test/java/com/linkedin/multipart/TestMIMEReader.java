@@ -22,6 +22,7 @@ import com.linkedin.multipart.exceptions.SinglePartFinishedException;
 import com.linkedin.multipart.exceptions.MultiPartReaderFinishedException;
 import com.linkedin.r2.filter.R2Constants;
 
+import com.linkedin.test.util.retry.SingleRetry;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -90,7 +91,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
     executeRequestAndAssert(trimTrailingCRLF(requestPayload), chunkSize, multiPartMimeBody);
   }
 
-  @Test(dataProvider = "eachSingleBodyDataSource")
+  @Test(dataProvider = "eachSingleBodyDataSource", retryAnalyzer = SingleRetry.class)
   public void testEachSingleBodyDataSourceMultipleTimes(final int chunkSize, final MimeBodyPart bodyPart)
       throws Exception
   {
@@ -112,7 +113,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
   @DataProvider(name = "multipleNormalBodiesDataSource")
   public Object[][] multipleNormalBodiesDataSource() throws Exception
   {
-    final List<MimeBodyPart> bodyPartList = new ArrayList<MimeBodyPart>();
+    final List<MimeBodyPart> bodyPartList = new ArrayList<>();
     bodyPartList.add(LARGE_DATA_SOURCE);
     bodyPartList.add(SMALL_DATA_SOURCE);
     bodyPartList.add(BODY_LESS_BODY);
@@ -168,7 +169,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
   @DataProvider(name = "multipleAbnormalBodies")
   public Object[][] multipleAbnormalBodies() throws Exception
   {
-    final List<MimeBodyPart> bodyPartList = new ArrayList<MimeBodyPart>();
+    final List<MimeBodyPart> bodyPartList = new ArrayList<>();
     bodyPartList.add(HEADER_LESS_BODY);
     bodyPartList.add(BODY_LESS_BODY);
     bodyPartList.add(PURELY_EMPTY_BODY);
@@ -201,7 +202,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
   @DataProvider(name = "allTypesOfBodiesDataSource")
   public Object[][] allTypesOfBodiesDataSource() throws Exception
   {
-    final List<MimeBodyPart> bodyPartList = new ArrayList<MimeBodyPart>();
+    final List<MimeBodyPart> bodyPartList = new ArrayList<>();
     bodyPartList.add(SMALL_DATA_SOURCE);
     bodyPartList.add(LARGE_DATA_SOURCE);
     bodyPartList.add(HEADER_LESS_BODY);
@@ -239,7 +240,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
   @DataProvider(name = "preambleEpilogueDataSource")
   public Object[][] preambleEpilogueDataSource() throws Exception
   {
-    final List<MimeBodyPart> bodyPartList = new ArrayList<MimeBodyPart>();
+    final List<MimeBodyPart> bodyPartList = new ArrayList<>();
     bodyPartList.add(SMALL_DATA_SOURCE);
     bodyPartList.add(LARGE_DATA_SOURCE);
     bodyPartList.add(HEADER_LESS_BODY);
@@ -353,7 +354,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
     //Verify this is unusable.
     try
     {
-      _reader.abandonAllParts();
+      _reader.drainAllParts();
       Assert.fail();
     }
     catch (MultiPartReaderFinishedException multiPartReaderFinishedException)
@@ -371,7 +372,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
       final BodyPart currentExpectedPart = mimeMultipart.getBodyPart(i);
 
       //Construct expected headers and verify they match
-      final Map<String, String> expectedHeaders = new HashMap<String, String>();
+      final Map<String, String> expectedHeaders = new HashMap<>();
       @SuppressWarnings("unchecked")
       final Enumeration<Header> allHeaders = currentExpectedPart.getAllHeaders();
       while (allHeaders.hasMoreElements())
@@ -444,7 +445,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
       //Verify that upon finishing that this is reader is no longer usable.
       try
       {
-        _singlePartMIMEReader.abandonPart();
+        _singlePartMIMEReader.drainPart();
         Assert.fail();
       }
       catch (SinglePartFinishedException singlePartFinishedException)
@@ -456,10 +457,10 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
 
     //Delegate to the top level for now for these two
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       //This will end up failing the test.
-      _topLevelCallback.onAbandoned();
+      _topLevelCallback.onDrainComplete();
     }
 
     @Override
@@ -472,7 +473,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
   private static class MultiPartMIMEReaderCallbackImpl implements MultiPartMIMEReaderCallback
   {
     final CountDownLatch _latch;
-    final List<SinglePartMIMEReaderCallbackImpl> _singlePartMIMEReaderCallbacks = new ArrayList<SinglePartMIMEReaderCallbackImpl>();
+    final List<SinglePartMIMEReaderCallbackImpl> _singlePartMIMEReaderCallbacks = new ArrayList<>();
 
     MultiPartMIMEReaderCallbackImpl(final CountDownLatch latch)
     {
@@ -496,7 +497,7 @@ public class TestMIMEReader extends AbstractMIMEUnitTest
     }
 
     @Override
-    public void onAbandoned()
+    public void onDrainComplete()
     {
       Assert.fail();
     }

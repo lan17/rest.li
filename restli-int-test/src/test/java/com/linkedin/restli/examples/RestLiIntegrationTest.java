@@ -14,10 +14,6 @@
    limitations under the License.
 */
 
-/**
- * $Id: $
- */
-
 package com.linkedin.restli.examples;
 
 import com.linkedin.common.callback.FutureCallback;
@@ -34,9 +30,9 @@ import com.linkedin.r2.transport.common.bridge.client.TransportClientAdapter;
 import com.linkedin.r2.transport.http.client.HttpClientFactory;
 import com.linkedin.r2.transport.http.server.HttpServer;
 import com.linkedin.restli.client.RestClient;
-import com.linkedin.restli.server.filter.RequestFilter;
-import com.linkedin.restli.server.filter.ResponseFilter;
-
+import com.linkedin.restli.client.util.RestLiClientConfig;
+import com.linkedin.restli.server.RestLiConfig;
+import com.linkedin.restli.server.filter.Filter;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -77,6 +73,11 @@ public class RestLiIntegrationTest
 
   public void init(boolean async) throws IOException
   {
+    init(async, new RestLiConfig());
+  }
+
+  public void init(boolean async, RestLiConfig restLiConfig) throws IOException
+  {
     initSchedulerAndEngine();
     int asyncTimeout = async ? 5000 : -1;
     _server =
@@ -84,19 +85,36 @@ public class RestLiIntegrationTest
                                          RestLiIntTestServer.DEFAULT_PORT,
                                          RestLiIntTestServer.supportedCompression,
                                          async,
-                                         asyncTimeout);
+                                         asyncTimeout,
+                                         restLiConfig);
     _server.start();
     initClient(URI_PREFIX);
   }
 
-  public void init(List<? extends RequestFilter> requestFilters, List<? extends ResponseFilter> responseFilters) throws IOException
+  public void init(boolean async, RestLiConfig restLiConfig, Map<String, String> transportProperties) throws IOException
   {
-    final FilterChain fc = FilterChains.empty().addLastRest(new ServerCompressionFilter(RestLiIntTestServer.supportedCompression, new CompressionConfig(0)))
-        .addLastRest(new SimpleLoggingFilter());
-    init(requestFilters, responseFilters, fc, false);
+    initSchedulerAndEngine();
+    int asyncTimeout = async ? 5000 : -1;
+    _server =
+        RestLiIntTestServer.createServer(_engine,
+            RestLiIntTestServer.DEFAULT_PORT,
+            RestLiIntTestServer.supportedCompression,
+            async,
+            asyncTimeout,
+            restLiConfig);
+    _server.start();
+    initClient(transportProperties);
   }
 
-  public void init(List<? extends RequestFilter> requestFilters, List<? extends ResponseFilter> responseFilters,
+  public void init(List<? extends Filter> filters) throws IOException
+  {
+    final FilterChain fc = FilterChains.empty()
+        .addLastRest(new ServerCompressionFilter(RestLiIntTestServer.supportedCompression, new CompressionConfig(0)))
+        .addLastRest(new SimpleLoggingFilter());
+    init(filters, fc, false);
+  }
+
+  public void init(List<? extends Filter> filters,
                    final FilterChain filterChain, boolean includeNoCompression) throws IOException
   {
     initSchedulerAndEngine();
@@ -105,9 +123,9 @@ public class RestLiIntegrationTest
                                          RestLiIntTestServer.FILTERS_PORT,
                                          false,
                                          -1,
-                                         requestFilters,
-                                         responseFilters,
-                                         filterChain);
+                                         filters,
+                                         filterChain,
+                                         forceUseStreamServer());
     _serverWithFilters.start();
     // If requested, also start no compression server
     if (includeNoCompression)
@@ -127,12 +145,26 @@ public class RestLiIntegrationTest
     _engine = new EngineBuilder().setTaskExecutor(_scheduler).setTimerScheduler(_scheduler).build();
   }
 
+  private void initClient(Map<String, String> transportProperties)
+  {
+    initClient(URI_PREFIX, transportProperties);
+  }
+
   private void initClient(String uriPrefix)
   {
-    _clientFactory = new HttpClientFactory();
-    _transportClients = new ArrayList<Client>();
-    Client client = newTransportClient(Collections.<String, String>emptyMap());
-    _restClient = new RestClient(client, uriPrefix);
+    final String httpRequestTimeout = System.getProperty("test.httpRequestTimeout", "10000");
+    Map<String, String> transportProperties = Collections.singletonMap(HttpClientFactory.HTTP_REQUEST_TIMEOUT, httpRequestTimeout);
+    initClient(uriPrefix, transportProperties);
+  }
+
+  private void initClient(String uriPrefix, Map<String, String> transportProperties)
+  {
+    _clientFactory = new HttpClientFactory.Builder().setUsePipelineV2(false).build();
+    _transportClients = new ArrayList<>();
+    Client client = newTransportClient(transportProperties);
+    RestLiClientConfig restLiClientConfig = new RestLiClientConfig();
+    restLiClientConfig.setUseStreaming(Boolean.parseBoolean(System.getProperty("test.useStreamCodecClient", "false")));
+    _restClient = new RestClient(client, uriPrefix, restLiClientConfig);
   }
 
   public void shutdown() throws Exception
@@ -157,15 +189,18 @@ public class RestLiIntegrationTest
     {
       _scheduler.shutdownNow();
     }
-    for (Client client : _transportClients)
+    if (_transportClients != null)
     {
-      FutureCallback<None> callback = new FutureCallback<None>();
-      client.shutdown(callback);
-      callback.get();
+      for (Client client : _transportClients)
+      {
+        FutureCallback<None> callback = new FutureCallback<>();
+        client.shutdown(callback);
+        callback.get();
+      }
     }
     if (_clientFactory != null)
     {
-      FutureCallback<None> callback = new FutureCallback<None>();
+      FutureCallback<None> callback = new FutureCallback<>();
       _clientFactory.shutdown(callback);
       callback.get();
     }
@@ -204,5 +239,17 @@ public class RestLiIntegrationTest
     Client client = new TransportClientAdapter(_clientFactory.getClient(properties));
     _transportClients.add(client);
     return client;
+  }
+
+  /**
+   * This flag sets whether or not the server that is deployed is a {@link com.linkedin.r2.transport.common.StreamRequestHandler}
+   * or a {@link com.linkedin.r2.transport.common.RestRequestHandler}.
+   *
+   * Subclasses may return true for creating a server that uses {@link com.linkedin.r2.transport.common.StreamRequestHandler}.
+   * The default of false here will create a server that uses {@link com.linkedin.r2.transport.common.RestRequestHandler}.
+   */
+  protected boolean forceUseStreamServer()
+  {
+    return false;
   }
 }

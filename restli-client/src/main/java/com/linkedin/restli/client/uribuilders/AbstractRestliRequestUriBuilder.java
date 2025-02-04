@@ -16,7 +16,8 @@
 
 package com.linkedin.restli.client.uribuilders;
 
-
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.linkedin.data.DataMap;
 import com.linkedin.jersey.api.uri.UriBuilder;
 import com.linkedin.jersey.api.uri.UriComponent;
@@ -25,10 +26,7 @@ import com.linkedin.restli.client.Request;
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.ProtocolVersion;
 import com.linkedin.restli.internal.client.QueryParamsUtil;
-import com.linkedin.restli.internal.common.AllProtocolVersions;
-import com.linkedin.restli.internal.common.QueryParamsDataMap;
 import com.linkedin.restli.internal.common.URIParamUtils;
-
 import java.net.URI;
 
 
@@ -39,6 +37,9 @@ import java.net.URI;
  */
 abstract class AbstractRestliRequestUriBuilder<R extends Request<?>> implements RestliUriBuilder
 {
+  private static final Cache<String, URI> URI_TEMPLATE_STRING_TO_URI_CACHE = Caffeine.newBuilder()
+      .maximumSize(1000)
+      .build();
   protected final R _request;
   protected final ProtocolVersion _version;
   protected final CompoundKey _assocKey; // can be null
@@ -76,7 +77,7 @@ abstract class AbstractRestliRequestUriBuilder<R extends Request<?>> implements 
 
   private String bindPathKeys()
   {
-    UriTemplate template = new UriTemplate(_request.getBaseUriTemplate());
+    UriTemplate template = _request.getUriTemplate();
     return template.createURI(URIParamUtils.encodePathKeysForUri(_request.getPathKeys(), _version));
   }
 
@@ -97,37 +98,55 @@ abstract class AbstractRestliRequestUriBuilder<R extends Request<?>> implements 
   {
     DataMap params = QueryParamsUtil.convertToDataMap(_request.getQueryParamsObjects(),
                                                       _request.getQueryParamClasses(),
-                                                      _version);
-    if (_version.compareTo(AllProtocolVersions.RESTLI_PROTOCOL_2_0_0.getProtocolVersion()) >= 0)
-    {
-      URIParamUtils.addSortedParams(b, params);
-    }
-    else
-    {
-      QueryParamsDataMap.addSortedParams(b, params);
-    }
+                                                      _version,
+                                                      _request.getRequestOptions().getProjectionDataMapSerializer());
+    URIParamUtils.addSortedParams(b, params, _version);
   }
 
   protected final void appendAssocKeys(UriBuilder uriBuilder)
   {
-    if (_assocKey == null)
-    {
-      throw new IllegalArgumentException("_assocKey is null");
-    }
-    if (_assocKey.getNumParts() != 0)
+    if (_assocKey != null && _assocKey.getNumParts() != 0)
     {
       uriBuilder.path(URIParamUtils.encodeKeyForUri(_assocKey, UriComponent.Type.PATH_SEGMENT, _version));
     }
   }
 
   @Override
-  public URI buildBaseUri()
+  public final URI buildBaseUri()
   {
     return URI.create(bindPathKeys());
   }
 
-  public URI buildBaseUriWithPrefix()
+  @Override
+  public final URI buildWithoutQueryParams()
   {
-    return URI.create(addPrefix(bindPathKeys()));
+    return getUriBuilderWithoutQueryParams().build();
+  }
+
+  @Override
+  public final URI build()
+  {
+    UriBuilder b = getUriBuilderWithoutQueryParams();
+    appendQueryParams(b);
+    return b.build();
+  }
+
+  /**
+   * @return The URI builder (without query params) for this request.
+   */
+  protected UriBuilder getUriBuilderWithoutQueryParams()
+  {
+    final URI uri;
+    if (_request.getPathKeys().isEmpty())
+    {
+      // if path keys are empty we don't need to bind the path keys, we can directly use the request base uri template.
+      uri = URI_TEMPLATE_STRING_TO_URI_CACHE.get(addPrefix(_request.getBaseUriTemplate()), URI::create);
+    }
+    else
+    {
+      uri = URI.create(addPrefix(bindPathKeys()));
+    }
+
+    return UriBuilder.fromUri(uri);
   }
 }

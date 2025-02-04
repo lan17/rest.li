@@ -33,7 +33,7 @@ import com.linkedin.data.template.RecordTemplate;
 
 public class PatchRequest<T> extends RecordTemplate
 {
-  private static final String PATCH="patch";
+  public static final String PATCH = "patch";
   private static final String SCHEMA_STRING = "{\n" +
       "  \"type\" : \"record\",\n" +
       "  \"name\" : \"PatchRequest\",\n" +
@@ -69,9 +69,20 @@ public class PatchRequest<T> extends RecordTemplate
    */
   public static <T> PatchRequest<T> createFromPatchDocument(DataMap patchDocument)
   {
-    PatchRequest<T> result = new PatchRequest<T>();
+    PatchRequest<T> result = new PatchRequest<>();
     result.data().put(PATCH, patchDocument);
     return result;
+  }
+
+  /**
+   * Initialize and return an empty PatchRequest.
+   *
+   * @param <T> the type of the object that the patchRequest will patch
+   * @return an empty PatchRequest
+   */
+  public static <T> PatchRequest<T> createFromEmptyPatchDocument()
+  {
+    return createFromPatchDocument(new DataMap());
   }
 
   /**

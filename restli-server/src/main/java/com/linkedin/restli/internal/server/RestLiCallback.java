@@ -17,118 +17,79 @@
 package com.linkedin.restli.internal.server;
 
 
-import com.linkedin.r2.message.rest.RestRequest;
-import com.linkedin.r2.message.rest.RestResponse;
-import com.linkedin.restli.internal.server.filter.RestLiResponseFilterChain;
-import com.linkedin.restli.internal.server.methods.response.PartialRestResponse;
-import com.linkedin.restli.server.RequestExecutionCallback;
-import com.linkedin.restli.server.RequestExecutionReport;
-import com.linkedin.restli.server.RestLiResponseData;
-import com.linkedin.restli.server.RestLiServiceException;
+import com.linkedin.common.callback.Callback;
+import com.linkedin.r2.message.RequestContext;
+import com.linkedin.r2.message.timing.FrameworkTimingKeys;
+import com.linkedin.r2.message.timing.TimingContextUtil;
+import com.linkedin.restli.internal.server.filter.RestLiFilterChain;
+import com.linkedin.restli.internal.server.filter.RestLiFilterResponseContextFactory;
 import com.linkedin.restli.server.filter.FilterRequestContext;
 import com.linkedin.restli.server.filter.FilterResponseContext;
-import com.linkedin.restli.server.filter.ResponseFilter;
-import com.linkedin.restli.internal.server.filter.*;
-
-import java.util.ArrayList;
-import java.util.List;
 
 
-public class RestLiCallback<T> implements RequestExecutionCallback<T>
+/**
+ * Used for callbacks from RestLiMethodInvoker. When the REST method completes its execution, it invokes RestLiCallback,
+ * which sets off the filter chain responses and eventually a response is sent to the client.
+ */
+public class RestLiCallback implements Callback<Object>
 {
-  private final RoutingResult _method;
-  private final RestLiResponseHandler _responseHandler;
-  private final RequestExecutionCallback<RestResponse> _callback;
-  private final RestRequest _request;
-  private final List<ResponseFilter> _responseFilters;
+  private final RestLiFilterChain _filterChain;
   private final FilterRequestContext _filterRequestContext;
-  private final RestLiResponseFilterContextFactory _responseFilterContextFactory;
+  private final RestLiFilterResponseContextFactory _filterResponseContextFactory;
+  private final RequestContext _requestContext;
 
-  public RestLiCallback(final RestRequest request,
-                        final RoutingResult method,
-                        final RestLiResponseHandler responseHandler,
-                        final RequestExecutionCallback<RestResponse> callback,
-                        final List<ResponseFilter> responseFilters,
-                        final FilterRequestContext filterRequestContext)
+  public RestLiCallback(final FilterRequestContext filterRequestContext,
+                        final RestLiFilterResponseContextFactory filterResponseContextFactory,
+                        final RestLiFilterChain filterChain)
   {
-    _request = request;
-    _method = method;
-    _responseHandler = responseHandler;
-    _callback = callback;
-    _responseFilterContextFactory = new RestLiResponseFilterContextFactory(_request, _method, _responseHandler);
-    if (responseFilters != null)
-    {
-      _responseFilters = responseFilters;
-    }
-    else
-    {
-      _responseFilters = new ArrayList<ResponseFilter>();
-    }
+    _filterResponseContextFactory = filterResponseContextFactory;
+    _filterChain = filterChain;
     _filterRequestContext = filterRequestContext;
+    _requestContext = filterResponseContextFactory.getRequestContext();
   }
 
-  @Override
-  public void onSuccess(final T result, RequestExecutionReport executionReport)
+  public void onSuccess(final Object result)
   {
+    markPreTimings();
     final FilterResponseContext responseContext;
     try
     {
-      responseContext = _responseFilterContextFactory.fromResult(result);
+      responseContext = _filterResponseContextFactory.fromResult(result);
     }
     catch (Exception e)
     {
       // Invoke the onError method if we run into any exception while creating the response context from result.
-      onError(e, executionReport);
+      // Note that due to the fact we are in onSuccess(), we assume the application code has absorbed, or is in the
+      // process of absorbing any request attachments present.
+      onError(e);
       return;
     }
-    // Now kick off the response filters.
-    RestLiResponseFilterChain restLiResponseFilterChain = new RestLiResponseFilterChain(_responseFilters,
-                                                                                        _responseFilterContextFactory,
-                                                                                        new RestLiResponseFilterChainCallbackImpl(
-                                                                                            executionReport));
-    restLiResponseFilterChain.onResponse(_filterRequestContext, responseContext);
+    markPostTimings();
+
+    // Now kick off the responses in the filter chain. Same note as above; we assume that the application code has
+    // absorbed any request attachments present in the request.
+    _filterChain.onResponse(_filterRequestContext, responseContext);
   }
 
-  @Override
-  public void onError(final Throwable e, RequestExecutionReport executionReport)
+  public void onError(final Throwable e)
   {
-    final FilterResponseContext responseContext = _responseFilterContextFactory.fromThrowable(e);
-    // Now kick off the response filters.
-    RestLiResponseFilterChain restLiResponseFilterChain = new RestLiResponseFilterChain(_responseFilters,
-                                                                                        _responseFilterContextFactory,
-                                                                                        new RestLiResponseFilterChainCallbackImpl(
-                                                                                            executionReport));
-    restLiResponseFilterChain.onResponse(_filterRequestContext, responseContext);
+    markPreTimings();
+    final FilterResponseContext responseContext = _filterResponseContextFactory.fromThrowable(e);
+    markPostTimings();
+
+    // Now kick off the response filters with error
+    _filterChain.onError(e, _filterRequestContext, responseContext);
   }
 
-  /**
-   * Concrete implementation of {@link RestLiResponseFilterChainCallback}.
-   */
-  private class RestLiResponseFilterChainCallbackImpl implements RestLiResponseFilterChainCallback
+  private void markPreTimings()
   {
-    private  final RequestExecutionReport _executionReport;
+    TimingContextUtil.endTiming(_requestContext, FrameworkTimingKeys.RESOURCE.key());
+    TimingContextUtil.beginTiming(_requestContext, FrameworkTimingKeys.SERVER_RESPONSE.key());
+    TimingContextUtil.beginTiming(_requestContext, FrameworkTimingKeys.SERVER_RESPONSE_RESTLI.key());
+  }
 
-    public RestLiResponseFilterChainCallbackImpl(final RequestExecutionReport executionReport)
-    {
-      _executionReport = executionReport;
-    }
-
-    @Override
-    public void onCompletion(final RestLiResponseData responseData)
-    {
-      final PartialRestResponse response = _responseHandler.buildPartialResponse(_method, responseData);
-      if (responseData.isErrorResponse())
-      {
-        // If the updated response from the filter is an error response, then call onError on the underlying callback.
-        RestLiServiceException e = responseData.getServiceException();
-        // Invoke onError on the R2 callback since we received an exception from the filters.
-        _callback.onError(_responseHandler.buildRestException(e, response), _executionReport);
-      }
-      else
-      {
-        // Invoke onSuccess on the underlying callback.
-        _callback.onSuccess(_responseHandler.buildResponse(_method, response), _executionReport);
-      }
-    }
+  private void markPostTimings()
+  {
+    TimingContextUtil.beginTiming(_requestContext, FrameworkTimingKeys.SERVER_RESPONSE_RESTLI_FILTER_CHAIN.key());
   }
 }

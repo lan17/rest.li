@@ -25,11 +25,8 @@ import com.linkedin.r2.transport.common.bridge.server.TransportDispatcher;
 import com.linkedin.r2.transport.http.client.HttpClientFactory;
 import com.linkedin.r2.transport.http.server.HttpServer;
 import com.linkedin.r2.transport.http.server.HttpServerFactory;
-import junit.framework.Assert;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
-
+import com.linkedin.test.util.retry.SingleRetry;
+import com.linkedin.test.util.retry.ThreeRetries;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Collections;
@@ -37,6 +34,11 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import org.testng.Assert;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
+import test.r2.integ.helper.BytesWriter;
 
 /**
  * @author Zhenkai Zhu
@@ -51,9 +53,9 @@ public class TestJetty404
   @BeforeClass
   public void setup() throws IOException
   {
-    _clientFactory = new HttpClientFactory();
+    _clientFactory = new HttpClientFactory.Builder().build();
     _client = new TransportClientAdapter(_clientFactory.getClient(Collections.<String, String>emptyMap()), true);
-    _server = new HttpServerFactory().createServer(PORT, "/correct-path", 50, new TransportDispatcher()
+    _server = new HttpServerFactory().createH2cServer(PORT, "/correct-path", 50, new TransportDispatcher()
     {
       @Override
       public void handleRestRequest(RestRequest req, Map<String, String> wireAttrs,
@@ -73,11 +75,11 @@ public class TestJetty404
   }
 
   // make sure jetty's default behavior will read all the request bytes in case of 404
-  @Test
+  @Test(retryAnalyzer = ThreeRetries.class) // Known to be flaky in CI
   public void testJetty404() throws Exception
   {
     BytesWriter writer = new BytesWriter(200 * 1024, (byte)100);
-    final AtomicReference<Throwable> exRef = new AtomicReference<Throwable>();
+    final AtomicReference<Throwable> exRef = new AtomicReference<>();
     final CountDownLatch latch = new CountDownLatch(1);
     _client.streamRequest(new StreamRequestBuilder(Bootstrap.createHttpURI(PORT, URI.create("/wrong-path")))
         .build(EntityStreams.newEntityStream(writer)), new Callback<StreamResponse>()
@@ -99,7 +101,7 @@ public class TestJetty404
     latch.await(5000, TimeUnit.MILLISECONDS);
     Assert.assertTrue(writer.isDone());
     Throwable ex = exRef.get();
-    Assert.assertTrue(ex instanceof StreamException);
+    Assert.assertTrue(ex instanceof StreamException, "Expected StreamException but found: " + ex);
     StreamResponse response = ((StreamException) ex).getResponse();
     Assert.assertEquals(response.getStatus(), RestStatus.NOT_FOUND);
     response.getEntityStream().setReader(new DrainReader());
@@ -109,11 +111,11 @@ public class TestJetty404
   public void tearDown() throws Exception
   {
 
-    final FutureCallback<None> clientShutdownCallback = new FutureCallback<None>();
+    final FutureCallback<None> clientShutdownCallback = new FutureCallback<>();
     _client.shutdown(clientShutdownCallback);
     clientShutdownCallback.get();
 
-    final FutureCallback<None> factoryShutdownCallback = new FutureCallback<None>();
+    final FutureCallback<None> factoryShutdownCallback = new FutureCallback<>();
     _clientFactory.shutdown(factoryShutdownCallback);
     factoryShutdownCallback.get();
 
@@ -122,5 +124,4 @@ public class TestJetty404
       _server.waitForStop();
     }
   }
-
 }

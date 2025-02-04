@@ -16,18 +16,16 @@
 
 package com.linkedin.restli.server;
 
+
+import com.linkedin.restli.internal.server.model.ResourceModel;
+
 import java.util.Map;
 
-import com.linkedin.r2.message.rest.RestRequest;
-import com.linkedin.r2.message.rest.RestResponse;
-import com.linkedin.restli.internal.server.model.ResourceModel;
 
 /**
  * @author Keren Jin
  */
-public interface RestLiDocumentationRequestHandler
+public interface RestLiDocumentationRequestHandler extends NonResourceRequestHandler
 {
   void initialize(RestLiConfig config, Map<String, ResourceModel> rootResources);
-  boolean isDocumentationRequest(RestRequest request);
-  RestResponse processDocumentationRequest(RestRequest request);
 }

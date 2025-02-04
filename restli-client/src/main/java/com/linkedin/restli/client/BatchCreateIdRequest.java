@@ -37,7 +37,7 @@ import java.util.Map;
  */
 public class BatchCreateIdRequest<K,T extends RecordTemplate> extends Request<BatchCreateIdResponse<K>>
 {
-  BatchCreateIdRequest(Map<String, String> headers,
+  public BatchCreateIdRequest(Map<String, String> headers,
                        List<HttpCookie> cookies,
                        BatchCreateIdDecoder<K> decoder,
                        CollectionRequest<T> input,
@@ -46,7 +46,8 @@ public class BatchCreateIdRequest<K,T extends RecordTemplate> extends Request<Ba
                        Map<String, Class<?>> queryParamClasses,
                        String baseUriTemplate,
                        Map<String, Object> pathKeys,
-                       RestliRequestOptions requestOptions)
+                       RestliRequestOptions requestOptions,
+                       List<Object> streamingAttachments)
   {
     super(ResourceMethod.BATCH_CREATE,
           input,
@@ -59,6 +60,7 @@ public class BatchCreateIdRequest<K,T extends RecordTemplate> extends Request<Ba
           null,
           baseUriTemplate,
           pathKeys,
-          requestOptions);
+          requestOptions,
+          streamingAttachments);
   }
 }

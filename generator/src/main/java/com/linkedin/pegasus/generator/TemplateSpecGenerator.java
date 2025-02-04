@@ -21,6 +21,7 @@ import com.linkedin.data.DataMap;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.data.schema.ComplexDataSchema;
 import com.linkedin.data.schema.DataSchema;
+import com.linkedin.data.schema.DataSchemaConstants;
 import com.linkedin.data.schema.DataSchemaLocation;
 import com.linkedin.data.schema.DataSchemaResolver;
 import com.linkedin.data.schema.EnumDataSchema;
@@ -43,16 +44,20 @@ import com.linkedin.pegasus.generator.spec.PrimitiveTemplateSpec;
 import com.linkedin.pegasus.generator.spec.RecordTemplateSpec;
 import com.linkedin.pegasus.generator.spec.TyperefTemplateSpec;
 import com.linkedin.pegasus.generator.spec.UnionTemplateSpec;
+import com.linkedin.util.CustomTypeUtil;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Deque;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
+import java.util.regex.Pattern;
+import javax.annotation.Nonnull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,60 +70,45 @@ import org.slf4j.LoggerFactory;
 public class TemplateSpecGenerator
 {
   private static final Logger _log = LoggerFactory.getLogger(TemplateSpecGenerator.class);
-
-  private static final String CLASS_PROPERTY = "class";
-  private static final String JAVA_PROPERTY = "java";
-  private static final String COERCER_CLASS_PROPERTY = "coercerClass";
   private static final String ARRAY_SUFFIX = "Array";
   private static final String MAP_SUFFIX = "Map";
+  private static final String UNION_SUFFIX = "Union";
+  // Separator to add with the suffix for unnamed types. This should be a character allowed in java type names but not
+  // allowed in pdl identifiers.
+  private static final String CLASS_NAME_SUFFIX_SEPARATOR = "$";
   private static final String[] SPECIAL_SUFFIXES = {ARRAY_SUFFIX, MAP_SUFFIX};
 
-  private final Collection<ClassTemplateSpec> _classTemplateSpecs = new HashSet<ClassTemplateSpec>();
+  private final Collection<ClassTemplateSpec> _classTemplateSpecs = new LinkedHashSet<>();
   /**
    * Map of {@link ClassTemplateSpec} to {@link DataSchemaLocation}.
    */
-  private final Map<ClassTemplateSpec, DataSchemaLocation> _classToDataSchemaLocationMap = new HashMap<ClassTemplateSpec, DataSchemaLocation>();
+  private final Map<ClassTemplateSpec, DataSchemaLocation> _classToDataSchemaLocationMap = new HashMap<>();
   /**
    * Map of Java class name to a {@link DataSchema}.
    */
-  private final Map<String, DataSchema> _classNameToSchemaMap = new HashMap<String, DataSchema>(100);
+  private final Map<String, DataSchema> _classNameToSchemaMap = new HashMap<>(100);
   /**
    * Map of {@link DataSchema} to {@link ClassTemplateSpec}.
    */
-  private final IdentityHashMap<DataSchema, ClassTemplateSpec> _schemaToClassMap = new IdentityHashMap<DataSchema, ClassTemplateSpec>(100);
+  private final IdentityHashMap<DataSchema, ClassTemplateSpec> _schemaToClassMap = new IdentityHashMap<>(100);
   /**
    * Map of {@link DataSchema} to the information about the immediate dereferenced {@link DataSchema} with custom Java class binding.
    */
-  private final Deque<DataSchemaLocation> _locationStack = new ArrayDeque<DataSchemaLocation>();
-  private final Map<DataSchema, CustomInfoSpec> _immediateCustomMap = new IdentityHashMap<DataSchema, CustomInfoSpec>();
+  private final Deque<DataSchemaLocation> _locationStack = new ArrayDeque<>();
+  private final Map<DataSchema, CustomInfoSpec> _immediateCustomMap = new IdentityHashMap<>();
 
   private final DataSchemaResolver _schemaResolver;
   private final String _customTypeLanguage;
   private final String _templatePackageName;
 
   /**
-   * Return Java class name for a {@link NamedDataSchema}.
-   *
-   * @param schema provides the {@link NamedDataSchema}.
-   *
-   * @return the fully qualified Java class name for the provided {@link NamedDataSchema}.
+   * List of regex pattern of schema full names to identify which schema need to skip deprecated fields when generating its spec.
    */
-  public static String classNameForNamedSchema(NamedDataSchema schema)
-  {
-    final StringBuilder sb = new StringBuilder();
-    final String namespace = schema.getNamespace();
-    if (!namespace.isEmpty())
-    {
-      sb.append(namespace);
-      sb.append('.');
-    }
-    sb.append(schema.getName());
-    return sb.toString();
-  }
+  private final List<Pattern> _skipDeprecatedFieldPatterns = new ArrayList<>();
 
   public TemplateSpecGenerator(DataSchemaResolver schemaResolver)
   {
-    this(schemaResolver, JAVA_PROPERTY, DataTemplate.class.getPackage().getName());
+    this(schemaResolver, CustomTypeUtil.JAVA_PROPERTY, DataTemplate.class.getPackage().getName());
   }
 
   public TemplateSpecGenerator(DataSchemaResolver schemaResolver, String customTypeLanguage, String templatePackageName)
@@ -142,7 +132,7 @@ public class TemplateSpecGenerator
   {
     final ClassTemplateSpec spec = ClassTemplateSpec.createFromDataSchema(schema);
     _schemaToClassMap.put(schema, spec);
-    _classNameToSchemaMap.put(spec.getFullName(), schema);
+    _classNameToSchemaMap.put(spec.getBindingName(), schema);
   }
 
   /**
@@ -156,9 +146,31 @@ public class TemplateSpecGenerator
     return result;
   }
 
+  /**
+   * Do not use this deprecated method. If need to skip deprecated field when generating specs, please use setSkipDeprecatedPatterns
+   * and generate(DataSchema schema, DataSchemaLocation location) instead.
+   */
+  @Deprecated
+  public ClassTemplateSpec generate(DataSchema schema, DataSchemaLocation location, boolean skipDeprecatedField)
+  {
+    return generate(schema, location);
+  }
+
   public Collection<ClassTemplateSpec> getGeneratedSpecs()
   {
     return _classTemplateSpecs;
+  }
+
+  /**
+   * Set the regex name patterns for schemas which needs to skip deprecated fields when generating the specs.
+   * For any record schema with a fully-qualified name that matches any of the provided patterns, all its fields
+   * marked as deprecated will be skipped during spec generation.
+   *
+   * @param skipDeprecatedFieldPatterns list of regex name patterns to be set.
+   */
+  public void setSkipDeprecatedFieldPatterns(@Nonnull List<Pattern> skipDeprecatedFieldPatterns) {
+    _skipDeprecatedFieldPatterns.clear();
+    _skipDeprecatedFieldPatterns.addAll(skipDeprecatedFieldPatterns);
   }
 
   /**
@@ -247,7 +259,7 @@ public class TemplateSpecGenerator
   /**
    * Checks if a class name conflict occurs, if it occurs throws {@link IllegalArgumentException}.
    *
-   * @param className provides the Java class name.
+   * @param className provides the template spec class name.
    * @param schema    provides the {@link DataSchema} that would be bound if there is no conflict.
    *
    * @throws IllegalArgumentException
@@ -320,12 +332,12 @@ public class TemplateSpecGenerator
   {
     classTemplateSpec.setLocation(currentLocation().toString());
     _schemaToClassMap.put(schema, classTemplateSpec);
-    _classNameToSchemaMap.put(classTemplateSpec.getFullName(), schema);
+    _classNameToSchemaMap.put(classTemplateSpec.getBindingName(), schema);
     _classToDataSchemaLocationMap.put(classTemplateSpec, currentLocation());
 
     if (schema instanceof NamedDataSchema)
     {
-      checkClassNameForSpecialSuffix(classTemplateSpec.getFullName());
+      checkClassNameForSpecialSuffix(classTemplateSpec.getBindingName());
     }
 
     _classTemplateSpecs.add(classTemplateSpec);
@@ -346,23 +358,16 @@ public class TemplateSpecGenerator
       }
 
       final ClassTemplateSpec found = _schemaToClassMap.get(schema);
+
       schema = typerefSchema.getRef();
-      if (found == null)
+      if (schema.getType() == DataSchema.Type.UNION)
       {
-        if (schema.getType() == DataSchema.Type.UNION)
-        {
-          result = generateUnion((UnionDataSchema) schema, typerefSchema);
-          break;
-        }
-        else
-        {
-          generateTyperef(typerefSchema, originalTyperefSchema);
-        }
-      }
-      else if (schema.getType() == DataSchema.Type.UNION)
-      {
-        result = found;
+        result = (found != null) ? found : generateUnion((UnionDataSchema) schema, typerefSchema);
         break;
+      }
+      else if (found == null)
+      {
+        generateTyperef(typerefSchema, originalTyperefSchema);
       }
     }
 
@@ -406,6 +411,7 @@ public class TemplateSpecGenerator
     }
 
     result.setOriginalTyperefSchema(originalTyperefSchema);
+
     return result;
   }
 
@@ -439,7 +445,7 @@ public class TemplateSpecGenerator
           throw new IllegalArgumentException(schema + " has \"" + customTypeLanguage + "\" property that is not a DataMap");
         }
         final DataMap map = (DataMap) java;
-        final Object custom = map.get(CLASS_PROPERTY);
+        final Object custom = map.get(CustomTypeUtil.CLASS_PROPERTY);
         if (custom != null) {
           if (custom.getClass() != String.class) {
             throw new IllegalArgumentException(schema + " has \"" + customTypeLanguage + "\" property with \"class\" that is not a string");
@@ -453,7 +459,7 @@ public class TemplateSpecGenerator
           }
         }
         // check for coercer class
-        final Object coercerClass = map.get(COERCER_CLASS_PROPERTY);
+        final Object coercerClass = map.get(CustomTypeUtil.COERCER_CLASS_PROPERTY);
         if (coercerClass != null) {
           if (coercerClass.getClass() != String.class) {
             throw new IllegalArgumentException(schema + " has \"" + customTypeLanguage + "\" property with \"coercerClass\" that is not a string");
@@ -515,7 +521,8 @@ public class TemplateSpecGenerator
   {
     pushCurrentLocation(_schemaResolver.nameToDataSchemaLocations().get(schema.getFullName()));
 
-    final String className = classNameForNamedSchema(schema);
+    // make sure no duplicate template spec classname which should be binding name of the schema
+    final String className = schema.getBindingName();
     checkForClassNameConflict(className, schema);
 
     final ClassTemplateSpec templateClass;
@@ -662,6 +669,7 @@ public class TemplateSpecGenerator
 
     final UnionTemplateSpec unionClass = new UnionTemplateSpec(schema);
     unionClass.setNamespace(typerefDataSchema.getNamespace());
+    unionClass.setPackage(typerefDataSchema.getPackage());
     unionClass.setClassName(typerefDataSchema.getName());
     unionClass.setModifiers(ModifierSpec.PUBLIC);
     registerClassTemplateSpec(typerefDataSchema, unionClass);
@@ -680,23 +688,30 @@ public class TemplateSpecGenerator
 
   private UnionTemplateSpec generateUnion(UnionDataSchema schema, UnionTemplateSpec unionClass)
   {
-    final Map<CustomInfoSpec, Object> customInfoMap = new IdentityHashMap<CustomInfoSpec, Object>(schema.getTypes().size() * 2);
+    final Map<CustomInfoSpec, Object> customInfoMap = new IdentityHashMap<>(schema.getMembers().size() * 2);
 
-    for (DataSchema memberType : schema.getTypes())
+    for (UnionDataSchema.Member member: schema.getMembers())
     {
+      DataSchema memberType = member.getType();
+
       final UnionTemplateSpec.Member newMember = new UnionTemplateSpec.Member();
       unionClass.getMembers().add(newMember);
 
       newMember.setSchema(memberType);
+      newMember.setAlias(member.getAlias());
 
       if (memberType.getDereferencedType() != DataSchema.Type.NULL)
       {
         newMember.setClassTemplateSpec(processSchema(memberType, unionClass, memberType.getUnionMemberKey()));
         newMember.setDataClass(determineDataClass(memberType, unionClass, memberType.getUnionMemberKey()));
         final CustomInfoSpec customInfo = getImmediateCustomInfo(memberType);
-        if (customInfo != null && !customInfoMap.containsKey(customInfo))
+        if (customInfo != null)
         {
-          customInfoMap.put(customInfo, null);
+          if (!customInfoMap.containsKey(customInfo))
+          {
+            customInfoMap.put(customInfo, null);
+          }
+
           newMember.setCustomInfo(customInfo);
         }
       }
@@ -709,6 +724,7 @@ public class TemplateSpecGenerator
   {
     final EnumTemplateSpec enumClass = new EnumTemplateSpec(schema);
     enumClass.setNamespace(schema.getNamespace());
+    enumClass.setPackage(schema.getPackage());
     enumClass.setClassName(schema.getName());
     enumClass.setModifiers(ModifierSpec.PUBLIC);
     registerClassTemplateSpec(schema, enumClass);
@@ -719,6 +735,7 @@ public class TemplateSpecGenerator
   {
     final FixedTemplateSpec fixedClass = new FixedTemplateSpec(schema);
     fixedClass.setNamespace(schema.getNamespace());
+    fixedClass.setPackage(schema.getPackage());
     fixedClass.setClassName(schema.getName());
     fixedClass.setModifiers(ModifierSpec.PUBLIC);
     registerClassTemplateSpec(schema, fixedClass);
@@ -728,12 +745,18 @@ public class TemplateSpecGenerator
 
   private TyperefTemplateSpec generateTyperef(TyperefDataSchema schema, TyperefDataSchema originalTyperefSchema)
   {
+    pushCurrentLocation(_schemaResolver.nameToDataSchemaLocations().get(schema.getFullName()));
     final TyperefTemplateSpec typerefClass = new TyperefTemplateSpec(schema);
     typerefClass.setOriginalTyperefSchema(originalTyperefSchema);
     typerefClass.setNamespace(schema.getNamespace());
+    typerefClass.setPackage(schema.getPackage());
     typerefClass.setClassName(schema.getName());
     typerefClass.setModifiers(ModifierSpec.PUBLIC);
     registerClassTemplateSpec(schema, typerefClass);
+
+    final CustomInfoSpec customInfo = getImmediateCustomInfo(schema);
+    typerefClass.setCustomInfo(customInfo);
+    popCurrentLocation();
     return typerefClass;
   }
 
@@ -741,6 +764,7 @@ public class TemplateSpecGenerator
   {
     final RecordTemplateSpec recordClass = new RecordTemplateSpec(schema);
     recordClass.setNamespace(schema.getNamespace());
+    recordClass.setPackage(schema.getPackage());
     recordClass.setClassName(schema.getName());
     recordClass.setModifiers(ModifierSpec.PUBLIC);
     registerClassTemplateSpec(schema, recordClass);
@@ -753,10 +777,15 @@ public class TemplateSpecGenerator
       processSchema(includedSchema, null, null);
     }
 
-    final Map<CustomInfoSpec, Object> customInfoMap = new IdentityHashMap<CustomInfoSpec, Object>(schema.getFields().size() * 2);
+    final Map<CustomInfoSpec, Object> customInfoMap = new IdentityHashMap<>(schema.getFields().size() * 2);
 
+    boolean skipDeprecatedField = shouldSkipDeprecatedFields(schema);
     for (RecordDataSchema.Field field : schema.getFields())
     {
+      // If skipDeprecatedField is set, spec generator will skip deprecated field, its type and types referenced within this type
+      if (skipDeprecatedField && isDeprecated(field)) {
+        continue;
+      }
       final ClassTemplateSpec fieldClass = processSchema(field.getType(), recordClass, field.getName());
       final RecordTemplateSpec.Field newField = new RecordTemplateSpec.Field();
       newField.setSchemaField(field);
@@ -764,9 +793,13 @@ public class TemplateSpecGenerator
       newField.setDataClass(determineDataClass(field.getType(), recordClass, field.getName()));
 
       final CustomInfoSpec customInfo = getImmediateCustomInfo(field.getType());
-      if (customInfo != null && !customInfoMap.containsKey(customInfo))
+      if (customInfo != null)
       {
-        customInfoMap.put(customInfo, null);
+        if (!customInfoMap.containsKey(customInfo))
+        {
+          customInfoMap.put(customInfo, null);
+        }
+
         newField.setCustomInfo(customInfo);
       }
 
@@ -774,6 +807,31 @@ public class TemplateSpecGenerator
     }
 
     return recordClass;
+  }
+
+  private boolean isDeprecated(RecordDataSchema.Field field) {
+    Map<String, Object> properties = field.getProperties();
+    if (properties.containsKey(DataSchemaConstants.DEPRECATED_KEY)) {
+      Object property = properties.get(DataSchemaConstants.DEPRECATED_KEY);
+      if (property instanceof Boolean)
+      {
+        return (Boolean) property;
+      }
+      else if (property instanceof String)
+      {
+        return true;
+      }
+      else
+      {
+        throw new IllegalArgumentException("Expected boolean or string value for '" + DataSchemaConstants.DEPRECATED_KEY + "' property in " + field.getRecord().getFullName());
+      }
+    } else {
+      return false;
+    }
+  }
+
+  private boolean shouldSkipDeprecatedFields(NamedDataSchema dataSchema) {
+    return _skipDeprecatedFieldPatterns.stream().anyMatch(pattern -> pattern.matcher(dataSchema.getFullName()).matches());
   }
 
   /*
@@ -785,7 +843,7 @@ public class TemplateSpecGenerator
     assert !(schema instanceof PrimitiveDataSchema);
 
     final ClassInfo classInfo = classNameForUnnamedTraverse(enclosingClass, name, schema);
-    final String className = classInfo.fullName();
+    final String className = classInfo.bindingName();
 
     final DataSchema schemaFromClassName = _classNameToSchemaMap.get(className);
     if (schemaFromClassName == null)
@@ -794,14 +852,16 @@ public class TemplateSpecGenerator
 
       if (enclosingClass != null && classInfo.namespace.equals(enclosingClass.getFullName()))
       {
+        // enclosingClass flag indicates whether a class is nested or not.
         classTemplateSpec.setEnclosingClass(enclosingClass);
         classTemplateSpec.setClassName(classInfo.name);
-        classTemplateSpec.setModifiers(ModifierSpec.PUBLIC, ModifierSpec.STATIC, ModifierSpec.FINAL);
+        classTemplateSpec.setModifiers(ModifierSpec.PUBLIC, ModifierSpec.STATIC);
       }
       else
       {
         classTemplateSpec.setNamespace(classInfo.namespace);
         classTemplateSpec.setClassName(classInfo.name);
+        classTemplateSpec.setPackage(classInfo.packageName);
         classTemplateSpec.setModifiers(ModifierSpec.PUBLIC);
       }
       classInfo.definedClass = classTemplateSpec;
@@ -825,12 +885,20 @@ public class TemplateSpecGenerator
         CustomInfoSpec customInfo = getImmediateCustomInfo(arraySchema.getItems());
         if (customInfo != null)
         {
-          return new ClassInfo(customInfo.getCustomSchema().getNamespace(), customInfo.getCustomSchema().getName() + ARRAY_SUFFIX);
+          return new ClassInfo(customInfo.getCustomSchema().getNamespace(), customInfo.getCustomSchema().getName() + ARRAY_SUFFIX, customInfo.getCustomSchema().getPackage());
         }
         else
         {
           final ClassInfo classInfo = classNameForUnnamedTraverse(enclosingClass, memberName, arraySchema.getItems());
-          classInfo.name += ARRAY_SUFFIX;
+          // Add just the "Array" suffix first. This is to ensure backwards compatibility with the old codegen logic.
+          String className = classInfo.name + ARRAY_SUFFIX;
+          // If this array is for an unnamed inner type (e.g, union) then this will be inner class. So, ensure the Array
+          // class name doesn't conflict with ancestor class names.
+          if (enclosingClass != null && classInfo.namespace.equals(enclosingClass.getFullName()))
+          {
+            className = resolveInnerClassName(enclosingClass, className, ARRAY_SUFFIX);
+          }
+          classInfo.name = className;
           return classInfo;
         }
       case MAP:
@@ -838,12 +906,20 @@ public class TemplateSpecGenerator
         customInfo = getImmediateCustomInfo(mapSchema.getValues());
         if (customInfo != null)
         {
-          return new ClassInfo(customInfo.getCustomSchema().getNamespace(), customInfo.getCustomSchema().getName() + MAP_SUFFIX);
+          return new ClassInfo(customInfo.getCustomSchema().getNamespace(), customInfo.getCustomSchema().getName() + MAP_SUFFIX, customInfo.getCustomSchema().getPackage());
         }
         else
         {
           final ClassInfo classInfo = classNameForUnnamedTraverse(enclosingClass, memberName, mapSchema.getValues());
-          classInfo.name += MAP_SUFFIX;
+          // Add just the "Map" suffix first. This is to ensure backwards compatibility with the old codegen logic.
+          String className = classInfo.name + MAP_SUFFIX;
+          // If this map is for an unnamed inner type (e.g, union), then ensure the Map's class name doesn't conflict
+          // with ancestor class names.
+          if (enclosingClass != null && classInfo.namespace.equals(enclosingClass.getFullName()))
+          {
+            className = resolveInnerClassName(enclosingClass, className, MAP_SUFFIX);
+          }
+          classInfo.name = className;
           return classInfo;
         }
 
@@ -856,18 +932,20 @@ public class TemplateSpecGenerator
           {
             typerefDataSchema = (TyperefDataSchema) referencedDataSchema;
           }
-          return new ClassInfo(typerefDataSchema.getNamespace(), CodeUtil.capitalize(typerefDataSchema.getName()));
+          return new ClassInfo(typerefDataSchema.getNamespace(), CodeUtil.capitalize(typerefDataSchema.getName()), typerefDataSchema.getPackage());
         }
         else
         {
-          return new ClassInfo(enclosingClass.getFullName(), CodeUtil.capitalize(memberName));
+          String className = resolveInnerClassName(enclosingClass, CodeUtil.capitalize(memberName), UNION_SUFFIX);
+          return new ClassInfo(enclosingClass.getFullName(), className);
         }
 
       case FIXED:
       case RECORD:
       case ENUM:
         final NamedDataSchema namedSchema = (NamedDataSchema) dereferencedDataSchema;
-        return new ClassInfo(namedSchema.getNamespace(), CodeUtil.capitalize(namedSchema.getName()));
+        // carry package override information for named schema.
+        return new ClassInfo(namedSchema.getNamespace(), CodeUtil.capitalize(namedSchema.getName()), namedSchema.getPackage());
 
       case BOOLEAN:
         return new ClassInfo(_templatePackageName, "Boolean");
@@ -898,6 +976,34 @@ public class TemplateSpecGenerator
     }
   }
 
+  /**
+   * Java doesn't allow inner-classnames to be same as the enclosing or ancestor class. This method takes a candidate
+   * class name for an inner class and its enclosing class and resolves to a name that doesn't conflict. It does this
+   * by adding a special separator {@link #CLASS_NAME_SUFFIX_SEPARATOR} and the provided suffix to the classname
+   * whenever a conflict is detected.
+   * The special separator is needed to ensure the new name does not conflict with classes generated from other fields.
+   * @param enclosingClass Class enclosing the inner class.
+   * @param className Candidate name for the innerclass
+   * @param suffix Suffix to add to the className if a conflict is found.
+   * @return a class name that doesn't conflict with any of the ancestor classes.
+   */
+  private String resolveInnerClassName(ClassTemplateSpec enclosingClass, String className, String suffix) {
+    ClassTemplateSpec ancestorClass = enclosingClass;
+    while (ancestorClass != null)
+    {
+      if (ancestorClass.getClassName().equals(className))
+      {
+        className = className + CLASS_NAME_SUFFIX_SEPARATOR + suffix;
+        break;
+      }
+      else
+      {
+        ancestorClass = ancestorClass.getEnclosingClass();
+      }
+    }
+    return className;
+  }
+
   private static class CustomClasses
   {
     private ClassTemplateSpec customClass;
@@ -908,6 +1014,7 @@ public class TemplateSpecGenerator
   {
     private String namespace;
     private String name;
+    private String packageName;
     private ClassTemplateSpec existingClass;
     private ClassTemplateSpec definedClass;
 
@@ -917,9 +1024,27 @@ public class TemplateSpecGenerator
       this.name = name;
     }
 
+    private ClassInfo(String namespace, String name, String packageName)
+    {
+      this.namespace = namespace;
+      this.name = name;
+      this.packageName = packageName;
+    }
+
     private String fullName()
     {
       return namespace.isEmpty() ? name : namespace + '.' + name;
+    }
+
+    /**
+     * Return the {@link ClassInfo}'s language binding name.
+     * This is the fully qualified name for the generated data model to resolve potential name conflict.
+     *
+     * @return the {@link ClassInfo}'s language binding name.
+     */
+    private String bindingName()
+    {
+      return (packageName == null || packageName.isEmpty()) ? fullName() : packageName + "." + name;
     }
   }
 }

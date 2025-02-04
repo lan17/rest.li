@@ -17,14 +17,20 @@
 package com.linkedin.restli.examples;
 
 
-
 import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.data.template.StringArray;
 import com.linkedin.r2.RemoteInvocationException;
+import com.linkedin.r2.message.rest.RestMethod;
+import com.linkedin.r2.message.rest.RestRequest;
+import com.linkedin.r2.message.rest.RestRequestBuilder;
+import com.linkedin.r2.message.rest.RestResponse;
+import com.linkedin.r2.transport.common.Client;
+import com.linkedin.r2.transport.http.client.HttpClientFactory;
 import com.linkedin.restli.client.Request;
 import com.linkedin.restli.client.Response;
 import com.linkedin.restli.client.RestLiResponseException;
 import com.linkedin.restli.common.HttpStatus;
+import com.linkedin.restli.examples.custom.types.CustomLong;
 import com.linkedin.restli.examples.greetings.api.Message;
 import com.linkedin.restli.examples.greetings.api.MessageArray;
 import com.linkedin.restli.examples.greetings.api.Tone;
@@ -33,11 +39,15 @@ import com.linkedin.restli.examples.greetings.client.ActionsBuilders;
 import com.linkedin.restli.examples.greetings.client.ActionsRequestBuilders;
 import com.linkedin.restli.test.util.RootBuilderWrapper;
 
+import java.net.URI;
+import java.util.Collections;
+import java.util.Map;
 import org.testng.Assert;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
+
 
 
 public class TestActionsResource extends RestLiIntegrationTest
@@ -83,6 +93,15 @@ public class TestActionsResource extends RestLiIntegrationTest
   }
 
   @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderDataProvider")
+  public void testActionCustomTyperefGet(RootBuilderWrapper<?, ?> builders) throws RemoteInvocationException
+  {
+    Request<CustomLong> customTypeRef =
+        builders.<CustomLong>action("CustomTypeRef").setActionParam("customLong", new CustomLong(1L)).build();
+    CustomLong customLong = getClient().sendRequest(customTypeRef).getResponse().getEntity();
+    Assert.assertEquals(customLong.toLong().longValue(), 1L);
+  }
+
+  @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderDataProvider")
   public void testArrayTypesOnActions(RootBuilderWrapper<?, ?> builders) throws RemoteInvocationException
   {
     //Record template array
@@ -100,9 +119,7 @@ public class TestActionsResource extends RestLiIntegrationTest
     Assert.assertEquals(messageArray.get(1).getMessage(), "My Message 2");
 
     //Primitive type array
-    StringArray inputStringArray = new StringArray();
-    inputStringArray.add("message1");
-    inputStringArray.add("message2");
+    StringArray inputStringArray = new StringArray("message1", "message2");
     Request<StringArray> stringArrayRequest =
         builders.<StringArray>action("EchoStringArray").setActionParam("Strings", inputStringArray).build();
     StringArray stringArray = getClient().sendRequest(stringArrayRequest).getResponse().getEntity();
@@ -210,7 +227,7 @@ public class TestActionsResource extends RestLiIntegrationTest
     //variant of testing primitive return types, except with null optional parameters
 
     Request<Integer> intRequest = builders.<Integer>action("ReturnIntOptionalParam").setActionParam("param",
-        new Integer(1)).build();
+        Integer.valueOf(1)).build();
     Integer integer = getClient().sendRequest(intRequest).getResponse().getEntity();
     Assert.assertEquals(1, integer.intValue());
 
@@ -219,7 +236,7 @@ public class TestActionsResource extends RestLiIntegrationTest
     Assert.assertEquals(0, integerNull.intValue());
 
     Request<Boolean> boolRequest = builders.<Boolean>action("ReturnBoolOptionalParam").setActionParam("param",
-        new Boolean(false)).build();
+        Boolean.FALSE).build();
     Boolean bool = getClient().sendRequest(boolRequest).getResponse().getEntity();
     Assert.assertTrue(!bool.booleanValue());
 
@@ -240,6 +257,20 @@ public class TestActionsResource extends RestLiIntegrationTest
     Assert.assertNull(response.getEntity());
   }
 
+  // Test whether the entity record is empty without braces by using r2 client
+  @Test
+  public void testActionNamedReturnVoid() throws Throwable
+  {
+    Map<String, String> transportProperties = Collections.singletonMap(HttpClientFactory.HTTP_REQUEST_TIMEOUT, "10000");
+
+    Client client = newTransportClient(transportProperties);
+    URI uri = URI.create("http://localhost:" + RestLiIntTestServer.DEFAULT_PORT + "/actions?action=returnVoid");
+    RestRequest r = new RestRequestBuilder(uri).setMethod(RestMethod.POST).build();
+    RestResponse response = client.restRequest(r).get();
+
+    Assert.assertTrue(response.getEntity().isEmpty());
+  }
+
   @Test(dataProvider = com.linkedin.restli.internal.common.TestConstants.RESTLI_PROTOCOL_1_2_PREFIX + "requestBuilderDataProviderForParseqActions")
   public void testBasicParseqBasedAction(RootBuilderWrapper<?, ?> builders, String actionName) throws RemoteInvocationException
   {
@@ -258,22 +289,22 @@ public class TestActionsResource extends RestLiIntegrationTest
   private static Object[][] requestBuilderDataProviderForParseqActions()
   {
     return new Object[][] {
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders()), "parseq" },
+        {new RootBuilderWrapper<>(new ActionsBuilders()), "parseq" },
         //  This test cannot be compiled until we build with Java 8 by default.
         //{ new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders()), "parseq2" },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders()), "parseq3" },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq" },
+        {new RootBuilderWrapper<>(new ActionsBuilders()), "parseq3" },
+        {new RootBuilderWrapper<>(new ActionsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq" },
         //  This test cannot be compiled until we build with Java 8 by default.
         //{ new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq2" },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq3" },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders()), "parseq" },
+        {new RootBuilderWrapper<>(new ActionsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq3" },
+        {new RootBuilderWrapper<>(new ActionsRequestBuilders()), "parseq" },
         //  This test cannot be compiled until we build with Java 8 by default.
         //{ new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders()), "parseq2" },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders()), "parseq3" },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq" },
+        {new RootBuilderWrapper<>(new ActionsRequestBuilders()), "parseq3" },
+        {new RootBuilderWrapper<>(new ActionsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq" },
         //  This test cannot be compiled until we build with Java 8 by default.
         //{ new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq2" },
-        { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq3" }
+        {new RootBuilderWrapper<>(new ActionsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)), "parseq3" }
     };
   }
 
@@ -281,10 +312,10 @@ public class TestActionsResource extends RestLiIntegrationTest
   private static Object[][] requestBuilderDataProvider()
   {
     return new Object[][] {
-      { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders()) },
-      { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)) },
-      { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders()) },
-      { new RootBuilderWrapper<Object, RecordTemplate>(new ActionsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)) }
+      {new RootBuilderWrapper<>(new ActionsBuilders()) },
+      {new RootBuilderWrapper<>(new ActionsBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)) },
+      {new RootBuilderWrapper<>(new ActionsRequestBuilders()) },
+      {new RootBuilderWrapper<>(new ActionsRequestBuilders(TestConstants.FORCE_USE_NEXT_OPTIONS)) }
     };
   }
 }

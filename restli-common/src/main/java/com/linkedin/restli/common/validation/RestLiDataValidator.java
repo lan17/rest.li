@@ -16,7 +16,6 @@
 
 package com.linkedin.restli.common.validation;
 
-
 import com.linkedin.data.element.DataElement;
 import com.linkedin.data.element.DataElementUtil;
 import com.linkedin.data.element.SimpleDataElement;
@@ -43,13 +42,16 @@ import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.data.template.TemplateRuntimeException;
 import com.linkedin.data.transform.DataComplexProcessor;
 import com.linkedin.data.transform.DataProcessingException;
+import com.linkedin.data.transform.filter.request.MaskTree;
 import com.linkedin.data.transform.patch.Patch;
 import com.linkedin.data.transform.patch.PatchConstants;
 import com.linkedin.restli.common.PatchRequest;
 import com.linkedin.restli.common.ResourceMethod;
+import com.linkedin.restli.common.util.ProjectionMaskApplier;
 import com.linkedin.restli.restspec.RestSpecAnnotation;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -59,6 +61,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
 
 /**
  * The Rest.li data validator validates Rest.li data using information from the data schema
@@ -95,17 +98,27 @@ import java.util.Set;
 public class RestLiDataValidator
 {
   // ReadOnly fields should not be specified for these types of requests
-  private static final Set<ResourceMethod> readOnlyRestrictedMethods = new HashSet<ResourceMethod>(
-      Arrays.asList(ResourceMethod.CREATE, ResourceMethod.PARTIAL_UPDATE, ResourceMethod.BATCH_CREATE, ResourceMethod.BATCH_PARTIAL_UPDATE));
+  private static final Set<ResourceMethod> READ_ONLY_RESTRICTED_METHODS = new HashSet<>(Arrays.asList(
+      ResourceMethod.CREATE, ResourceMethod.PARTIAL_UPDATE, ResourceMethod.BATCH_CREATE, ResourceMethod.BATCH_PARTIAL_UPDATE));
+
   // CreateOnly fields should not be specified for these types of requests
-  private static final Set<ResourceMethod> createOnlyRestrictedMethods = new HashSet<ResourceMethod>(
-      Arrays.asList(ResourceMethod.PARTIAL_UPDATE, ResourceMethod.BATCH_PARTIAL_UPDATE));
-  // ReadOnly fields are treated as optional for these types of requests
-  private static final Set<ResourceMethod> readOnlyOptional = new HashSet<ResourceMethod>(
-      Arrays.asList(ResourceMethod.CREATE, ResourceMethod.BATCH_CREATE));
+  private static final Set<ResourceMethod> CREATE_ONLY_RESTRICTED_METHODS = new HashSet<>(Arrays.asList(
+      ResourceMethod.PARTIAL_UPDATE, ResourceMethod.BATCH_PARTIAL_UPDATE));
+
+  // ReadOnly and CreateOnly fields descended from an array field can be specified for these types of requests
+  private static final Set<ResourceMethod> ARRAY_DESCENDANT_ACCEPTED_METHODS = new HashSet<>(Arrays.asList(
+      ResourceMethod.PARTIAL_UPDATE, ResourceMethod.BATCH_PARTIAL_UPDATE));
+
+  // Resource methods that require validation on response
+  public static final Set<ResourceMethod>  METHODS_VALIDATED_ON_RESPONSE = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+      ResourceMethod.GET, ResourceMethod.CREATE, ResourceMethod.PARTIAL_UPDATE, ResourceMethod.GET_ALL,
+      ResourceMethod.FINDER, ResourceMethod.BATCH_FINDER, ResourceMethod.BATCH_GET, ResourceMethod.BATCH_CREATE, ResourceMethod.BATCH_PARTIAL_UPDATE)));
 
   // A path is ReadOnly if it satisfies this predicate
-  private final Predicate _readOnlyPredicate;
+  private final Predicate _readOnlyRestrictedPredicate;
+  // A path is Optional if it satisfies this predicate, even if the field is required in the schema. These are fields
+  // marked as ReadOnly and for methods that create entity (CREATE/UPDATE)
+  private final Predicate _readOnlyOptionalPredicate;
   // A path is CreateOnly if it satisfies this predicate
   private final Predicate _createOnlyPredicate;
   // A path is a descendant of a ReadOnly field if it satisfies this predicate
@@ -120,6 +133,8 @@ public class RestLiDataValidator
   private static final String INSTANTIATION_ERROR = "InstantiationException while trying to instantiate the record template class";
   private static final String ILLEGAL_ACCESS_ERROR = "IllegalAccessException while trying to instantiate the record template class";
   private static final String TEMPLATE_RUNTIME_ERROR = "TemplateRuntimeException while trying to find the schema class";
+  private static final String INVOCATION_TARGET_ERROR = "InvocationTargetException while trying to instantiate the record template class";
+  private static final String NO_SUCH_METHOD_ERROR = "NoSuchMethodException while trying to instantiate the record template class";
 
   private static PathMatchesPatternPredicate stringToPredicate(String path, boolean includeDescendants)
   {
@@ -152,7 +167,7 @@ public class RestLiDataValidator
 
   private static Map<String, List<String>> annotationsToMap(Annotation[] annotations)
   {
-    Map<String, List<String>> annotationMap = new HashMap<String, List<String>>();
+    Map<String, List<String>> annotationMap = new HashMap<>();
     if (annotations != null)
     {
       for (Annotation annotation : annotations)
@@ -229,17 +244,16 @@ public class RestLiDataValidator
                              ResourceMethod resourceMethod,
                              Map<String, Class<? extends Validator>> validatorClassMap)
   {
-    List<Predicate> readOnly = new ArrayList<Predicate>();
-    List<Predicate> createOnly = new ArrayList<Predicate>();
-    List<Predicate> readOnlyDescendant = new ArrayList<Predicate>();
-    List<Predicate> createOnlyDescendant = new ArrayList<Predicate>();
+    List<Predicate> readOnly = new ArrayList<>();
+    List<Predicate> createOnly = new ArrayList<>();
+    List<Predicate> readOnlyDescendant = new ArrayList<>();
+    List<Predicate> createOnlyDescendant = new ArrayList<>();
     if (annotations != null)
     {
       for (Map.Entry<String, List<String>> entry : annotations.entrySet())
       {
         String annotationName = entry.getKey();
-        if (annotationName.equals(ReadOnly.class.getAnnotation(RestSpecAnnotation.class).name())
-            && readOnlyRestrictedMethods.contains(resourceMethod))
+        if (annotationName.equals(ReadOnly.class.getAnnotation(RestSpecAnnotation.class).name()))
         {
           for (String path : entry.getValue())
           {
@@ -247,8 +261,7 @@ public class RestLiDataValidator
             readOnlyDescendant.add(stringToPredicate(path, true));
           }
         }
-        else if (annotationName.equals(CreateOnly.class.getAnnotation(RestSpecAnnotation.class).name())
-            && createOnlyRestrictedMethods.contains(resourceMethod))
+        else if (annotationName.equals(CreateOnly.class.getAnnotation(RestSpecAnnotation.class).name()))
         {
           for (String path : entry.getValue())
           {
@@ -258,8 +271,9 @@ public class RestLiDataValidator
         }
       }
     }
-    _readOnlyPredicate = Predicates.or(readOnly);
-    _createOnlyPredicate = Predicates.or(createOnly);
+    _readOnlyRestrictedPredicate = READ_ONLY_RESTRICTED_METHODS.contains(resourceMethod) ? Predicates.or(readOnly) : Predicates.alwaysFalse();
+    _readOnlyOptionalPredicate = Predicates.or(readOnly);
+    _createOnlyPredicate = CREATE_ONLY_RESTRICTED_METHODS.contains(resourceMethod) ? Predicates.or(createOnly) : Predicates.alwaysFalse();
     _readOnlyDescendantPredicate = Predicates.or(readOnlyDescendant);
     _createOnlyDescendantPredicate = Predicates.or(createOnlyDescendant);
     _valueClass = valueClass;
@@ -267,9 +281,14 @@ public class RestLiDataValidator
     _validatorClassMap = Collections.unmodifiableMap(validatorClassMap);
   }
 
-  private class DataValidator extends DataSchemaAnnotationValidator
+  /**
+   * Validates input data and patches using a given resource's {@link ReadOnly} and {@link CreateOnly} annotations.
+   * Since it's an extension of {@link DataSchemaAnnotationValidator}, it also validates the data using whatever custom
+   * validators are defined in the schema.
+   */
+  protected class DataValidator extends DataSchemaAnnotationValidator
   {
-    private DataValidator(DataSchema schema)
+    protected DataValidator(DataSchema schema)
     {
       super(schema, _validatorClassMap);
     }
@@ -279,14 +298,36 @@ public class RestLiDataValidator
     {
       super.validate(context);
       DataElement element = context.dataElement();
-      if (_readOnlyPredicate.evaluate(element))
+      if (_readOnlyRestrictedPredicate.evaluate(element) && !grantArrayDescendantException(element))
       {
         context.addResult(new Message(element.path(), "ReadOnly field present in a %s request", _resourceMethod.toString()));
       }
-      if (_createOnlyPredicate.evaluate(element))
+      if (_createOnlyPredicate.evaluate(element) && !grantArrayDescendantException(element))
       {
         context.addResult(new Message(element.path(), "CreateOnly field present in a %s request", _resourceMethod.toString()));
       }
+    }
+
+    /**
+     * Determines if the given data element can be set despite being {@link ReadOnly} or {@link CreateOnly}.
+     * A given field is granted this exception if it's the descendant of an array field and if it's in a patch input
+     * (i.e. partial_update or batch_partial_update).
+     */
+    private boolean grantArrayDescendantException(DataElement element)
+    {
+      if (element == null || !ARRAY_DESCENDANT_ACCEPTED_METHODS.contains(_resourceMethod))
+      {
+        return false;
+      }
+      DataElement currentElement = element.getParent();
+      while (currentElement != null)
+      {
+        if (currentElement.getSchema().getType() == DataSchema.Type.ARRAY) {
+          return true;
+        }
+        currentElement = currentElement.getParent();
+      }
+      return false;
     }
   }
 
@@ -306,7 +347,7 @@ public class RestLiDataValidator
     {
       case PARTIAL_UPDATE:
       case BATCH_PARTIAL_UPDATE:
-        return validatePatch((PatchRequest) dataTemplate);
+        return validatePatch((PatchRequest<?>) dataTemplate);
       case CREATE:
       case BATCH_CREATE:
       case UPDATE:
@@ -316,7 +357,7 @@ public class RestLiDataValidator
       case BATCH_GET:
       case FINDER:
       case GET_ALL:
-        return validateOutputEntity((RecordTemplate) dataTemplate);
+        return validateOutputEntity((RecordTemplate) dataTemplate, null);
       default:
         throw new IllegalArgumentException("Cannot perform Rest.li validation for " + _resourceMethod.toString());
     }
@@ -388,6 +429,48 @@ public class RestLiDataValidator
    */
   public ValidationResult validateOutput(RecordTemplate dataTemplate)
   {
+    return validateOutput(dataTemplate, null);
+  }
+
+  /**
+   * Validate Rest.li output data (single entity) using a projection mask.
+   * If a projection mask is provided, a validating schema will be built to validate only the projected fields.
+   * Otherwise, the entity will be validated without any projection.
+   *
+   * @param dataTemplate data to validate
+   * @param projectionMask projection mask used to build validating schema
+   * @return validation result
+   */
+  public ValidationResult validateOutput(RecordTemplate dataTemplate, MaskTree projectionMask)
+  {
+    try
+    {
+      // Value class from resource model is the only source of truth for record schema.
+      // Schema from the record template itself should not be used.
+      DataSchema originalSchema = DataTemplateUtil.getSchema(_valueClass);
+
+      // If existing validating schema not provided, build it here
+      DataSchema validatingSchema =
+          (projectionMask != null) ? ProjectionMaskApplier.buildSchemaByProjection(originalSchema, projectionMask.getDataMap()) : originalSchema;
+
+      return validateOutputAgainstSchema(dataTemplate, validatingSchema);
+    }
+    catch (TemplateRuntimeException e)
+    {
+      return validationResultWithErrorMessage(TEMPLATE_RUNTIME_ERROR);
+    }
+  }
+
+  /**
+   * Validate Rest.li output data (single entity) against a validating schema.
+   *
+   * @param dataTemplate data to validate
+   * @param validatingSchema schema to use when validating
+   * @return validation result
+   * @throws IllegalArgumentException if any argument is null or if the provided data template has no data
+   */
+  protected ValidationResult validateOutputAgainstSchema(RecordTemplate dataTemplate, DataSchema validatingSchema)
+  {
     if (dataTemplate == null)
     {
       throw new IllegalArgumentException("Record template is null.");
@@ -396,33 +479,31 @@ public class RestLiDataValidator
     {
       throw new IllegalArgumentException("Record template does not have data.");
     }
-    switch (_resourceMethod)
+    if (validatingSchema == null)
     {
-      case CREATE:
-      case BATCH_CREATE:
-      case GET:
-      case BATCH_GET:
-      case FINDER:
-      case GET_ALL:
-        return validateOutputEntity(dataTemplate);
-      default:
-        throw new IllegalArgumentException("Cannot perform Rest.li output validation for " + _resourceMethod.toString());
+      throw new IllegalArgumentException("Validating schema is null");
+    }
+
+    if (METHODS_VALIDATED_ON_RESPONSE.contains(_resourceMethod))
+    {
+      return validateOutputEntity(dataTemplate, validatingSchema);
+    }
+    else
+    {
+      throw new IllegalArgumentException("Cannot perform Rest.li output validation for " + _resourceMethod.toString());
     }
   }
 
   /**
    * Checks that if the patch is applied to a valid entity, the modified entity will also be valid.
-   * This method
+   * This method...
    * (1) Checks that required/ReadOnly/CreateOnly fields are not deleted.
-   * (2) Checks that new values for record templates contain all required fields.
+   * (2) Checks that new values for record templates contain all required fields (treating ReadOnly fields as optional).
    * (3) Applies the patch to an empty entity and validates the entity for custom validation rules
-   * and Rest.li annotations (Allows required fields to be absent by using {@link RequiredMode#IGNORE},
-   * because a patch does not necessarily contain all fields).
-   *
-   * NOTE: Updating a part of an array is not supported. So if the array contains a required field that is
-   * readonly or createonly, the field cannot be present (no partial updates on readonly/createonly)
-   * but cannot be absent either (no missing required fields). This means the array cannot be changed by a
-   * partial update request. This is something that should be fixed.
+   *     and Rest.li annotations, allowing the following exceptions:
+   *     - Allows required fields to be absent by using {@link RequiredMode#IGNORE},
+   *       because a patch does not necessarily contain all fields.
+   *     - Allows array-descendant ReadOnly/CreateOnly fields to be set, since there's currently no way to "patch" arrays.
    *
    * @param patchRequest the patch
    * @return the final validation result
@@ -433,7 +514,7 @@ public class RestLiDataValidator
     RecordTemplate entity;
     try
     {
-      entity = _valueClass.newInstance();
+      entity = _valueClass.getDeclaredConstructor().newInstance();
     }
     catch (InstantiationException e)
     {
@@ -442,6 +523,10 @@ public class RestLiDataValidator
     catch (IllegalAccessException e)
     {
       return validationResultWithErrorMessage(ILLEGAL_ACCESS_ERROR);
+    } catch (InvocationTargetException e) {
+      return validationResultWithErrorMessage(INVOCATION_TARGET_ERROR);
+    } catch (NoSuchMethodException e) {
+      return validationResultWithErrorMessage(NO_SUCH_METHOD_ERROR);
     }
     // Apply the patch to the entity and get paths that $set and $delete operations were performed on.
     @SuppressWarnings("unchecked")
@@ -457,23 +542,28 @@ public class RestLiDataValidator
     {
       return validationResultWithErrorMessage("Error while applying patch: " + e.getMessage());
     }
+    // Check that required/ReadOnly/CreateOnly fields are not deleted
     ValidationErrorResult checkDeleteResult = new ValidationErrorResult();
     checkDeletesAreValid(entity.schema(), messages, checkDeleteResult);
     if (!checkDeleteResult.isValid())
     {
       return checkDeleteResult;
     }
+    // Check that new values for record templates contain all required fields
     ValidationResult checkSetResult = checkNewRecordsAreNotMissingFields(entity, messages);
     if (checkSetResult != null)
     {
       return checkSetResult;
     }
     // Custom validation rules and Rest.li annotations for set operations are checked here.
-    // It's okay if required fields are absent in a partial update request, so use ignore mode.
     return ValidateDataAgainstSchema.validate(new SimpleDataElement(entity.data(), entity.schema()),
-        new ValidationOptions(RequiredMode.IGNORE), new DataValidator(entity.schema()));
+        getValidationOptionsForInputEntityValidation(true), getValidatorForInputEntityValidation(entity.schema()));
   }
 
+  /**
+   * Validates that new whole records created as part of of a patch set operation aren't missing required fields,
+   * with ReadOnly fields being treated as optional.
+   */
   private ValidationResult checkNewRecordsAreNotMissingFields(RecordTemplate entity, MessageList<Message> messages)
   {
     for (Message message : messages)
@@ -484,7 +574,9 @@ public class RestLiDataValidator
         // Replace $set with the field name to get the full path
         path[path.length - 1] = message.getFormat();
         DataElement element = DataElementUtil.element(new SimpleDataElement(entity.data(), entity.schema()), path);
-        ValidationResult result = ValidateDataAgainstSchema.validate(element, new ValidationOptions());
+        ValidationOptions validationOptions = new ValidationOptions();
+        validationOptions.setTreatOptional(_readOnlyOptionalPredicate);
+        ValidationResult result = ValidateDataAgainstSchema.validate(element, validationOptions);
         if (!result.isValid())
         {
           return result;
@@ -503,12 +595,10 @@ public class RestLiDataValidator
    */
   private static DataElement hollowElementFromPath(Object[] path)
   {
-    DataElement root = new SimpleDataElement(null, null);
-    DataElement current = root;
+    DataElement current = new SimpleDataElement(null, null);
     for (Object component : path)
     {
-      DataElement child = new SimpleDataElement(null, component.toString(), null, current);
-      current = child;
+      current = new SimpleDataElement(null, component.toString(), null, current);
     }
     return current;
   }
@@ -542,29 +632,46 @@ public class RestLiDataValidator
 
   private ValidationResult validateInputEntity(RecordTemplate entity)
   {
-    ValidationOptions validationOptions = new ValidationOptions();
-    if (readOnlyOptional.contains(_resourceMethod))
-    {
-      // Even if ReadOnly fields are non-optional, the client cannot supply them in a create request, so they should be treated as optional.
-      validationOptions.setTreatOptional(_readOnlyPredicate);
-    }
-    ValidationResult result = ValidateDataAgainstSchema.validate(entity, validationOptions, new DataValidator(entity.schema()));
-    return result;
+    return ValidateDataAgainstSchema.validate(entity, getValidationOptionsForInputEntityValidation(false),
+    getValidatorForInputEntityValidation(entity.schema()));
   }
 
-  private ValidationResult validateOutputEntity(RecordTemplate entity)
+  private ValidationResult validateOutputEntity(RecordTemplate entity, DataSchema validatingSchema)
   {
-    try
+    return ValidateDataAgainstSchema.validate(entity.data(), validatingSchema,
+        getValidationOptionsForOutputEntityValidation(), getValidatorForOutputEntityValidation(validatingSchema));
+  }
+
+  protected Validator getValidatorForOutputEntityValidation(DataSchema validatingSchema)
+  {
+    return new DataSchemaAnnotationValidator(validatingSchema);
+  }
+
+  protected ValidationOptions getValidationOptionsForOutputEntityValidation()
+  {
+    return new ValidationOptions();
+  }
+
+  protected Validator getValidatorForInputEntityValidation(DataSchema validatingSchema)
+  {
+    return new DataValidator(validatingSchema);
+  }
+
+  protected ValidationOptions getValidationOptionsForInputEntityValidation(boolean isPatch)
+  {
+    ValidationOptions validationOptions = new ValidationOptions();
+    // Even if ReadOnly fields are required, the client cannot supply them in a create request, so they should be
+    // treated as optional. similarly for update requests used as upsert (update to create), they are treated as
+    // optional.
+    validationOptions.setTreatOptional(_readOnlyOptionalPredicate);
+
+    // It's okay if required fields are absent in a partial update request, so use ignore mode for required fields.
+    if (isPatch)
     {
-      // Value class from resource model is the only source of truth for record schema.
-      // Schema from the record template itself should not be used.
-      DataSchema schema = DataTemplateUtil.getSchema(_valueClass);
-      return ValidateDataAgainstSchema.validate(entity.data(), schema, new ValidationOptions(), new DataSchemaAnnotationValidator(schema));
+      validationOptions.setRequiredMode(RequiredMode.IGNORE);
     }
-    catch (TemplateRuntimeException e)
-    {
-      return validationResultWithErrorMessage(TEMPLATE_RUNTIME_ERROR);
-    }
+
+    return validationOptions;
   }
 
   private static ValidationErrorResult validationResultWithErrorMessage(String errorMessage)
@@ -576,11 +683,11 @@ public class RestLiDataValidator
 
   private static class ValidationErrorResult implements ValidationResult
   {
-    private MessageList<Message> _messages;
+    private final MessageList<Message> _messages;
 
     private ValidationErrorResult()
     {
-      _messages = new MessageList<Message>();
+      _messages = new MessageList<>();
     }
 
     @Override

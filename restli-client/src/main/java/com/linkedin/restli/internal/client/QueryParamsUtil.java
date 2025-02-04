@@ -20,22 +20,26 @@ package com.linkedin.restli.internal.client;
 import com.linkedin.data.DataComplex;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.DataMapBuilder;
 import com.linkedin.data.schema.PathSpec;
 import com.linkedin.data.template.DataTemplate;
 import com.linkedin.data.template.DataTemplateUtil;
-import com.linkedin.data.transform.filter.request.MaskCreator;
+import com.linkedin.restli.client.ProjectionDataMapSerializer;
+import com.linkedin.restli.client.RestLiProjectionDataMapSerializer;
 import com.linkedin.restli.common.ComplexResourceKey;
 import com.linkedin.restli.common.CompoundKey;
 import com.linkedin.restli.common.ProtocolVersion;
 import com.linkedin.restli.common.RestConstants;
 import com.linkedin.restli.internal.common.AllProtocolVersions;
 import com.linkedin.restli.internal.common.URIParamUtils;
-
 import java.lang.reflect.Array;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 
 /**
@@ -45,19 +49,24 @@ public class QueryParamsUtil
 {
   public static DataMap convertToDataMap(Map<String, Object> queryParams)
   {
-    return convertToDataMap(queryParams, Collections.<String, Class<?>>emptyMap(), AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion());
+    return convertToDataMap(queryParams, Collections.<String, Class<?>>emptyMap(),
+        AllProtocolVersions.RESTLI_PROTOCOL_1_0_0.getProtocolVersion(),
+        RestLiProjectionDataMapSerializer.DEFAULT_SERIALIZER);
   }
 
   /**
    * Converts a String -> Object based representation of query params into a {@link DataMap}
-   * @param queryParams
-   * @param queryParamClasses
-   * @param version
-   * @return
    */
-  public static DataMap convertToDataMap(Map<String, Object> queryParams, Map<String, Class<?>> queryParamClasses, ProtocolVersion version)
+  public static DataMap convertToDataMap(Map<String, Object> queryParams, Map<String, Class<?>> queryParamClasses,
+      ProtocolVersion version)
   {
-    DataMap result = new DataMap(queryParams.size());
+    return convertToDataMap(queryParams, queryParamClasses, version, RestLiProjectionDataMapSerializer.DEFAULT_SERIALIZER);
+  }
+
+  public static DataMap convertToDataMap(Map<String, Object> queryParams, Map<String, Class<?>> queryParamClasses,
+      ProtocolVersion version, ProjectionDataMapSerializer projectionDataMapSerializer)
+  {
+    DataMap result = new DataMap(DataMapBuilder.getOptimumHashMapCapacityFromSize(queryParams.size()));
     for (Map.Entry<String, Object> entry: queryParams.entrySet())
     {
       String key = entry.getKey();
@@ -65,19 +74,39 @@ public class QueryParamsUtil
 
       if (RestConstants.PROJECTION_PARAMETERS.contains(key))
       {
+        // Short-circuit already serialized projection params or projection params already represented as simplified mask tree.
+        if (value instanceof String || value instanceof DataMap)
+        {
+          result.put(key, value);
+          continue;
+        }
+
         @SuppressWarnings("unchecked")
-        List<PathSpec> pathSpecs = (List<PathSpec>)value;
-        result.put(key, MaskCreator.createPositiveMask(pathSpecs).getDataMap());
+        Set<PathSpec> pathSpecs = (Set<PathSpec>)value;
+        DataMap serializedDataMap = projectionDataMapSerializer.toDataMap(key, pathSpecs);
+        if (serializedDataMap != null)
+        {
+          result.put(key, serializedDataMap);
+        }
       }
       else
       {
-        result.put(key, paramToDataObject(value, queryParamClasses.get(key), version));
+        Object objValue = paramToDataObject(value, queryParamClasses.get(key), version);
+        // If the value object is of type DataComplex, mark that as read only as the parameter value can be from a user
+        // constructed DataTemplate and we don't want this to be modified in any way.
+        if (objValue instanceof DataComplex)
+        {
+          ((DataComplex) objValue).makeReadOnly();
+        }
+
+        result.put(key, objValue);
       }
     }
-    result.makeReadOnly();
+
     return result;
   }
 
+  @SuppressWarnings("unchecked")
   private static Object paramToDataObject(Object param, Class<?> paramClass, ProtocolVersion version)
   {
     if (param == null)
@@ -103,9 +132,13 @@ public class QueryParamsUtil
     {
       return param;
     }
-    else if (param instanceof List)
+    else if (param instanceof List || param instanceof Set)
     {
-      return coerceList((List) param, paramClass, version);
+      return coerceCollection((Collection<?>) param, paramClass, version);
+    }
+    else if (param instanceof Map)
+    {
+      return coerceMap((Map<?, ?>) param, paramClass, version);
     }
     else
     {
@@ -114,10 +147,10 @@ public class QueryParamsUtil
   }
 
   /**
-   * given a list of objects returns the objects either in a DataList, or, if
+   * Given a collection of objects returns the objects either in a DataList, or, if
    * they are PathSpecs (projections), encode them and return a String.
    */
-  private static Object coerceList(List<?> values, Class<?> elementClass, ProtocolVersion version)
+  private static Object coerceCollection(Collection<?> values, Class<?> elementClass, ProtocolVersion version)
   {
     assert values != null;
     DataList dataList = new DataList();
@@ -132,6 +165,35 @@ public class QueryParamsUtil
   }
 
   /**
+   * Given a map of objects returns the objects in a DataMap.  All key values must be strings.
+   */
+  private static DataMap coerceMap(Map<?, ?> inputMap, Class<?> elementClass, ProtocolVersion version)
+  {
+    assert inputMap != null;
+
+    return inputMap.entrySet()
+        .stream()
+        .collect(Collectors.<Map.Entry<?, ?>, String, Object, DataMap>toMap(
+            entry ->
+            {
+              try
+              {
+                return (String) entry.getKey();
+              }
+              catch (ClassCastException e)
+              {
+                throw new IllegalArgumentException(String.format("Map key '%s' is not of type String",  entry.getKey().toString()));
+              }
+            },
+            entry -> paramToDataObject(entry.getValue(), elementClass, version),
+            (older, newer) ->
+            {
+              throw new IllegalStateException("Multiple mappings for the same key");
+            },
+            DataMap::new));
+  }
+
+  /**
    * given an array of primitives returns a collection of strings
    *
    * @param array the array to stringify
@@ -140,7 +202,7 @@ public class QueryParamsUtil
   {
     assert array != null && array.getClass().isArray();
     int len = Array.getLength(array);
-    List<String> strings = new ArrayList<String>(len);
+    List<String> strings = new ArrayList<>(len);
     for (int i = 0; i < len; ++i)
     {
       Object value = Array.get(array, i);

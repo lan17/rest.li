@@ -16,22 +16,28 @@
 
 package com.linkedin.restli.internal.server.methods.arguments;
 
+
+import com.linkedin.common.callback.Callback;
+import com.linkedin.data.template.RecordTemplate;
 import com.linkedin.r2.message.rest.RestRequest;
+import com.linkedin.restli.common.ResourceMethod;
 import com.linkedin.restli.common.test.MyComplexKey;
-import com.linkedin.restli.internal.server.RestLiInternalException;
 import com.linkedin.restli.internal.server.RoutingResult;
+import com.linkedin.restli.internal.server.ServerResourceContext;
 import com.linkedin.restli.internal.server.model.AnnotationSet;
 import com.linkedin.restli.internal.server.model.Parameter;
 import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
 import com.linkedin.restli.internal.server.model.ResourceModel;
+import com.linkedin.restli.internal.server.util.DataMapUtils;
 import com.linkedin.restli.server.BatchCreateRequest;
-import com.linkedin.restli.server.ResourceContext;
 import com.linkedin.restli.server.RestLiRequestData;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
 
+import com.linkedin.restli.server.resources.CollectionResourceAsyncTemplate;
+import java.io.IOException;
 import java.lang.annotation.Annotation;
 import java.util.List;
+
+import org.testng.annotations.Test;
 
 import static org.easymock.EasyMock.verify;
 import static org.testng.Assert.assertEquals;
@@ -45,12 +51,12 @@ import static org.testng.Assert.fail;
 public class TestBatchCreateArgumentBuilder
 {
   @Test
-  public void testArgumentBuilderSuccess()
+  public void testArgumentBuilderSuccess() throws Exception
   {
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, "{\"elements\":[{\"b\":123,\"a\":\"abc\"},{\"b\":5678,\"a\":\"xyzw\"}]}", 1);
+    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, "{\"elements\":[{\"b\":123,\"a\":\"abc\"},{\"b\":5678,\"a\":\"xyzw\"}]}");
     ResourceModel model = RestLiArgumentBuilderTestHelper.getMockResourceModel(MyComplexKey.class, null, false);
     @SuppressWarnings("rawtypes")
-    Parameter<BatchCreateRequest> param = new Parameter<BatchCreateRequest>("",
+    Parameter<BatchCreateRequest> param = new Parameter<>("",
         BatchCreateRequest.class,
         null,
         false,
@@ -58,12 +64,14 @@ public class TestBatchCreateArgumentBuilder
         Parameter.ParamType.BATCH,
         false,
         new AnnotationSet(new Annotation[]{}));
-    ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(model, param);
-    ResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(null, null, null);
-    RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 2, context, 1);
+    ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(model, param,
+        CollectionResourceAsyncTemplate.class.getMethod("batchCreate", BatchCreateRequest.class, Callback.class));
+    ServerResourceContext context = RestLiArgumentBuilderTestHelper.getMockResourceContext(null, null, null, true);
+    RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 3, context, 1);
 
     RestLiArgumentBuilder argumentBuilder = new BatchCreateArgumentBuilder();
-    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult, request);
+    RestLiRequestData requestData = argumentBuilder.extractRequestData(routingResult,
+        DataMapUtils.readMapWithExceptions(request));
     Object[] args = argumentBuilder.buildArguments(requestData, routingResult);
 
     assertEquals(args.length, 1);
@@ -77,43 +85,5 @@ public class TestBatchCreateArgumentBuilder
     assertEquals((long) entities.get(1).getB(), 5678L);
 
     verify(request, model, descriptor, context, routingResult);
-  }
-
-  @DataProvider
-  private Object[][] failureData()
-  {
-    return new Object[][]
-        {
-            {"{\"elements\":{\"b\":123,\"a\":\"abc\"},{\"b\":5678,\"a\":\"xyzw\"}]}"},
-            {"{\"elements\":1234}"},
-            {"{\"elements\":"},
-            {"{\"elements\":[{\"b\":123,\"a\":\"abc\"},{1234:5678,\"a\":\"xyzw\"}]}"}
-        };
-  }
-
-  @Test(dataProvider = "failureData")
-  public void testFailure(String entity)
-  {
-    RestRequest request = RestLiArgumentBuilderTestHelper.getMockRequest(false, entity, 1);
-    ResourceModel model = RestLiArgumentBuilderTestHelper.getMockResourceModel(MyComplexKey.class, null, false);
-    ResourceMethodDescriptor descriptor = RestLiArgumentBuilderTestHelper.getMockResourceMethodDescriptor(model, 1, null);
-    RoutingResult routingResult = RestLiArgumentBuilderTestHelper.getMockRoutingResult(descriptor, 1, null, 0);
-
-    RestLiArgumentBuilder argumentBuilder = new BatchCreateArgumentBuilder();
-    try
-    {
-      argumentBuilder.extractRequestData(routingResult, request);
-      fail("Expected RestLiInternalException or ClassCastException");
-    }
-    catch (RestLiInternalException e)
-    {
-      assertTrue(e.getMessage().contains("JsonParseException"));
-    }
-    catch (ClassCastException e)
-    {
-      assertTrue(e.getMessage().contains("java.lang.Integer cannot be cast to com.linkedin.data.DataList"));
-    }
-
-    verify(request, model, descriptor, routingResult);
   }
 }

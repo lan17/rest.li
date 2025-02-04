@@ -24,21 +24,29 @@ import com.linkedin.data.transform.filter.request.MaskTree;
 import com.linkedin.restli.common.ProtocolVersion;
 import com.linkedin.restli.common.ResourceMethod;
 import com.linkedin.restli.internal.server.ServerResourceContext;
+import com.linkedin.restli.internal.server.model.Parameter;
 import com.linkedin.restli.internal.server.model.ResourceMethodDescriptor;
 import com.linkedin.restli.server.PathKeys;
 import com.linkedin.restli.server.ProjectionMode;
 import com.linkedin.restli.server.RestLiRequestData;
+import com.linkedin.restli.server.annotations.ReturnEntity;
+import com.linkedin.restli.server.errors.ServiceError;
 import com.linkedin.restli.server.filter.FilterResourceModel;
 
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 
 /**
  * @author nshankar
  */
+@SuppressWarnings("deprecation")
+// TODO: Change to implementing FilterRequestContext and rename to FilterRequestContextImpl
 public class FilterRequestContextInternalImpl implements FilterRequestContextInternal
 {
   private RestLiRequestData _requestData;
@@ -50,14 +58,29 @@ public class FilterRequestContextInternalImpl implements FilterRequestContextInt
   // Collection specific
   private final RecordDataSchema _collectionCustomTypeSchema;
 
+  /**
+   * @deprecated Use {@link #FilterRequestContextInternalImpl(ServerResourceContext, ResourceMethodDescriptor, RestLiRequestData)}
+   *             and pass in RestLiRequestData.
+   */
+  @Deprecated
+  // TODO: Remove this constructor once external use are removed.
   public FilterRequestContextInternalImpl(final ServerResourceContext context,
-                                          final ResourceMethodDescriptor resourceMethod)
+      final ResourceMethodDescriptor resourceMethod)
+  {
+    this(context, resourceMethod, null);
+  }
+
+  public FilterRequestContextInternalImpl(final ServerResourceContext context,
+      final ResourceMethodDescriptor resourceMethod,
+      final RestLiRequestData requestData)
   {
     _context = context;
     _resourceMethod = resourceMethod;
-    _scratchPad = new HashMap<String, Object>();
+    _requestData = requestData;
+    _scratchPad = new HashMap<>();
     _resourceModel = new FilterResourceModelImpl(resourceMethod.getResourceModel());
-    _collectionCustomTypeSchema = resourceMethod.getFinderMetadataType() == null ? null : (RecordDataSchema) DataTemplateUtil.getSchema(resourceMethod.getFinderMetadataType());
+    _collectionCustomTypeSchema = resourceMethod.getCollectionCustomMetadataType() == null
+        ? null : (RecordDataSchema) DataTemplateUtil.getSchema(resourceMethod.getCollectionCustomMetadataType());
   }
 
   @Override
@@ -79,6 +102,36 @@ public class FilterRequestContextInternalImpl implements FilterRequestContextInt
   }
 
   @Override
+  public MaskTree getMetadataProjectionMask()
+  {
+    return _context.getMetadataProjectionMask();
+  }
+
+  @Override
+  public MaskTree getPagingProjectionMask()
+  {
+    return _context.getPagingProjectionMask();
+  }
+
+  @Override
+  public void setProjectionMask(MaskTree projectionMask)
+  {
+    _context.setProjectionMask(projectionMask);
+  }
+
+  @Override
+  public void setMetadataProjectionMask(MaskTree metadataProjectionMask)
+  {
+    _context.setMetadataProjectionMask(metadataProjectionMask);
+  }
+
+  @Override
+  public void setPagingProjectionMask(MaskTree pagingProjectionMask)
+  {
+    _context.setPagingProjectionMask(pagingProjectionMask);
+  }
+
+  @Override
   public PathKeys getPathKeys()
   {
     return _context.getPathKeys();
@@ -94,6 +147,11 @@ public class FilterRequestContextInternalImpl implements FilterRequestContextInt
   public ResourceMethod getMethodType()
   {
     return _resourceMethod.getMethodType();
+  }
+
+  @Override
+  public List<ServiceError> getMethodServiceErrors() {
+    return _resourceMethod.getServiceErrors();
   }
 
   @Override
@@ -133,6 +191,7 @@ public class FilterRequestContextInternalImpl implements FilterRequestContextInt
   }
 
   @Override
+  @Deprecated
   public void setRequestData(RestLiRequestData data)
   {
     _requestData = data;
@@ -148,6 +207,12 @@ public class FilterRequestContextInternalImpl implements FilterRequestContextInt
   public String getFinderName()
   {
     return _resourceMethod.getFinderName();
+  }
+
+  @Override
+  public String getBatchFinderName()
+  {
+    return _resourceMethod.getBatchFinderName();
   }
 
   @Override
@@ -169,6 +234,16 @@ public class FilterRequestContextInternalImpl implements FilterRequestContextInt
   }
 
   @Override
+  public Class<?> getActionReturnType()
+  {
+    if (_resourceMethod.getMethodType() == ResourceMethod.ACTION)
+    {
+      return _resourceMethod.getActionReturnType();
+    }
+    return null;
+  }
+
+  @Override
   public RecordDataSchema getActionRequestSchema()
   {
     return _resourceMethod.getRequestDataSchema();
@@ -184,5 +259,47 @@ public class FilterRequestContextInternalImpl implements FilterRequestContextInt
   public Method getMethod()
   {
     return _resourceMethod.getMethod();
+  }
+
+  @Override
+  public List<Parameter<?>> getMethodParameters()
+  {
+    return Collections.unmodifiableList(_resourceMethod.getParameters());
+  }
+
+  @Override
+  public Map<String, Object> getRequestContextLocalAttrs()
+  {
+    return Collections.unmodifiableMap(_context.getRawRequestContext().getLocalAttrs());
+  }
+
+  @Override
+  public Optional<Object> getCustomContextData(String key)
+  {
+    return _context.getCustomContextData(key);
+  }
+
+  @Override
+  public void putCustomContextData(String key, Object data)
+  {
+    _context.putCustomContextData(key, data);
+  }
+
+  @Override
+  public Optional<Object> removeCustomContextData(String key)
+  {
+    return _context.removeCustomContextData(key);
+  }
+
+  @Override
+  public boolean isReturnEntityMethod()
+  {
+    return _resourceMethod.getCustomAnnotationData().containsKey(ReturnEntity.NAME);
+  }
+
+  @Override
+  public boolean isReturnEntityRequested()
+  {
+    return _context.isReturnEntityRequested();
   }
 }

@@ -16,12 +16,14 @@
 
 package com.linkedin.data;
 
-import com.linkedin.data.codec.DataLocation;
+import com.linkedin.data.codec.DataCodec;
 import com.linkedin.data.codec.JacksonDataCodec;
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.SchemaParser;
 import com.linkedin.data.schema.PegasusSchemaParser;
 
+import com.linkedin.data.schema.grammar.PdlSchemaParser;
+import com.linkedin.data.schema.resolver.DefaultDataSchemaResolver;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -79,7 +81,7 @@ public class TestUtil
 
   static public List<Object> asList(Object... objects)
   {
-    ArrayList<Object> list = new ArrayList<Object>();
+    ArrayList<Object> list = new ArrayList<>();
     for (Object object : objects)
     {
       list.add(object);
@@ -92,7 +94,7 @@ public class TestUtil
   {
     int index = 0;
     String key = null;
-    HashMap<String,V> map = new HashMap<String,V>();
+    HashMap<String, V> map = new HashMap<>();
     for (Object object : objects)
     {
       if (index % 2 == 0)
@@ -106,6 +108,13 @@ public class TestUtil
       index++;
     }
     return map;
+  }
+
+  static public DataMap asReadOnlyDataMap(Object... objects)
+  {
+    DataMap dataMap = new DataMap(asMap(objects));
+    dataMap.makeReadOnly();
+    return dataMap;
   }
 
   static public InputStream inputStreamFromString(String s) throws UnsupportedEncodingException
@@ -146,7 +155,43 @@ public class TestUtil
     return parser.topLevelDataSchemas().get(parser.topLevelDataSchemas().size() - 1);
   }
 
-  private static final JacksonDataCodec codec = new JacksonDataCodec();
+  public static PdlSchemaParser pdlSchemaParserFromString(String s) throws UnsupportedEncodingException
+  {
+    PdlSchemaParser parser = new PdlSchemaParser(new DefaultDataSchemaResolver());
+    parser.parse(inputStreamFromString(s));
+    return parser;
+  }
+
+  public static PdlSchemaParser pdlSchemaParserFromInputStream(InputStream is) throws UnsupportedEncodingException
+  {
+    PdlSchemaParser parser = new PdlSchemaParser(new DefaultDataSchemaResolver());
+    parser.parse(is);
+    return parser;
+  }
+
+  public static DataSchema getTopLevelSchemaFromPdlParser(PdlSchemaParser parser)
+  {
+    if (parser.hasError())
+    {
+      out.println("ERROR: " + parser.errorMessage());
+      return null;
+    }
+    return parser.topLevelDataSchemas().get(parser.topLevelDataSchemas().size() - 1);
+  }
+
+  public static DataSchema dataSchemaFromPdlString(String s) throws IOException
+  {
+    PdlSchemaParser parser = pdlSchemaParserFromString(s);
+    return getTopLevelSchemaFromPdlParser(parser);
+  }
+
+  public static DataSchema dataSchemaFromPdlInputStream(InputStream is) throws IOException
+  {
+    PdlSchemaParser parser = pdlSchemaParserFromInputStream(is);
+    return getTopLevelSchemaFromPdlParser(parser);
+  }
+
+  private static final JacksonDataCodec JACKSON_DATA_CODEC = new JacksonDataCodec();
 
   public static List<Object> objectsFromString(String string) throws IOException
   {
@@ -156,7 +201,7 @@ public class TestUtil
   public static List<Object> objectsFromInputStream(InputStream inputStream) throws IOException
   {
     StringBuilder errorMessageBuilder = new StringBuilder();
-    List<Object> objects = codec.parse(inputStream, errorMessageBuilder, new HashMap<Object, DataLocation>());
+    List<Object> objects = JACKSON_DATA_CODEC.parse(inputStream, errorMessageBuilder, new HashMap<>());
     if (errorMessageBuilder.length() > 0)
     {
       throw new IOException(errorMessageBuilder.toString());
@@ -166,7 +211,21 @@ public class TestUtil
 
   public static DataMap dataMapFromString(String json) throws IOException
   {
-    return codec.stringToMap(json);
+    return JACKSON_DATA_CODEC.stringToMap(json);
+  }
+
+  public static byte[] dataComplexToBytes(DataComplex dataComplex)
+      throws IOException
+  {
+    return dataComplexToBytes(JACKSON_DATA_CODEC, dataComplex);
+  }
+
+  public static byte[] dataComplexToBytes(DataCodec codec, DataComplex dataComplex)
+      throws IOException
+  {
+    return dataComplex instanceof DataMap
+        ? codec.mapToBytes((DataMap) dataComplex)
+        : codec.listToBytes((DataList) dataComplex);
   }
 
   public static boolean deleteRecursive(String path, boolean debug) throws FileNotFoundException
@@ -217,7 +276,7 @@ public class TestUtil
 
   public static Map<File, Map.Entry<String, String>> createSchemaFiles(File testDir, Map<String, String> fileToSchemaMap, boolean debug) throws IOException
   {
-    Map<File, Map.Entry<String,String>> result = new HashMap<File, Map.Entry<String, String>>();
+    Map<File, Map.Entry<String,String>> result = new HashMap<>();
 
     ensureEmptyOutputDir(testDir, debug);
 
@@ -258,7 +317,7 @@ public class TestUtil
 
   public static Collection<String> computePathFromRelativePaths(File testDir, Collection<String> relativePaths) throws IOException
   {
-    Collection<String> paths = new ArrayList<String>();
+    Collection<String> paths = new ArrayList<>();
 
     // directory in path
     for (String testPath : relativePaths)
@@ -275,14 +334,14 @@ public class TestUtil
                                                                boolean debug)
     throws IOException
   {
-    Collection<String> paths = new ArrayList<String>();
+    Collection<String> paths = new ArrayList<>();
 
     // jar files in path, create jar files
     paths.clear();
     for (String testPath : relativePaths)
     {
       String jarFileName = (testDir.getCanonicalPath() + testPath + ".jar").replace('/', File.separatorChar);
-      Map<String,String> jarFileContents = new HashMap<String, String>();
+      Map<String, String> jarFileContents = new HashMap<>();
       for (Map.Entry<String,String> entry : fileToSchemaMap.entrySet())
       {
         if (entry.getKey().startsWith(testPath))
@@ -488,7 +547,7 @@ public class TestUtil
    */
   private static Set<DataComplex> collectDataComplex(final Object object)
   {
-    IdentityHashMap<DataComplex, Boolean> identityHashMap = new IdentityHashMap<DataComplex, Boolean>();
+    IdentityHashMap<DataComplex, Boolean> identityHashMap = new IdentityHashMap<>();
     collectDataComplex(object, identityHashMap);
     return identityHashMap.keySet();
   }

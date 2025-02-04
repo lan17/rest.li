@@ -29,6 +29,7 @@ import com.linkedin.data.schema.NamedDataSchema;
 import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.schema.generator.AbstractGenerator;
 import com.linkedin.data.schema.resolver.FileDataSchemaLocation;
+import com.linkedin.internal.tools.ArgumentFileProcessor;
 import com.linkedin.util.FileUtil;
 
 import java.io.File;
@@ -42,8 +43,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static com.linkedin.data.avro.SchemaTranslator.AVRO_PREFIX;
 
 
 /**
@@ -62,20 +66,22 @@ import org.slf4j.LoggerFactory;
 public class AvroSchemaGenerator extends AbstractGenerator
 {
   public static final String GENERATOR_AVRO_TRANSLATE_OPTIONAL_DEFAULT = "generator.avro.optional.default";
+  public static final String GENERATOR_AVRO_NAMESPACE_OVERRIDE = "generator.avro.namespace.override";
+  public static final String GENERATOR_AVRO_TYPEREF_PROPERTY_EXCLUDE = "generator.avro.typeref.properties.exclude";
 
   private static final Logger _log = LoggerFactory.getLogger(AvroSchemaGenerator.class);
 
-  private final Set<DataSchemaLocation> _sourceLocations = new HashSet<DataSchemaLocation>();
+  private final Set<DataSchemaLocation> _sourceLocations = new HashSet<>();
 
   /**
    * Sources as set.
    */
-  private final Set<String> _sources = new HashSet<String>();
+  private final Set<String> _sources = new HashSet<>();
 
   /**
    * Map of output file and the schema that should be written in the output file.
    */
-  private final Map<File, String> _fileToAvroSchemaMap = new HashMap<File, String>();
+  private final Map<File, String> _fileToAvroSchemaMap = new HashMap<>();
 
   /**
    * Options that specify how Avro schema should be generated.
@@ -107,8 +113,17 @@ public class AvroSchemaGenerator extends AbstractGenerator
       System.exit(1);
     }
 
-    run(System.getProperty(GENERATOR_RESOLVER_PATH),
+    String resolverPath = System.getProperty(AbstractGenerator.GENERATOR_RESOLVER_PATH);
+    if (resolverPath != null && ArgumentFileProcessor.isArgFile(resolverPath))
+    {
+      // The resolver path is an arg file, prefixed with '@' and containing the actual resolverPath
+      String[] argFileContents = ArgumentFileProcessor.getContentsAsArray(resolverPath);
+      resolverPath = argFileContents.length > 0 ? argFileContents[0] : null;
+    }
+    run(resolverPath,
         System.getProperty(GENERATOR_AVRO_TRANSLATE_OPTIONAL_DEFAULT),
+        System.getProperty(GENERATOR_AVRO_TYPEREF_PROPERTY_EXCLUDE),
+        Boolean.parseBoolean(System.getProperty(GENERATOR_AVRO_NAMESPACE_OVERRIDE)),
         args[0],
         Arrays.copyOfRange(args, 1, args.length));
   }
@@ -119,7 +134,12 @@ public class AvroSchemaGenerator extends AbstractGenerator
     _config = config;
   }
 
-  public static void run(String resolverPath, String optionalDefault, String targetDirectoryPath, String[] sources) throws IOException
+  public static void run(String resolverPath,
+                         String optionalDefault,
+                         String typeRefPropertiesExcludeList,
+                         boolean overrideNamespace,
+                         String targetDirectoryPath,
+                         String[] sources) throws IOException
   {
     final AvroSchemaGenerator generator = new AvroSchemaGenerator(new Config(resolverPath));
 
@@ -128,7 +148,20 @@ public class AvroSchemaGenerator extends AbstractGenerator
       final OptionalDefaultMode optionalDefaultMode = OptionalDefaultMode.valueOf(optionalDefault.toUpperCase());
       generator.getDataToAvroSchemaTranslationOptions().setOptionalDefaultMode(optionalDefaultMode);
     }
+    generator.getDataToAvroSchemaTranslationOptions().setOverrideNamespace(overrideNamespace);
 
+    if (null != typeRefPropertiesExcludeList)
+    {
+      generator.getDataToAvroSchemaTranslationOptions().setTyperefPropertiesExcludeSet(
+          Arrays.stream(typeRefPropertiesExcludeList.split(","))
+              .map(String::trim)
+              .collect(Collectors.toSet()));
+    }
+
+    if (overrideNamespace)
+    {
+      targetDirectoryPath += "/" + AVRO_PREFIX;
+    }
     generator.generate(targetDirectoryPath, sources);
   }
 
@@ -171,7 +204,8 @@ public class AvroSchemaGenerator extends AbstractGenerator
       return;
     }
 
-    _log.info("Generating " + targetFiles.size() + " files: " + targetFiles);
+    _log.info("Generating " + targetFiles.size() + " files");
+    _log.debug("Files: " + targetFiles);
     outputAvroSchemas(targetDirectory);
   }
 
@@ -210,7 +244,7 @@ public class AvroSchemaGenerator extends AbstractGenerator
 
   protected List<File> targetFiles(File targetDirectory)
   {
-    ArrayList<File> generatedFiles = new ArrayList<File>();
+    ArrayList<File> generatedFiles = new ArrayList<>();
 
     DataSchemaResolver resolver = getSchemaResolver();
     Map<String, DataSchemaLocation> nameToLocations = resolver.nameToDataSchemaLocations();
